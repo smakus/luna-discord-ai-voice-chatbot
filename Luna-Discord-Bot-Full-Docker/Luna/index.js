@@ -21,7 +21,7 @@ const IGNORED_USERS = new Set(
 );
 
 const WHISPER_CLI   = process.env.WHISPER_CLI || 'whisper-cli';
-const WHISPER_MODEL = process.env.WHISPER_MODEL || '/opt/whisper/models/ggml-small.en.bin';
+const WHISPER_MODEL = process.env.WHISPER_MODEL;
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL;
 const LM_SYSTEM_PROMPT =
   'You are Luna, a helpful voice assistant in a Discord voice channel. ' +
@@ -278,9 +278,9 @@ function writeWav(filePath, pcmData, sampleRate, channels, bitDepth) {
 function transcribeWithWhisper(wavPath) {
   return new Promise(resolve => {
     execFile(
-      WHISPER_CLI,
-      ['-m', WHISPER_MODEL, '-f', wavPath],
-      { timeout: 15000 }, // kill if whisper hangs for 15s
+       	WHISPER_CLI,
+ 	 ['-m', WHISPER_MODEL, '-f', wavPath, '-t', '8', '-bs', '1', '-bo', '1'],
+  	{ timeout: 15000 }, // kill if whisper hangs for 15s
       (error, stdout) => {
         if (error) {
           console.error('Whisper error:', error.message);
@@ -377,8 +377,14 @@ function needsWebSearch(query) {
 }
 
 function extractSmakbotCommand(query) {
-  const match = query.match(/play(?:\s+the)?\s+song[,.]?\s*(.+)/i);
-  if (match) return match[1].trim().replace(/[,.]+$/, '');
+  const lower = query.toLowerCase();
+  for (const word of WAKE_WORDS) {
+    const idx = lower.indexOf(word);
+    if (idx === -1 || idx >= 6) continue;
+    const after = query.slice(idx + word.length).replace(/^[,.\s]+/, '');
+    const match = after.match(/^play(?:\s+(?:the\s+)?(?:song|music))?[,.]?\s+(.+)/i);
+    if (match) return match[1].trim().replace(/[,.]+$/, '');
+  }
   return null;
 }
 
