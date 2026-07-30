@@ -22,4 +22,4 @@ services:
       - LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
       - KOKORO_URL=http://kokoro:8880/v1/audio/speech
       - WHISPER_CLI=/whisper/build/bin/whisper-cli
-      - WHISPER_MODEL=/opt/whisper/models/ggml-small.en.bin
+      - WHISPER_MODEL=/opt/whisper/models/ggml-medium.en-q5_0.bin
