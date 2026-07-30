@@ -170,7 +170,7 @@ docker compose logs -f kokoro
 - *"Luna, what's the weather today?"* — triggers web search via Tavily
 - *"Luna, tell me a joke"* — direct LLM response
 - *"Luna, what did I just ask you?"* — uses conversation memory
-- *"Luna, play song Bohemian Rhapsody"* — triggers music bot integration
+- *"Luna, play Bohemian Rhapsody"* — triggers music bot integration
 
 **Interrupting Luna:**
 
@@ -234,7 +234,7 @@ This is handled automatically — the sentence splitter ignores periods inside d
 
 ## Advanced — Red-DiscordBot Music Integration (VoiceBridge)
 
-If you run [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) with the Audio cog in the same server, you can give Luna the ability to control music playback by saying *"Luna, play song [song name]"*.
+If you run [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) with the Audio cog in the same server, you can give Luna the ability to control music playback by saying *"Luna, play [song name]"*.
 
 ### How it works
 
@@ -270,7 +270,7 @@ AI_BOT_ID = 123456789012345678  # Luna's Discord user ID
 
 **5. Usage**
 
-Say: *"Luna, play song Bohemian Rhapsody"*
+Say: *"Luna, play Bohemian Rhapsody"*
 
 Luna will post `!play Bohemian Rhapsody` to the text channel, VoiceBridge intercepts it and invokes Red's Audio cog, and music starts playing.
 
