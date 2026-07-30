@@ -8,8 +8,6 @@ const {
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
 const prism = require('prism-media');
-const { execFile } = require('child_process');
-const fs = require('fs');
 const { PassThrough } = require('stream');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -20,8 +18,7 @@ const IGNORED_USERS = new Set(
   (process.env.IGNORED_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
 );
 
-const WHISPER_CLI   = process.env.WHISPER_CLI || 'whisper-cli';
-const WHISPER_MODEL = process.env.WHISPER_MODEL;
+const WHISPER_SERVER_URL = process.env.WHISPER_SERVER_URL;
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL;
 const LM_SYSTEM_PROMPT =
   'You are Luna, a helpful voice assistant in a Discord voice channel. ' +
@@ -251,65 +248,58 @@ function interruptPlayback() {
 
 // ─── WAV helper ───────────────────────────────────────────────────────────────
 
-function writeWav(filePath, pcmData, sampleRate, channels, bitDepth) {
+function buildWavBuffer(pcmData, sampleRate, channels, bitDepth) {
   const byteRate   = sampleRate * channels * (bitDepth / 8);
   const blockAlign = channels * (bitDepth / 8);
   const header     = Buffer.alloc(44);
 
   header.write('RIFF', 0);
-  header.writeUInt32LE(36 + pcmData.length, 4); // file size - 8
+  header.writeUInt32LE(36 + pcmData.length, 4);
   header.write('WAVE', 8);
   header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);                 // fmt chunk size
-  header.writeUInt16LE(1,  20);                 // PCM format
-  header.writeUInt16LE(channels, 22);           // num channels
-  header.writeUInt32LE(sampleRate, 24);         // sample rate
-  header.writeUInt32LE(byteRate, 28);           // byte rate
-  header.writeUInt16LE(blockAlign, 32);         // block align
-  header.writeUInt16LE(bitDepth, 34);           // bits per sample
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1,  20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitDepth, 34);
   header.write('data', 36);
-  header.writeUInt32LE(pcmData.length, 40);     // data chunk size
+  header.writeUInt32LE(pcmData.length, 40);
 
-  fs.writeFileSync(filePath, Buffer.concat([header, pcmData]));
+  return Buffer.concat([header, pcmData]);
 }
 
 // ─── Whisper ──────────────────────────────────────────────────────────────────
 
-function transcribeWithWhisper(wavPath) {
-  return new Promise(resolve => {
-    execFile(
-       	WHISPER_CLI,
- 	 ['-m', WHISPER_MODEL, '-f', wavPath, '-t', '8', '-bs', '1', '-bo', '1'],
-  	{ timeout: 15000 }, // kill if whisper hangs for 15s
-      (error, stdout) => {
-        if (error) {
-          console.error('Whisper error:', error.message);
-          return resolve(null); // resolve null instead of reject to keep bot running
-        }
-        const lines = stdout.split('\n')
-          .map(l => l.replace(/\[\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/g, '').trim())
-          .filter(l => l && l !== '[BLANK_AUDIO]');
-        resolve(lines.join(' ').trim() || null);
-      }
-    );
-  });
+async function transcribeWithWhisper(wavBuffer) {
+  try {
+    const form = new FormData();
+    form.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'audio.wav');
+    form.append('response_format', 'json');
+
+    const res = await fetch(WHISPER_SERVER_URL, { method: 'POST', body: form });
+    if (!res.ok) {
+      console.error(`Whisper server error ${res.status}:`, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    return (data.text || '').trim() || null;
+  } catch (err) {
+    console.error('Whisper server error:', err.message);
+    return null;
+  }
 }
 
 // ─── Utterance processing ─────────────────────────────────────────────────────
 
 async function processUtterance(pcm, userId, connection, channel) {
-  // Per-user whisper lock — prevents stacking multiple simultaneous transcriptions
-  // for the same user. Does NOT block audio collection, so the wake word is always
-  // detectable even while Luna is speaking a response.
   if (processingUsers.has(userId)) return;
   processingUsers.add(userId);
 
-  const wavPath = `/tmp/discordai_${userId}_${Date.now()}.wav`;
-
   try {
-    writeWav(wavPath, pcm, 48000, 1, 16);
-    const transcript = await transcribeWithWhisper(wavPath);
-    try { fs.unlinkSync(wavPath); } catch (_) {}
+    const wavBuffer = buildWavBuffer(pcm, 48000, 1, 16);
+    const transcript = await transcribeWithWhisper(wavBuffer);
 
     if (!transcript) return;
 
@@ -321,12 +311,9 @@ async function processUtterance(pcm, userId, connection, channel) {
     if (!startsWithWake) return;
 
     console.log(`[${userId}] Query:`, transcript);
-    // handleQuery calls interruptPlayback() internally — if Luna is mid-response
-    // she will stop immediately and answer the new query.
     await handleQuery(transcript, connection, channel);
   } catch (err) {
     console.error(`[${userId}] Error processing utterance:`, err);
-    try { fs.unlinkSync(wavPath); } catch (_) {}
   } finally {
     processingUsers.delete(userId);
   }
