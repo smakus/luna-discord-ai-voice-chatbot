@@ -63,16 +63,17 @@ cd luna-discord-bot
 
 ### 2. Docker Installation (recommended)
 
-The repo includes a `Luna-Discord-Bot-Full-Docker/` directory with a Docker Compose setup that runs both Luna and the Kokoro TTS server together.
+The repo includes a `Luna-Discord-Bot-Full-Docker/` directory with a Docker Compose setup that runs Luna, Whisper, and the Kokoro TTS server together.
 
 ```bash
 cd Luna-Discord-Bot-Full-Docker
 docker compose up --build
 ```
 
-This builds and starts two containers:
+This builds and starts three containers:
 - **luna** — the Discord bot (Node.js)
 - **kokoro** — the local TTS server (Python/FastAPI)
+- **whisper** — the local Whisper speech-to-text server (whisper.cpp)
 
 ### 3. Set up LM Studio
 
@@ -203,9 +204,15 @@ The following constants at the top of `index.js` can be adjusted:
 Check Docker logs — you should see `[userId] Processing Xms utterance...` when you speak. If not, `ENERGY_THRESHOLD` may be too high. Try lowering it to `200`.
 
 **Whisper returns empty transcripts**
-Ensure the model file exists at the path set in `WHISPER_MODEL`. Test manually inside the container:
+Whisper runs as its own persistent server (the `whisper` container), not inside `luna`. Check its logs first — you should see `whisper_model_load: loading model` once at startup:
 ```bash
-docker exec -it luna-1 whisper-cli -m /opt/whisper/models/ggml-small.en.bin -f /tmp/test.wav
+docker compose logs -f whisper
+```
+Test the server directly:
+```bash
+curl -X POST http://localhost:8081/inference \
+  -F file="@/tmp/test.wav" \
+  -F response_format="json"
 ```
 
 **Kokoro TTS not working**
@@ -238,7 +245,7 @@ If you run [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) with
 
 ### How it works
 
-Luna detects the phrase "play song" in a query, extracts the song name, and posts `!play <song>` to the text channel. Because Discord bots ignore messages from other bots by default, a small Red cog called **VoiceBridge** bridges the gap — it whitelists Luna's user ID and relays the command to Red's Audio cog.
+Luna detects "play", "play song", or "play music" immediately following the wake word, extracts the song name, and posts `!play <song>` to the text channel. Because Discord bots ignore messages from other bots by default, a small Red cog called **VoiceBridge** bridges the gap — it whitelists Luna's user ID and relays the command to Red's Audio cog.
 
 ### Setup
 
@@ -275,6 +282,18 @@ Say: *"Luna, play Bohemian Rhapsody"*
 Luna will post `!play Bohemian Rhapsody` to the text channel, VoiceBridge intercepts it and invokes Red's Audio cog, and music starts playing.
 
 ---
+
+**Whisper server tuning:**
+
+The Whisper transcription server (`Whisper/Dockerfile`) is started with tunable flags in its `CMD`:
+
+| Flag  | Default | Description                                        |
+| ----- | ------- | --------------------------------------------------- |
+| `-t`  | `8`     | CPU threads to use for inference                     |
+| `-bs` | `1`     | Beam size (1 = greedy decoding, fastest)             |
+| `-bo` | `1`     | Best-of candidates (1 = fastest, least accurate)     |
+
+Increasing `-bs`/`-bo` improves accuracy at the cost of latency — the defaults favor speed for a low-latency voice assistant.
 
 ## License
 
