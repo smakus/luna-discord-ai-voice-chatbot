@@ -14,6 +14,17 @@ services:
     restart: unless-stopped
     ports:
       - "8081:8080"
+    command: ["./build/bin/whisper-server", "-m", "/opt/whisper/models/ggml-medium.en-q5_0.bin",
+              "--host", "0.0.0.0", "--port", "8080", "-t", "4", "-bs", "1", "-bo", "1"]
+
+  whisper-2:
+    build:
+      context: ./Whisper
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    command: ["./build/bin/whisper-server", "-m", "/opt/whisper/models/ggml-medium.en-q5_0.bin",
+              "--host", "0.0.0.0", "--port", "8080", "-t", "4", "-bs", "1", "-bo", "1"]
 
   luna:
     build:
@@ -22,6 +33,7 @@ services:
     depends_on:
       - kokoro
       - whisper
+      - whisper-2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
@@ -29,4 +41,4 @@ services:
     environment:
       - LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
       - KOKORO_URL=http://kokoro:8880/v1/audio/speech
-      - WHISPER_SERVER_URL=http://whisper:8080/inference
+      - WHISPER_SERVER_URLS=http://whisper:8080/inference,http://whisper-2:8080/inference
