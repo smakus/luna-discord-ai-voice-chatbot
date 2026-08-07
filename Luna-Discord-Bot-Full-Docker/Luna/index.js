@@ -12,13 +12,20 @@ const { PassThrough } = require('stream');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const WAKE_WORDS = ['luna', 'loona'];
+const WAKE_WORDS = ['luna', 'loona', 'runa', 'roona'];
 
 const IGNORED_USERS = new Set(
   (process.env.IGNORED_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
 );
 
-const WHISPER_SERVER_URL = process.env.WHISPER_SERVER_URL;
+const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+let whisperRR = 0;
+function nextWhisperUrl() {
+  const url = WHISPER_SERVER_URLS[whisperRR % WHISPER_SERVER_URLS.length];
+  whisperRR++;
+  return url;
+}
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL;
 const LM_SYSTEM_PROMPT =
   'You are Luna, a helpful voice assistant in a Discord voice channel. ' +
@@ -33,8 +40,7 @@ const KOKORO_URL   = process.env.KOKORO_URL;
 const KOKORO_VOICE = process.env.KOKORO_VOICE;
 
 // ─── Latency tuning ───────────────────────────────────────────────────────────
-// Reduced from 1500ms → 600ms: saves ~900ms on every single interaction.
-const SILENCE_MS       = 1000;
+const SILENCE_MS       = 1000; // ms of trailing silence before an utterance is flushed
 const ENERGY_THRESHOLD = 300;
 const MIN_SPEECH_MS    = 300;
 
@@ -175,10 +181,7 @@ function continuousCapture(connection, userId, channel) {
     lastDataTime = Date.now();
 
     if (hasEnergy(chunk)) {
-      if (!speaking) {
-        speaking = true;
-        console.log(`[${userId}] Speech started`);
-      }
+      speaking = true;
       speechChunks.push(chunk);
       if (silenceTimer) clearTimeout(silenceTimer);
       silenceTimer = setTimeout(flushUtterance, SILENCE_MS);
@@ -278,7 +281,7 @@ async function transcribeWithWhisper(wavBuffer) {
     form.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'audio.wav');
     form.append('response_format', 'json');
 
-    const res = await fetch(WHISPER_SERVER_URL, { method: 'POST', body: form });
+    const res = await fetch(nextWhisperUrl(), { method: 'POST', body: form });
     if (!res.ok) {
       console.error(`Whisper server error ${res.status}:`, await res.text());
       return null;
@@ -297,9 +300,12 @@ async function processUtterance(pcm, userId, connection, channel) {
   if (processingUsers.has(userId)) return;
   processingUsers.add(userId);
 
+  const t0 = Date.now(); // timing: clock starts when the utterance is flushed
+
   try {
     const wavBuffer = buildWavBuffer(pcm, 48000, 1, 16);
     const transcript = await transcribeWithWhisper(wavBuffer);
+    console.log(`[${userId}] [timing] Whisper done: ${Date.now() - t0}ms`);
 
     if (!transcript) return;
 
@@ -311,7 +317,7 @@ async function processUtterance(pcm, userId, connection, channel) {
     if (!startsWithWake) return;
 
     console.log(`[${userId}] Query:`, transcript);
-    await handleQuery(transcript, connection, channel);
+    await handleQuery(transcript, connection, channel, t0);
   } catch (err) {
     console.error(`[${userId}] Error processing utterance:`, err);
   } finally {
@@ -342,9 +348,6 @@ async function playSound(filePath, connection) {
 // ─── Intent detection ─────────────────────────────────────────────────────────
 
 const SEARCH_KEYWORDS = [
-  // time-sensitive
-  'today', 'tonight', 'yesterday', 'tomorrow', 'this week', 'this month',
-  'right now', 'currently', 'current', 'latest', 'recent',
   // factual lookups
   'price', 'cost', 'weather', 'forecast', 'temperature',
   'news', 'score', 'result', 'standing', 'ranking',
@@ -377,7 +380,7 @@ function extractSmakbotCommand(query) {
 
 // ─── Query handler ────────────────────────────────────────────────────────────
 
-async function handleQuery(query, connection, channel) {
+async function handleQuery(query, connection, channel, t0 = Date.now()) {
   // Check for smakbot music command first
   const songRequest = extractSmakbotCommand(query);
   if (songRequest) {
@@ -402,8 +405,6 @@ async function handleQuery(query, connection, channel) {
   playSound('./chime.mp3', connection).catch(() => {});
   const statusMsg = await channel.send('🤔 *Luna is thinking...*').catch(() => null);
 
-  console.log(`[LLM] Querying for: ${query}`);
-
   try {
     // Prefetch pipeline — fetchTTS fires immediately when LLM yields a sentence,
     // so Kokoro is generating sentence N+1 while sentence N is playing.
@@ -419,6 +420,7 @@ async function handleQuery(query, connection, channel) {
 
       if (firstSentence) {
         firstSentence = false;
+        console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
         try { if (statusMsg) await statusMsg.delete(); } catch (_) {}
       }
 
@@ -431,6 +433,7 @@ async function handleQuery(query, connection, channel) {
       queuePlayback(async () => {
         const passThrough = await prefetchMap.get(idx);
         prefetchMap.delete(idx);
+        if (idx === 0) console.log(`[timing] First audio start: ${Date.now() - t0}ms`);
         if (passThrough) await playTTS(passThrough, connection);
       }, myGeneration);
     }
@@ -497,8 +500,6 @@ async function* getLMStudioResponseStreaming(text) {
     body: JSON.stringify(body),
   });
 
-  console.log(`[LLM] Response status: ${res.status} content-type: ${res.headers.get('content-type')}`);
-
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`LM Studio ${res.status}: ${errText}`);
@@ -508,7 +509,6 @@ async function* getLMStudioResponseStreaming(text) {
 
   // ── Path A: SSE streaming ─────────────────────────────────────────────────
   if (contentType.includes('text/event-stream')) {
-    console.log('[LLM] Streaming SSE mode');
     let buffer     = '';
     let sseBuffer  = '';
     let responseId = null;
@@ -563,9 +563,8 @@ async function* getLMStudioResponseStreaming(text) {
 
   // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
   } else {
-    console.log('[LLM] Non-streaming JSON mode (chunking response into sentences)');
+    console.log('[LLM] Non-streaming JSON mode (unexpected — LM Studio ignored stream:true)');
     const data = await res.json();
-    console.log('[LLM] Raw response keys:', Object.keys(data));
 
     if (data.response_id) previousResponseId = data.response_id;
 
@@ -577,8 +576,6 @@ async function* getLMStudioResponseStreaming(text) {
       console.error('[LLM] No content found in response:', JSON.stringify(data).slice(0, 300));
       throw new Error('No message content in LLM response');
     }
-
-    console.log('[LLM] Full response:', fullText);
 
     // Split into sentences and yield each one so TTS starts immediately
     let remaining = fullText;
