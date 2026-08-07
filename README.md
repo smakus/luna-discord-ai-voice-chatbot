@@ -73,7 +73,7 @@ docker compose up --build
 This builds and starts three containers:
 - **luna** — the Discord bot (Node.js)
 - **kokoro** — the local TTS server (Python/FastAPI)
-- **whisper** — the local Whisper speech-to-text server (whisper.cpp)
+- **whisper** — the local Whisper speech-to-text server (whisper.cpp) (current config creates 2 instances of whisper for faster processing)
 
 ### 3. Set up LM Studio
 
