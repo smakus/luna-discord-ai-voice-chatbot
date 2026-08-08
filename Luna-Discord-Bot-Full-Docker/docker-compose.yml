@@ -1,4 +1,13 @@
-version: "3.9"
+# NOTE ON CPU BUDGET
+#
+# Everything here shares one machine with LM Studio. Whisper previously ran as
+# two containers at 4 threads each (8 threads) on ggml-medium.en-q5_0, which
+# starved LM Studio and the wake word detector — transcription of a 2 s clip was
+# taking 9-11 s, roughly 5x realtime.
+#
+# Now: one Whisper container, small.en, 4 threads. If you still see slow
+# transcription, lower WHISPER_THREADS before adding containers back — the
+# bottleneck is total core contention, not parallelism.
 
 services:
   kokoro:
@@ -11,20 +20,15 @@ services:
   whisper:
     build:
       context: ./Whisper
+      args:
+        # ggml-base.en-q5_1.bin  — faster still, less accurate
+        # ggml-medium.en-q5_0.bin — the old setting, accurate but slow here
+        WHISPER_MODEL: ggml-small.en-q5_1.bin
     restart: unless-stopped
     ports:
       - "8081:8080"
-    command: ["./build/bin/whisper-server", "-m", "/opt/whisper/models/ggml-medium.en-q5_0.bin",
-              "--host", "0.0.0.0", "--port", "8080", "-t", "4", "-bs", "1", "-bo", "1"]
-
-  whisper-2:
-    build:
-      context: ./Whisper
-    restart: unless-stopped
-    ports:
-      - "8082:8080"
-    command: ["./build/bin/whisper-server", "-m", "/opt/whisper/models/ggml-medium.en-q5_0.bin",
-              "--host", "0.0.0.0", "--port", "8080", "-t", "4", "-bs", "1", "-bo", "1"]
+    environment:
+      - WHISPER_THREADS=4
 
   luna:
     build:
@@ -33,7 +37,6 @@ services:
     depends_on:
       - kokoro
       - whisper
-      - whisper-2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
@@ -41,4 +44,4 @@ services:
     environment:
       - LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
       - KOKORO_URL=http://kokoro:8880/v1/audio/speech
-      - WHISPER_SERVER_URLS=http://whisper:8080/inference,http://whisper-2:8080/inference
+      - WHISPER_SERVER_URLS=http://whisper:8080/inference
