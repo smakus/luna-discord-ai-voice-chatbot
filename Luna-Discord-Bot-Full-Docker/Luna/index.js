@@ -97,6 +97,51 @@ const LM_SYSTEM_PROMPT =
 const KOKORO_URL   = process.env.KOKORO_URL;
 const KOKORO_VOICE = process.env.KOKORO_VOICE;
 
+// ─── Conversation memory scope ────────────────────────────────────────────────
+//
+// LM Studio's `previous_response_id` chains a conversation server-side. Two
+// consequences follow from how it was used before:
+//
+//   1. One global id meant every speaker shared one chain. The chain carries no
+//      speaker attribution, so the model saw A's and B's turns interleaved as a
+//      single user contradicting themselves — and B's follow-up ("what about
+//      tomorrow?") resolved against A's question.
+//   2. The chain never reset, so context grew for the lifetime of the process.
+//      Prefill cost is linear in context, so every turn was measurably slower
+//      than the last until the container was restarted.
+//
+// Now: one chain per speaker, dropped after LM_MEMORY_TTL_MS of silence or
+// LM_MEMORY_MAX_TURNS turns, whichever comes first. Both bound prefill.
+const LM_MEMORY_TTL_MS    = parseInt(process.env.LM_MEMORY_TTL_MS    || '600000', 10);
+const LM_MEMORY_MAX_TURNS = parseInt(process.env.LM_MEMORY_MAX_TURNS || '12',     10);
+
+const conversations = new Map(); // userId -> { responseId, turns, lastAt }
+
+function getConversationId(userId) {
+  const c = conversations.get(userId);
+  if (!c) return null;
+  if (Date.now() - c.lastAt > LM_MEMORY_TTL_MS) {
+    conversations.delete(userId);
+    return null;
+  }
+  if (c.turns >= LM_MEMORY_MAX_TURNS) {
+    console.log(`[${userId}] conversation reset after ${c.turns} turns (context cap)`);
+    conversations.delete(userId);
+    return null;
+  }
+  return c.responseId;
+}
+
+function rememberConversation(userId, responseId) {
+  if (!responseId) return;
+  const prev = conversations.get(userId);
+  conversations.set(userId, {
+    responseId,
+    turns:  (prev ? prev.turns : 0) + 1,
+    lastAt: Date.now(),
+  });
+}
+
 // ─── Latency tuning ───────────────────────────────────────────────────────────
 // Env-tunable so these can be adjusted with a container recreate rather than a
 // rebuild. Defaults are the original hardcoded values.
@@ -109,6 +154,21 @@ const KOKORO_VOICE = process.env.KOKORO_VOICE;
 const SILENCE_MS       = parseInt(process.env.SILENCE_MS       || '1000', 10);
 const ENERGY_THRESHOLD = parseInt(process.env.ENERGY_THRESHOLD || '300',  10);
 const MIN_SPEECH_MS    = parseInt(process.env.MIN_SPEECH_MS    || '300',  10);
+
+// Audio kept from BEFORE the energy gate opens, and prepended to the utterance.
+//
+// Without this, everything below ENERGY_THRESHOLD is discarded, so an utterance
+// begins on the first frame loud enough to trip the gate. Low-energy onsets —
+// unvoiced fricatives and stops ("s", "f", "th", "wh", "h", "k", "p", "t") —
+// sit below the threshold for 50-150 ms, so the utterance reaching Whisper
+// starts mid-word. Whisper then guesses the missing onset: "what's the score"
+// arrives as "the score", "set a timer" as "a timer".
+//
+// The detector is unaffected (it always saw every frame); this only changes
+// what is transcribed. Cost is PREROLL_MS of ring buffer per speaker — 320 ms
+// is ~30 KB.
+const PREROLL_MS     = parseInt(process.env.PREROLL_MS || '320', 10);
+const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 
 // Hard cap on a single buffered utterance. `flushing` stays true for the whole
 // LLM + TTS response, during which flushUtterance() early-returns while the
@@ -317,8 +377,12 @@ function continuousCapture(connection, userId, channel) {
   audioStream.setMaxListeners(20);
   audioStream.pipe(decoder);
   decoder.on('error', () => {}); // ignore corrupted Opus packets
-
+  
   let speechChunks = [];
+  // Ring of sub-threshold frames immediately preceding speech; prepended to the
+  // utterance when the energy gate opens so word onsets are not clipped.
+  let preroll      = [];
+  let prerollMs    = 0;   // how much of the current utterance is pre-roll
   let silenceTimer = null;
   let speaking       = false;
   let flushing       = false;
@@ -388,7 +452,15 @@ function continuousCapture(connection, userId, channel) {
     lastWakeAt = 0;
 
     const durationMs = (pcm.length / 2 / 48000) * 1000;
-    if (durationMs < MIN_SPEECH_MS) {
+
+    // Measure the MIN_SPEECH_MS gate against actual speech, not against speech
+    // plus pre-roll. Otherwise adding PREROLL_MS of lead-in would quietly
+    // lower the effective minimum by the same amount and let short noise
+    // bursts through as utterances.
+    const speechMs = durationMs - prerollMs;
+    prerollMs = 0;
+
+    if (speechMs < MIN_SPEECH_MS) {
       // Too short to transcribe, but the detector sees all audio while
       // speechChunks only sees chunks above ENERGY_THRESHOLD. A quiet speaker
       // can trip the model without clearing the energy gate — re-arm rather
@@ -488,13 +560,26 @@ function continuousCapture(connection, userId, channel) {
     }
 
     if (hasEnergy(chunk)) {
-      if (!speaking) speechStartedAt = Date.now();
+     if (!speaking) {
+        speechStartedAt = Date.now();
+        // Prepend the quiet lead-in. speechStartedAt deliberately still marks
+        // the energy onset, not the start of the pre-roll: the wake-word window
+        // check is calibrated against it, and moving it would shift the gate.
+        if (preroll.length) {
+          prerollMs = preroll.length * DECODER_CHUNK_MS;
+          for (const c of preroll) speechChunks.push(c);
+          preroll = [];
+        }
+      }
       speaking = true;
       speechChunks.push(chunk);
       if (silenceTimer) clearTimeout(silenceTimer);
       silenceTimer = setTimeout(flushUtterance, SILENCE_MS);
-    } else if (speaking) {
+   } else if (speaking) {
       speechChunks.push(chunk);
+    } else if (PREROLL_CHUNKS > 0) {
+      preroll.push(chunk);
+      if (preroll.length > PREROLL_CHUNKS) preroll.shift();
     }
 
     // Drop the oldest audio rather than growing without bound.
@@ -523,6 +608,8 @@ function continuousCapture(connection, userId, channel) {
       if (speaking) {
         speaking = false;
         speechChunks = [];
+        preroll = [];
+        prerollMs = 0;
       }
     }
 
@@ -750,11 +837,42 @@ const SEARCH_KEYWORDS = [
   'where is', 'where are',
   'how much does', 'how much is',
   'is there a',
+  // Unambiguous recency phrases. Each of these is a request for information
+  // that changed after training; none of them occur in ordinary chit-chat.
+  'the latest', 'latest on', 'any news', 'update on', 'headlines',
+  'release date', 'came out', 'coming out',
+  'exchange rate', 'earnings report', 'election',
+  'open right now', 'still open', 'as of now',
 ];
+
+// Bare time words are NOT search triggers on their own.
+//
+// "today", "tonight" and friends are among the most common words in casual
+// speech — "how are you doing today?" is a greeting, not a query, and routing
+// it through Tavily costs a web round trip plus a whole extra tool-calling turn
+// on the LLM for no benefit. They only imply a lookup when paired with a
+// subject whose answer actually moves.
+const TEMPORAL = [
+  'today', 'tonight', 'tomorrow', 'yesterday', 'last night',
+  'this week', 'this month', 'this year', 'right now', 'currently',
+];
+
+const TOPICAL = [
+  'weather', 'forecast', 'temperature', 'rain', 'snow', 'storm',
+  'news', 'happening', 'going on', 'score', 'game', 'match',
+  'price', 'cost', 'stock', 'market', 'open', 'closed', 'schedule',
+  'release', 'launch', 'event', 'traffic', 'flight',
+];
+
+// A four-digit year at or after 2020 is a strong recency signal on its own and
+// cannot be expressed as a substring match.
+const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
 
 function needsWebSearch(query) {
   const lower = query.toLowerCase();
-  return SEARCH_KEYWORDS.some(k => lower.includes(k));
+  if (SEARCH_YEAR_RE.test(lower)) return true;
+  if (SEARCH_KEYWORDS.some(k => lower.includes(k))) return true;
+  return TEMPORAL.some(t => lower.includes(t)) && TOPICAL.some(t => lower.includes(t));
 }
 
 // Removes a leading wake word if Whisper transcribed one. With openWakeWord
@@ -796,7 +914,16 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   const myGeneration = interruptOwnPlayback(userId);
 
   // Fire chime (don't await — let it play while we fetch the LLM response)
-  playSound('./chime.mp3', connection).catch(() => {});
+  // Fire chime (don't await — let it play while we fetch the LLM response).
+  //
+  // Skipped while audio is already playing. playSound() creates its own
+  // AudioPlayer and calls connection.subscribe(), and a VoiceConnection has
+  // exactly one subscription — so an unconditional chime silently detached
+  // whichever sentence was mid-playback. With several people in a channel that
+  // presented as Luna's answers being randomly truncated.
+  if (!currentPlayer) {
+    playSound('./chime.mp3', connection).catch(() => {});
+  }
   const statusMsg = await channel.send('🤔 *Luna is thinking...*').catch(() => null);
 
   // ── Per-response playback ───────────────────────────────────────────────
@@ -859,8 +986,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
   try {
     let firstSentence = true;
-
-    for await (const sentence of getLMStudioResponseStreaming(query)) {
+   for await (const sentence of getLMStudioResponseStreaming(query, userId)) {
       if (!sentence.trim()) continue;
       // Abort only if THIS speaker asked something newer mid-stream.
       if (userGeneration.get(userId) !== myGeneration) break;
@@ -896,10 +1022,6 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
-// ─── Conversation memory ──────────────────────────────────────────────────────
-
-let previousResponseId = null;
-
 // ─── LLM streaming ───────────────────────────────────────────────────────────
 //
 // Yields complete sentences as the LLM generates them.
@@ -911,7 +1033,7 @@ let previousResponseId = null;
 //      fall back to parsing it as a normal response and chunking into
 //      sentences ourselves — still faster than the old single speakResponse call.
 
-async function* getLMStudioResponseStreaming(text) {
+async function* getLMStudioResponseStreaming(text, userId) {
   const useSearch = needsWebSearch(text);
 
   const body = {
@@ -927,8 +1049,9 @@ async function* getLMStudioResponseStreaming(text) {
     }),
   };
 
-  if (previousResponseId) {
-    body.previous_response_id = previousResponseId;
+  const priorId = getConversationId(userId);
+  if (priorId) {
+    body.previous_response_id = priorId;
   } else {
     body.system_prompt = LM_SYSTEM_PROMPT;
   }
@@ -1027,14 +1150,14 @@ async function* getLMStudioResponseStreaming(text) {
 
     const remainder = buffer.trim();
     if (remainder) yield remainder;
-    if (responseId) previousResponseId = responseId;
+    rememberConversation(userId, responseId);
 
   // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
   } else {
     console.log('[LLM] Non-streaming JSON mode (unexpected — LM Studio ignored stream:true)');
     const data = await res.json();
 
-    if (data.response_id) previousResponseId = data.response_id;
+    rememberConversation(userId, data.response_id);
 
     // Extract full reply text from responses API format
     const messageItem = data.output?.filter(o => o.type === 'message').pop();
@@ -1169,7 +1292,7 @@ client.on(Events.VoiceStateUpdate, (oldState, _newState) => {
     playbackQueue      = Promise.resolve();
     currentPlayer      = null;
     currentPlayerUser  = null;
-    previousResponseId = null;
+    conversations.clear();
   }
 });
 
