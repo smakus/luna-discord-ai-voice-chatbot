@@ -8,6 +8,11 @@
 # Now: one Whisper container, small.en, 4 threads. If you still see slow
 # transcription, lower WHISPER_THREADS before adding containers back — the
 # bottleneck is total core contention, not parallelism.
+#
+# ON APPLE SILICON, READ THIS FIRST: Docker Desktop runs a Linux VM with no
+# access to Metal, CoreML or the Neural Engine, so Whisper here is CPU-only and
+# gets a fraction of your cores. `docker-compose.metal.yml` runs Whisper
+# natively on macOS with Metal instead and is substantially faster. See README.
 
 services:
   kokoro:
@@ -16,6 +21,21 @@ services:
     restart: unless-stopped
     ports:
       - "8880:8880"
+    environment:
+      # torch otherwise takes one thread per core and collides with the LLM
+      # mid-response, because TTS for sentence N+1 is prefetched while N plays.
+      - KOKORO_THREADS=2
+      - KOKORO_MAX_CONCURRENCY=2
+    healthcheck:
+      # The server renders a warm-up phrase before binding the port, so a
+      # successful health check means "can answer fast", not merely "process
+      # started". start_period covers the model load.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8880/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
 
   whisper:
     build:
@@ -29,14 +49,29 @@ services:
       - "8081:8080"
     environment:
       - WHISPER_THREADS=4
+    healthcheck:
+      # whisper-server loads the model before it starts serving, so /health
+      # returning 200 is a true readiness signal.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
 
   luna:
     build:
       context: ./Luna
     restart: unless-stopped
     depends_on:
-      - kokoro
-      - whisper
+      # Plain `depends_on` only waits for the container to start, not for the
+      # model to load. Luna would come up first, resolve its LM Studio model,
+      # and then fail the first one or two real requests against a Whisper or
+      # Kokoro that was not listening yet — which looks exactly like a missed
+      # wake word.
+      kokoro:
+        condition: service_healthy
+      whisper:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
