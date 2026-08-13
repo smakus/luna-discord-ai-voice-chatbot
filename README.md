@@ -1,6 +1,6 @@
 # Luna — Discord AI Voice Assistant
 
-Responsibly Vibecoded with Claude. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
+Responsibly coded with supervised help from Claude. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
 Luna is a locally-hosted AI voice assistant for Discord. She listens for her wake word using a neural wake word model, transcribes speech using Whisper, generates responses via LM Studio, and speaks back using Kokoro TTS — all running on your own machine with no cloud AI dependencies.
 
@@ -58,7 +58,7 @@ Key design decisions:
 - A Discord bot token
 - [LM Studio](https://lmstudio.ai) with a loaded model (required regardless of install method)
 - Docker
-- A trained openWakeWord model plus the two shared feature models (see step 2)
+- A trained openWakeWord model (a basic trained version of 'hey luna' is provided, and works reasonably well) plus the two shared feature models (see step 2)
 - **Optional but recommended**: A [Tavily](https://tavily.com) API key (free tier, for web search)
 
 **Before you go further, read [Hardware sizing](#hardware-sizing).** Picking a model that doesn't fit your RAM is by far the most common way to end up with a 25-second voice assistant, and no amount of tuning elsewhere compensates for it.
@@ -82,7 +82,7 @@ openWakeWord is a **three-model chain**, and a trained wake word model is only t
 | ----- | ----- | ------ | ---------- |
 | `melspectrogram.onnx` | 16kHz PCM | 32-bin mel frames | shared, download below |
 | `embedding_model.onnx` | 76 mel frames | 96-dim embedding | shared, download below |
-| `hey_luna.onnx` | 16 embeddings | score 0–1 | **you train this** |
+| `hey_luna.onnx` | 16 embeddings | score 0–1 | **you train this yourself if the provided model isn't good enough** |
 
 Download the two shared models into `Luna-Discord-Bot-Full-Docker/Luna/`:
 
