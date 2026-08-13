@@ -4,8 +4,21 @@ RUN apk add --no-cache cmake make g++ git curl
 
 WORKDIR /whisper
 
-RUN git clone https://github.com/ggerganov/whisper.cpp . && \
-    cmake -B build && cmake --build build --target whisper-server -j4
+# Pinned, not tracking master.
+#
+# `git clone` of the default branch made every rebuild a different build, and
+# the server's CLI has changed across releases (`-fa` gained a `-nfa` partner,
+# `/health` was added). An unpinned clone can turn a working image into one that
+# exits on an unknown argument months after the last code change here. Bump
+# this deliberately.
+#
+# v1.9.2 also enables flash attention by default, which the v1.7.x builds did
+# not — a free encoder speedup on any backend that implements it.
+ARG WHISPER_REF=v1.9.2
+RUN git clone --depth 1 --branch ${WHISPER_REF} \
+      https://github.com/ggerganov/whisper.cpp . && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --target whisper-server -j "$(nproc)"
 
 # Model as a build arg so swapping sizes is a one-line change.
 #
@@ -25,7 +38,11 @@ RUN mkdir -p /opt/whisper/models && \
 EXPOSE 8080
 
 # Threads overridable at runtime; see docker-compose.yml.
+#
+# -nt (no timestamps): Luna reads only the `text` field, and suppressing
+# timestamp tokens removes roughly one decoded token per word from a decode
+# that is already the latency-critical path.
 CMD ["sh", "-c", "./build/bin/whisper-server \
      -m /opt/whisper/models/${WHISPER_MODEL} \
      --host 0.0.0.0 --port 8080 \
-     -t ${WHISPER_THREADS:-4} -bs 1 -bo 1"]
+     -t ${WHISPER_THREADS:-4} -bs 1 -bo 1 -nt"]
