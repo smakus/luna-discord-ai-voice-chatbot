@@ -60,7 +60,7 @@ Key design decisions:
 - A Discord bot token
 - [LM Studio](https://lmstudio.ai) with a loaded model (required regardless of install method)
 - Docker
-- A trained openWakeWord model (a basic trained version of 'hey luna' is provided, and works reasonably well) plus the two shared feature models (see step 2)
+- **Optional**: A trained openWakeWord model (a basic trained version of 'hey luna' is provided, and works reasonably well) plus the two shared feature models (see step 2)
 - **Optional but recommended**: A [Tavily](https://tavily.com) API key (free tier, for web search)
 
 **Before you go further, read [Hardware sizing](#hardware-sizing).** Picking a model that doesn't fit your RAM is by far the most common way to end up with a 25-second voice assistant, and no amount of tuning elsewhere compensates for it.
