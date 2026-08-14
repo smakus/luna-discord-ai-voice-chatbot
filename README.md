@@ -1,6 +1,8 @@
 # Luna — Discord AI Voice Assistant
 
-Responsibly coded with supervised help from Claude. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
+Want a real AI voice chatbot in your Discord voice channel ready to answer questions or give advice (for entertainment purposes only)?  Then Luna is the AI assistant for you.
+
+Responsibly coded with assitance from Claude for some audio conversion heavy lifting. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
 Luna is a locally-hosted AI voice assistant for Discord. She listens for her wake word using a neural wake word model, transcribes speech using Whisper, generates responses via LM Studio, and speaks back using Kokoro TTS — all running on your own machine with no cloud AI dependencies.
 
