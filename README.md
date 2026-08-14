@@ -4,7 +4,7 @@ Want a real AI voice chatbot in your Discord audio channel ready to answer quest
 
 Responsibly coded with assitance from Claude for some audio conversion heavy lifting. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
-Luna is a locally-hosted AI voice assistant for Discord. She listens for her wake word using a neural wake word model, transcribes speech using Whisper, generates responses via LM Studio, and speaks back using Kokoro TTS — all running on your own machine with no cloud AI dependencies.
+Luna is a locally-hosted AI voice assistant for Discord. She listens for her wake word using a neural wake word model, transcribes speech using Whisper, generates responses via LM Studio, and speaks back using Kokoro TTS — all running on your own machine with no cloud AI dependencies.  Never run out of tokens again, or pay a single cent for api services (unless you get crazy with internet searches via the optional Tavily integration).
 
 ## Features
 
