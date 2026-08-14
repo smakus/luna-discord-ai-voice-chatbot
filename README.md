@@ -1,6 +1,6 @@
 # Luna — Discord AI Voice Assistant
 
-Want a real AI voice chatbot in your Discord voice channel ready to answer questions or give advice (for entertainment purposes only)?  Then Luna is the AI assistant for you.
+Want a real AI voice chatbot in your Discord audio channel ready to answer questions or give advice (for entertainment purposes only)?  Then Luna is the AI voice assistant for you!
 
 Responsibly coded with assitance from Claude for some audio conversion heavy lifting. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
