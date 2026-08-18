@@ -94,6 +94,11 @@ const LM_SYSTEM_PROMPT =
   'access to the internet via a web search tool and should use it whenever asked ' +
   'about current events, prices, weather, news, scores, or anything time-sensitive.';
 
+  // Optional personality line, injected on a fraction of requests. Keep the base
+// prompt above free of "sometimes"/"occasionally" instructions — see below.
+const LM_FLAVOR_PROMPT = process.env.LM_FLAVOR_PROMPT || '';
+const LM_FLAVOR_CHANCE = parseFloat(process.env.LM_FLAVOR_CHANCE || '0.15');
+
 const KOKORO_URL   = process.env.KOKORO_URL;
 const KOKORO_VOICE = process.env.KOKORO_VOICE;
 
@@ -1049,12 +1054,28 @@ async function* getLMStudioResponseStreaming(text, userId) {
     }),
   };
 
+  // Sent on EVERY request, not only the first of a chain.
+  //
+  // LM Studio stores the thread server-side, so in principle a system prompt
+  // set on turn 1 persists through previous_response_id. In practice
+  // instruction adherence decays as the prompt recedes behind a growing
+  // conversation, and nothing here can observe whether the stored thread still
+  // carries it. Re-sending costs a few tokens of prefill and removes the doubt.
+    // Personality lines are injected probabilistically, not written into the
+  // base prompt.
+  //
+  // A model cannot follow "occasionally do X". Every turn is evaluated
+  // independently, with no memory of how often it has already done it, so
+  // "occasionally" reliably becomes "every single time". Deciding here — and
+  // simply omitting the line most of the time — is the only way to get a rate
+  // that is actually a rate.
+  const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE
+    ? ' ' + LM_FLAVOR_PROMPT
+    : '';
+  body.system_prompt = LM_SYSTEM_PROMPT + flavor;
+
   const priorId = getConversationId(userId);
-  if (priorId) {
-    body.previous_response_id = priorId;
-  } else {
-    body.system_prompt = LM_SYSTEM_PROMPT;
-  }
+  if (priorId) body.previous_response_id = priorId;
 
   console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch}`);
 
