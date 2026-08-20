@@ -890,7 +890,12 @@ function stripWakeWord(query) {
 function extractSmakbotCommand(query) {
   const after = stripWakeWord(query);
   const match = after.match(/^play(?:\s+(?:the\s+)?(?:song|music))?[,.]?\s+(.+)/i);
-  return match ? match[1].trim().replace(/[,.]+$/, '') : null;
+  if (!match) return null;
+  return match[1]
+    .trim()
+    .replace(/[,.]+$/, '')
+    .replace(/^["'"'`]+|["'"'`]+$/g, '')  // strip surrounding quote characters
+    .trim();
 }
 
 // ─── Query handler ────────────────────────────────────────────────────────────
@@ -898,21 +903,31 @@ function extractSmakbotCommand(query) {
 async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
   // Check for smakbot music command first
   const songRequest = extractSmakbotCommand(query);
-  if (songRequest) {
-    console.log(`Smakbot command: !play ${songRequest}`);
-    await channel.send(`!play ${songRequest}`).catch(err =>
-      console.error('Failed to send play music command:', err.message)
+if (songRequest) {
+  console.log(`Smakbot command: !play ${songRequest}`);
+
+  const musicBotPresent = activeVoiceChannel?.members?.some(
+    m => m.user.username.toLowerCase().includes('smakbot')
+  );
+
+  if (!musicBotPresent) {
+    console.log('smakbot not in channel — summoning first');
+    await channel.send('!summon').catch(err =>
+      console.error('Failed to send summon command:', err.message)
     );
-    // interruptOwnPlayback, not nextGeneration: the latter invalidates pending
-    // sentences but leaves the one currently playing, so an old answer talks
-    // over "Okay, playing X."
-    const musicGeneration = interruptOwnPlayback(userId);
-    queuePlayback(async () => {
-      const pt = await fetchTTS(`Okay, playing ${songRequest}.`);
-      if (pt) await playTTS(pt, connection);
-    }, userId, musicGeneration);
-    return;
   }
+
+  await channel.send(`!play ${songRequest}`).catch(err =>
+    console.error('Failed to send play music command:', err.message)
+  );
+
+  const musicGeneration = interruptOwnPlayback(userId);
+  queuePlayback(async () => {
+    const pt = await fetchTTS(`Okay, playing ${songRequest}.`);
+    if (pt) await playTTS(pt, connection);
+  }, userId, musicGeneration);
+  return;
+}
 
   // Supersede only this speaker's own pending response. Anyone else's queued
   // sentences survive and play in turn.
