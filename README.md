@@ -158,6 +158,8 @@ ENERGY_THRESHOLD=175
 
 # Audio kept from before the energy gate opens, so quiet word onsets survive.
 PREROLL_MS=320
+
+#see the example .env file for more settings!
 ```
 
 > **Note:** If running outside Docker, replace `host.docker.internal` with `127.0.0.1` and `kokoro` with `localhost`. Under Docker Compose, `LM_STUDIO_URL`, `KOKORO_URL` and `WHISPER_SERVER_URLS` are also set in the compose file, and those values take precedence over `.env`.
