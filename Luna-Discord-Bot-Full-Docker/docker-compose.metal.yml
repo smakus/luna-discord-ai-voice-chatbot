@@ -1,44 +1,34 @@
-# Apple Silicon setup: Whisper runs natively on macOS with Metal; Kokoro and
-# Luna stay in containers.
+# Apple Silicon setup: Whisper and Kokoro both run natively on macOS with
+# Metal; only Luna stays in a container.
 #
 #   Terminal 1:  ./scripts/whisper-metal.sh
-#   Terminal 2:  docker compose -f docker-compose.metal.yml up --build
+#   Terminal 2:  ./scripts/kokoro-metal.sh
+#   Terminal 3:  docker compose -f docker-compose.metal.yml up --build
 #
 # This is a standalone file rather than a `-f` override because the Whisper
-# service must be absent entirely, and compose merges rather than removes
-# services when overlaying.
+# and Kokoro services must be absent entirely, and compose merges rather than
+# removes services when overlaying.
+#
+# Kokoro used to run here too, CPU-only and capped at KOKORO_THREADS=2 /
+# KOKORO_MAX_CONCURRENCY=2 so it wouldn't starve Whisper and LM Studio for
+# cores — the same Docker-Desktop-on-Apple-Silicon limitation that motivated
+# pulling Whisper out below applies identically to Kokoro's torch backend.
+# Moving it to scripts/kokoro-metal.sh gets it onto the GPU via MPS and off
+# the CPU entirely, which is what made that throttle necessary in the first
+# place.
 
 services:
-  kokoro:
-    build:
-      context: ./Kokoro
-    restart: unless-stopped
-    ports:
-      - "8880:8880"
-    environment:
-      - KOKORO_THREADS=2
-      - KOKORO_MAX_CONCURRENCY=2
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8880/health').read()"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-
   luna:
     build:
       context: ./Luna
     restart: unless-stopped
-    depends_on:
-      kokoro:
-        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
       - ./Luna/.env
     environment:
       - LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
-      - KOKORO_URL=http://kokoro:8880/v1/audio/speech
+      # The host-native Metal Kokoro from scripts/kokoro-metal.sh.
+      - KOKORO_URL=http://host.docker.internal:8880/v1/audio/speech
       # The host-native Metal Whisper from scripts/whisper-metal.sh.
       - WHISPER_SERVER_URLS=http://host.docker.internal:8081/inference
