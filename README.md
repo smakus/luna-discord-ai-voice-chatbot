@@ -16,7 +16,7 @@ Luna is a locally-hosted AI voice assistant for Discord. She listens for her wak
 - ⚡ Low-latency streaming pipeline — LLM response streams sentence-by-sentence directly into TTS, so Luna starts speaking before she's finished generating
 - 🔁 Interruptible — say "hey Luna" at any time to cut off *your own* answer, without interrupting someone else's
 - 🗣️ Responses queue — with several people in a channel, a new question no longer cancels someone else's answer
-- 🍎 Metal-accelerated Whisper on Apple Silicon
+- 🍎 Metal-accelerated Whisper and Kokoro TTS on Apple Silicon
 - 🔇 Configurable ignored users (e.g. music bots)
 
 ---
@@ -187,9 +187,11 @@ Two supported layouts. Pick one based on your hardware.
 
 #### Apple Silicon (recommended on any M-series Mac)
 
-Whisper runs natively with Metal; Kokoro and Luna run in containers.
+Whisper and Kokoro both run natively with Metal; only Luna runs in a container.
 
-Docker Desktop on Apple Silicon runs a Linux VM with no access to Metal, CoreML or the Neural Engine — it gets a slice of your CPU cores and nothing else. Whisper's encoder is exactly the workload the GPU exists for, so running it in a container on this hardware gives up the machine's main advantage.
+Docker Desktop on Apple Silicon runs a Linux VM with no access to Metal, CoreML or the Neural Engine — it gets a slice of your CPU cores and nothing else. Whisper's encoder and Kokoro's synthesis are exactly the kind of dense matmul workload the GPU exists for, so containerising either one on this hardware gives up the machine's main advantage. For Kokoro specifically, staying in Docker is a double cost: it's stuck on CPU *and* `docker-compose.yml` deliberately throttles it to `KOKORO_THREADS=2` / `KOKORO_MAX_CONCURRENCY=2` so it doesn't starve Whisper and LM Studio for cores. Move it to the GPU via MPS and that throttle stops being necessary — Kokoro isn't competing for CPU cycles at all anymore.
+
+**Terminal 1** — Whisper:
 
 ```bash
 cd Luna-Discord-Bot-Full-Docker
@@ -201,12 +203,29 @@ cd Luna-Discord-Bot-Full-Docker
 
 Requires `cmake` (`brew install cmake`) and the Xcode command line tools (`xcode-select --install`).
 
-Leave that running, and in a second terminal:
+**Terminal 2** — Kokoro:
+
+```bash
+cd Luna-Discord-Bot-Full-Docker
+
+# Creates a venv, installs kokoro + deps, and runs the TTS server with
+# PYTORCH_ENABLE_MPS_FALLBACK=1 so PyTorch dispatches to the GPU. First run
+# takes a few minutes (venv + model download); afterwards it's quick.
+./scripts/kokoro-metal.sh
+```
+
+Requires Homebrew (for `espeak-ng`). kokoro's PyPI releases don't yet support Python 3.13+, so the script hunts your PATH for a 3.10–3.12 interpreter and, failing that, installs `python@3.11` via Homebrew automatically — no manual pyenv juggling needed.
+
+Wait for `Starting Kokoro TTS server on http://localhost:8880` before moving on — that line only prints after the warm-up render completes, so it's your real readiness signal.
+
+**Terminal 3** — everything else:
 
 ```bash
 cd Luna-Discord-Bot-Full-Docker
 docker compose -f docker-compose.metal.yml up --build
 ```
+
+Order matters here in a way it didn't before: with both Whisper and Kokoro pulled out of Compose, Luna has no container-level healthcheck to wait on for either of them. Start terminals 1 and 2 and let each report ready *before* starting terminal 3, or Luna's first request or two will hit a service that isn't listening yet.
 
 #### Linux, or Intel Mac
 
@@ -236,7 +255,14 @@ cd Luna-Discord-Bot-Full-Docker
 ./scripts/whisper-metal.sh
 ```
 
-Terminal 2:
+Terminal 2, once terminal 1 says it's listening:
+
+```bash
+cd Luna-Discord-Bot-Full-Docker
+./scripts/kokoro-metal.sh
+```
+
+Terminal 3, once terminal 2 prints `Starting Kokoro TTS server on http://localhost:8880`:
 
 ```bash
 cd Luna-Discord-Bot-Full-Docker
@@ -252,9 +278,9 @@ docker compose up
 
 Add `--build` to the compose command whenever you've edited a source file.
 
-**Startup takes a minute or two, and that's intentional.** Kokoro renders a warm-up phrase before it reports healthy, and Luna waits for that. Luna then sends a warm-up request to LM Studio so the model's weights are resident before anyone asks a question — otherwise that entire cost lands on whoever speaks first.
+**Startup takes a minute or two, and that's intentional.** On Linux/Intel, Kokoro renders a warm-up phrase before it reports healthy, and Luna waits for that via Compose's healthcheck. On the Apple Silicon Metal path, that warm-up happens in terminal 2 instead — Compose has no visibility into Kokoro at all anymore, which is exactly why terminal 3 has to come last. Either way, Luna also sends a warm-up request to LM Studio so the model's weights are resident before anyone asks a question — otherwise that entire cost lands on whoever speaks first.
 
-A healthy start looks like:
+A healthy start, Linux/Intel path (Compose logs):
 
 ```
 [kokoro] warm — threads=2, concurrency=2, voice=af_heart
@@ -266,19 +292,31 @@ Using LM Studio model: <your-model>
 Ready! Wake phrase: "hey Luna"  •  text command: !luna
 ```
 
-Things to check in that output:
+On the Apple Silicon Metal path, the `[kokoro] warm` line appears in **terminal 2**, not in Compose's output, and looks like this instead:
+
+```
+MPS built:     True
+MPS available: True
+[kokoro] warm — threads=4, concurrency=4, voice=af_heart
+Starting Kokoro TTS server on http://localhost:8880
+```
+
+Confirm both `MPS built` and `MPS available` read `True` before moving to terminal 3 — if `available` is `False`, Kokoro will run on CPU with no error at all, so this is the one line that actually tells you whether Metal is doing anything.
+
+Things to check in the Compose output (terminal 3 on the Metal path):
 
 - **baseline score** is your model scoring pure noise. If it is anywhere near your threshold, the model will false-fire constantly — fix that before debugging anything else.
 - **`[oww] unavailable (...)`** means the models aren't in place and Luna has fallen back to transcript matching. Still functional, just less accurate and more expensive.
 - **`[LLM] warm`** reports how long the first inference took. If that number is tens of seconds, your model is too large for your RAM — see [Hardware sizing](#hardware-sizing).
 
-To shut down: `Ctrl-C`, then `docker compose down` (add `-f docker-compose.metal.yml` on the Metal path), then `Ctrl-C` in the Whisper terminal.
+To shut down: `Ctrl-C`, then `docker compose down` (add `-f docker-compose.metal.yml` on the Metal path), then `Ctrl-C` in the Kokoro terminal, then `Ctrl-C` in the Whisper terminal.
 
 ### Optional: shell aliases
 
 ```bash
 # ~/.zshrc or ~/.bashrc
 alias luna-whisper='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && ./scripts/whisper-metal.sh'
+alias luna-kokoro='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && ./scripts/kokoro-metal.sh'
 alias luna-up='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && docker compose -f docker-compose.metal.yml up'
 ```
 
@@ -312,11 +350,23 @@ alias luna-up='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && docker comp
 
 Rough budget, since the LLM shares the machine with everything else:
 
+**Linux / Intel Mac (everything in Docker):**
+
 | Consumer | Approx |
 | -------- | ------ |
 | OS + apps | ~4 GB |
 | Docker (Kokoro's torch + Luna) | ~3–4 GB |
 | Whisper | ~0.5–1 GB |
+
+**Apple Silicon Metal path (only Luna in Docker):**
+
+| Consumer | Approx |
+| -------- | ------ |
+| OS + apps | ~4 GB |
+| Docker (Luna only) | ~1 GB |
+| Native Whisper + Kokoro | ~1–1.5 GB, plus whatever the Metal backend wires for GPU use |
+
+The Metal path shows up as a smaller number here but isn't free — it trades Docker's CPU-shared RAM for memory the GPU wires directly, which counts against the same unified-memory ceiling described above. It leaves more *budget* for the LLM mainly because Kokoro and Whisper are no longer holding CPU-side allocations at all, not because the work vanished.
 
 Whatever's left is your LLM budget, weights plus KV cache:
 
@@ -398,7 +448,7 @@ Memory is per speaker. Both caps bound prefill: the chain grows with every turn 
 
 ### TTS server
 
-Set in the compose file, not `.env`.
+On Linux/Intel, set these in the compose file, not `.env`.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -406,6 +456,14 @@ Set in the compose file, not `.env`.
 | `KOKORO_MAX_CONCURRENCY` | `2` | Simultaneous syntheses |
 
 torch otherwise takes one thread per core, and because sentence N+1 is prefetched while N plays, that collides with the LLM still generating sentence N+2.
+
+On the Apple Silicon Metal path, Kokoro isn't sharing CPU cores with anything anymore — synthesis runs on the GPU via MPS — so `kokoro-metal.sh` defaults both values higher (`4`/`4`). Override by exporting before running the script:
+
+```bash
+KOKORO_THREADS=6 KOKORO_MAX_CONCURRENCY=6 ./scripts/kokoro-metal.sh
+```
+
+`PYTORCH_ENABLE_MPS_FALLBACK=1` is what actually enables the GPU path — the script sets it for you, so ops without an MPS kernel silently fall back to CPU instead of erroring, rather than needing you to set it by hand.
 
 ### Timeouts
 
@@ -489,7 +547,22 @@ Luna also logs three timings per exchange. Whichever dominates is your bottlenec
 
 **Whisper is slow** — on Apple Silicon, use the Metal path; a containerised Whisper has no GPU access. On Linux, lower `WHISPER_THREADS` before adding containers; the bottleneck is total core contention, not parallelism.
 
-**Kokoro is slow on the first request** — the warm-up failed. Check for `[kokoro] warm` in the logs; the failure message says why.
+**Kokoro is slow, or seems to be eating a CPU core, on Apple Silicon** — same story as Whisper: a containerised Kokoro has no access to Metal at all, and is additionally throttled to `KOKORO_THREADS=2` so it doesn't starve Whisper and LM Studio. Use `./scripts/kokoro-metal.sh` instead — see [Build](#7-build).
+
+**Kokoro is slow on the first request** — the warm-up failed. Check for `[kokoro] warm` in the logs (Compose output on Linux/Intel, terminal 2 on the Metal path); the failure message says why.
+
+**`kokoro-metal.sh` fails with `address already in use` on port 8880** — something else already has that port. Almost always either a dockerized `kokoro` container left over from before you switched to the Metal path, or a second `kokoro-metal.sh` already running in another tab. Check both:
+
+```bash
+lsof -i :8880
+docker compose -f docker-compose.metal.yml ps
+```
+
+`docker compose down` (or kill the stray process) and try again.
+
+**`kokoro-metal.sh` fails to install `kokoro`, citing a Python version requirement** — kokoro's PyPI releases require Python 3.10–3.12; if your default `python3` is 3.13+, `pip install` will fail with no matching distribution. The script handles this itself by searching for a compatible interpreter and installing `python@3.11` via Homebrew if it can't find one — if you still hit this, delete the stale venv and rerun: `rm -rf ~/.luna/kokoro-venv && ./scripts/kokoro-metal.sh`.
+
+**MPS available: False when starting Kokoro** — Metal acceleration requires macOS 12.3+ on Apple Silicon. If both conditions are met and it's still `False`, Kokoro will silently run on CPU with no error — check your macOS version before assuming something else is wrong.
 
 **LM Studio not reachable from Docker** — ensure its server is bound to `0.0.0.0`, not just `127.0.0.1`.
 
