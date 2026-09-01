@@ -349,6 +349,12 @@ function hasEnergy(chunk) {
 // Live view of every active capture, for the health heartbeat below.
 const captureStates = new Map();
 
+// Learned audio level per speaker, keyed by user ID. Survives capture restarts,
+// which happen on every 60 s idle gap — without this, AGC re-learns each
+// speaker's level from scratch while they are saying the wake phrase.
+// A few floats per user; never cleared.
+const userGainState = new Map();
+
 // Every 30 s, report enough per-speaker state to tell apart the three ways this
 // can silently stop working: audio stopped arriving, the detector wedged, or
 // `flushing` got stuck holding the gate shut.
@@ -357,8 +363,11 @@ setInterval(() => {
 
   const now = Date.now();
   const parts = [];
-  for (const [uid, s] of captureStates) {
+    for (const [uid, s] of captureStates) {
     const ws = s.wakeStream;
+    // Snapshot here too, not only on close: a crash or an ungraceful stream
+    // teardown would otherwise discard everything learned about this speaker.
+    if (ws) userGainState.set(uid, ws.exportGainState());
     parts.push(
       `${uid.slice(-5)}[` +
       `audio ${((now - s.lastData) / 1000).toFixed(0)}s ago, ` +
@@ -406,6 +415,7 @@ function continuousCapture(connection, userId, channel) {
         triggerFrames: OWW_TRIGGER_FRAMES,
         refractoryMs:  OWW_REFRACTORY_MS,
         gain:          OWW_GAIN,
+        gainState:     userGainState.get(userId) || null,
         label:         userId,
         onDetect: (score, at) => {
           lastWakeAt = at;
@@ -632,11 +642,14 @@ function continuousCapture(connection, userId, channel) {
     }
   }, 100);
 
-  audioStream.once('close', () => {
+    audioStream.once('close', () => {
     console.log(`[${userId}] capture stream closed — will resume on next speech`);
     clearInterval(dataWatchdog);
     if (silenceTimer) clearTimeout(silenceTimer);
-    if (wakeStream) wakeStream.close();
+    if (wakeStream) {
+      userGainState.set(userId, wakeStream.exportGainState());
+      wakeStream.close();
+    }
     captureStates.delete(userId);
     listeningUsers.delete(userId);
     // Stream closed — speaking.start will re-trigger continuousCapture next time user speaks
