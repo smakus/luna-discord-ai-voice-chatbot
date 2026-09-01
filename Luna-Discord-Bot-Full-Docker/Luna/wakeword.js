@@ -84,6 +84,13 @@ const AGC_NOISE_FLOOR  = 60;     // below this, assume silence and don't amplify
 const AGC_SMOOTHING    = 0.1;    // EMA weight; low = slow gain changes, less pumping
 const AGC_PEAK_CEILING = 29000;  // clipped audio is worse for the classifier than quiet audio
 
+// Cold-start guard. Until this many speech chunks have been measured, a stream
+// with no restored history is capped conservatively — a single quiet onset
+// chunk would otherwise compute a gain near AGC_MAX_GAIN and blast the opening
+// word, which is always the wake phrase.
+const AGC_WARMUP_CHUNKS   = 3;
+const AGC_WARMUP_MAX_GAIN = 3;
+
 // ─── 48 kHz -> 16 kHz decimator ──────────────────────────────────────────────
 //
 // Naive "take every 3rd sample" decimation aliases everything above 8 kHz back
@@ -297,6 +304,7 @@ class WakeWordStream {
     inputRate        = 48000, // 48000 = decimate (Discord); 16000 = passthrough
     seeded           = true,  // internal: false only for the engine's seed pass
     gain             = 'auto', // 'auto' | 'off' | a fixed multiplier
+    gainState        = null,  // { smoothedRms, smoothedPeak, gainSamples } from a prior stream
   } = {}) {
     this.engine        = engine;
     this.threshold     = threshold;
@@ -346,13 +354,18 @@ class WakeWordStream {
     this.dropped      = 0;
     this.lastDropWarn = 0;
 
-    // Gain control.
+     // Gain control.
+    //
+    // State is restored from the caller when this speaker has been heard before.
+    // Without it every capture restart re-learns the level from scratch, and the
+    // wake phrase is spoken during that convergence — see AGC_WARMUP_CHUNKS.
     this.gainMode     = gain;
     this.fixedGain    = typeof gain === 'number' ? gain : parseFloat(gain);
-    this.smoothedRms  = 0;
-    this.smoothedPeak = 0;
+    this.smoothedRms  = gainState ? gainState.smoothedRms  : 0;
+    this.smoothedPeak = gainState ? gainState.smoothedPeak : 0;
+    this.gainSamples  = gainState ? gainState.gainSamples  : 0;
     this.lastGain     = 1;
-    this.lastRms      = 0;
+    this.lastRms      = this.smoothedRms;
 
     // Highest score since the last read. Answers the question debug-score
     // logging cannot: when nothing is logged, was the model scoring 0.25 and
@@ -405,6 +418,17 @@ class WakeWordStream {
     const p = this.healthPeak;
     this.healthPeak = 0;
     return p;
+  }
+
+  // Hand the learned level back to the caller so the next stream for this
+  // speaker starts warm. Mic levels are a property of the person, not of the
+  // capture session.
+  exportGainState() {
+    return {
+      smoothedRms:  this.smoothedRms,
+      smoothedPeak: this.smoothedPeak,
+      gainSamples:  this.gainSamples,
+    };
   }
 
   // Accepts a Buffer of signed 16-bit LE PCM, mono, at `inputRate`
@@ -501,14 +525,24 @@ class WakeWordStream {
       const a = v < 0 ? -v : v;
       if (a > peak) peak = a;
     }
-    const rms = Math.sqrt(sum / chunk.length);
+        const rms = Math.sqrt(sum / chunk.length);
 
-    // Smooth across chunks so gain drifts slowly. An abrupt per-chunk change
-    // would create discontinuities inside the 1760-sample mel window, which
-    // spans this chunk plus the tail of the previous one.
-    this.smoothedRms = this.smoothedRms === 0
-      ? rms
-      : this.smoothedRms * (1 - AGC_SMOOTHING) + rms * AGC_SMOOTHING;
+    // Only speech updates the level estimate. Including near-silence would drag
+    // it down and inflate the gain applied when speech resumes.
+    if (rms >= AGC_NOISE_FLOOR) {
+      this.gainSamples++;
+
+      // Bias-corrected EMA: a true running mean while the sample count is low,
+      // decaying into a fixed-weight EMA once 1/n drops below AGC_SMOOTHING.
+      // A plain EMA seeded at the quiet onset of speech needs ~12 chunks (1 s)
+      // to converge, and over-amplifies by ~2x for that entire window — which
+      // is precisely when the wake phrase is being spoken.
+      const alpha = Math.max(AGC_SMOOTHING, 1 / this.gainSamples);
+
+      this.smoothedRms = this.smoothedRms === 0
+        ? rms
+        : this.smoothedRms * (1 - alpha) + rms * alpha;
+    }
 
     // Fast attack, slow release — react instantly to a loud transient, decay
     // gradually, so gain never spikes into clipping on a plosive.
@@ -529,9 +563,14 @@ class WakeWordStream {
       gain = AGC_TARGET_RMS / this.smoothedRms;
     }
 
-    // Cap so peaks stay below the clipping ceiling.
+     // Cap so peaks stay below the clipping ceiling.
     if (this.smoothedPeak > 0) {
       gain = Math.min(gain, AGC_PEAK_CEILING / this.smoothedPeak);
+    }
+
+    // Cold start: too few measurements to trust the estimate yet.
+    if (this.gainSamples < AGC_WARMUP_CHUNKS) {
+      gain = Math.min(gain, AGC_WARMUP_MAX_GAIN);
     }
 
     gain = Math.min(Math.max(gain, 1), AGC_MAX_GAIN);
