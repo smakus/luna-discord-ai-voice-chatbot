@@ -95,7 +95,7 @@ curl -LO https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embed
 ls -la *.onnx     # both should be ~1MB+, not a few KB
 ```
 
-Train your own wake word model with the official [Google Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing) — about an hour, fully synthetic training data, no recording required. Use the phrase **"hey luna"**, export **ONNX**, and save it as `Luna/hey_luna.onnx`.
+Train your own wake word model with the official [Google Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing) — about an hour, fully synthetic training data, no recording required. Or search [OpenWakeWord's Library](https://openwakeword.com/library) for a pre-trained phrase.  Use the phrase **"hey luna"**, export **ONNX**, and save it as `Luna/hey_luna.onnx`.
 
 > **Use a multi-syllable phrase.** A single-word "luna" trains poorly — two syllables of common phonemes with no distinctive onset. Every official openWakeWord model is 3–4 syllables (`hey_jarvis`, `hey_mycroft`, `alexa`) for exactly this reason.
 
