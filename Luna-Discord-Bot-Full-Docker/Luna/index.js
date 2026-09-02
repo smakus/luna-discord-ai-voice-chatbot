@@ -917,6 +917,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // Check for smakbot music command first
   const songRequest = extractSmakbotCommand(query);
 if (songRequest) {
+  playSound('./chime.mp3', connection).catch(() => {});
   console.log(`Smakbot command: !play ${songRequest}`);
 
   const musicBotPresent = activeVoiceChannel?.members?.some(
