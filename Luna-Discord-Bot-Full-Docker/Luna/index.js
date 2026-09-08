@@ -958,7 +958,15 @@ if (songRequest) {
   if (!currentPlayer) {
     playSound('./chime.mp3', connection).catch(() => {});
   }
-  const statusMsg = await channel.send('🤔 *Luna is thinking...*').catch(() => null);
+  // Same decision the LLM call will use — computed here so the status message
+  // can say which mode Luna is in, then passed down so the two cannot drift.
+  const useSearch = needsWebSearch(query);
+
+  const statusMsg = await channel.send(
+    useSearch
+      ? '🔍 *Luna is searching the web...*'
+      : '🤔 *Luna is thinking...*'
+  ).catch(() => null);
 
   // ── Per-response playback ───────────────────────────────────────────────
   //
@@ -1020,7 +1028,7 @@ if (songRequest) {
 
   try {
     let firstSentence = true;
-   for await (const sentence of getLMStudioResponseStreaming(query, userId)) {
+   for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch)) {
       if (!sentence.trim()) continue;
       // Abort only if THIS speaker asked something newer mid-stream.
       if (userGeneration.get(userId) !== myGeneration) break;
@@ -1067,9 +1075,7 @@ if (songRequest) {
 //      fall back to parsing it as a normal response and chunking into
 //      sentences ourselves — still faster than the old single speakResponse call.
 
-async function* getLMStudioResponseStreaming(text, userId) {
-  const useSearch = needsWebSearch(text);
-
+async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text)) {
   const body = {
     model: lmStudioModel,
     input: text,
