@@ -303,7 +303,8 @@ client.on(Events.MessageCreate, async message => {
     connection.on(VoiceConnectionStatus.Ready, () => {
       message.reply(
         `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
-        `Also, you can say "${WAKE_LABEL}, play song ___" to play music.`
+        `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
+        `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
       );
       activeConnection   = connection;
       activeVoiceChannel = channel;
@@ -900,54 +901,121 @@ function stripWakeWord(query) {
   return query.replace(WAKE_RE, '').trim();
 }
 
+// ─── Smakbot commands ─────────────────────────────────────────────────────────
+//
+// Spoken form → text command posted in the channel. Tried top-down, so
+// argument-taking patterns must precede bare verbs.
+//
+// Every pattern is anchored at both ends against the wake-stripped transcript.
+// The start anchor stops "I'll stop by later" being a command; the end anchor
+// stops "skip the intro of that song you played" from silently becoming !skip
+// instead of reaching the LLM.
+//
+// The trailing [\s,.!?]* is load-bearing: Whisper punctuates single-word
+// utterances, so a spoken "skip" arrives as "Skip." and matches nothing
+// without it.
+const SMAKBOT_COMMANDS = [
+  {
+    name:        'play',
+    pattern:     /^play(?:\s+(?:the\s+)?(?:song|music|track))?[,.]?\s+(.+)$/i,
+    requiresArg: true,
+    build:       arg => `!play ${arg}`,
+    ack:         arg => `Okay, playing ${arg}.`,
+    // Only play summons. !skip and !stop with no music bot in the channel are
+    // no-ops, and dragging smakbot in to receive them would be surprising.
+    summon:      true,
+  },
+  {
+    name:    'skip',
+    pattern: /^skip(?:\s+(?:this|that|the|it))?(?:\s+(?:song|track|one))?[\s,.!?]*$/i,
+    build:   () => '!skip',
+    ack:     () => 'Skipping.',
+  },
+  {
+    name:    'stop',
+    pattern: /^stop(?:\s+(?:the|this|that))?(?:\s+(?:song|music|track|playing))?[\s,.!?]*$/i,
+    build:   () => '!stop',
+    // Set to () => null if you'd rather "stop" produce silence — some people
+    // say "hey Luna, stop" meaning "stop talking", and answering them with
+    // speech reads as ignoring them.
+    ack:     () => 'Okay, stopping.',
+  },
+];
+
+// Returns { build, ack, summon, arg } or null. Wake phrase is normally already
+// stripped upstream; stripWakeWord here is a no-op safety net for the path
+// where openWakeWord gated on audio and Whisper still transcribed the phrase.
 function extractSmakbotCommand(query) {
   const after = stripWakeWord(query);
-  const match = after.match(/^play(?:\s+(?:the\s+)?(?:song|music))?[,.]?\s+(.+)/i);
-  if (!match) return null;
-  return match[1]
-    .trim()
-    .replace(/[,.]+$/, '')
-    .replace(/^["'"'`]+|["'"'`]+$/g, '')  // strip surrounding quote characters
-    .trim();
+
+  for (const cmd of SMAKBOT_COMMANDS) {
+    const match = after.match(cmd.pattern);
+    if (!match) continue;
+
+    const arg = match[1]
+      ? match[1]
+          .trim()
+          .replace(/[,.!?]+$/, '')
+          .replace(/^["'"'`]+|["'"'`]+$/g, '')  // strip surrounding quote characters
+          .trim()
+      : null;
+
+    // A bare "play" with nothing after it is a conversational fragment, not a
+    // command — fall through and let the LLM have it.
+    if (cmd.requiresArg && !arg) continue;
+
+    return { ...cmd, arg };
+  }
+  return null;
 }
 
 // ─── Query handler ────────────────────────────────────────────────────────────
 
 async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
-  // Check for smakbot music command first
-  const songRequest = extractSmakbotCommand(query);
-if (songRequest) {
-  playSound('./chime.mp3', connection).catch(() => {});
-  console.log(`Smakbot command: !play ${songRequest}`);
+  // Check for smakbot commands first
+  const musicCommand = extractSmakbotCommand(query);
+  if (musicCommand) {
+    // Supersede this speaker's own pending audio BEFORE the chime. A
+    // VoiceConnection has exactly one subscription, and playSound() creates its
+    // own player and subscribes — so an unconditional chime detaches whatever
+    // sentence is mid-playback, including another speaker's.
+    const musicGeneration = interruptOwnPlayback(userId);
+    if (!currentPlayer) {
+      playSound('./chime.mp3', connection).catch(() => {});
+    }
 
-  const musicBotPresent = activeVoiceChannel?.members?.some(
-    m => m.user.username.toLowerCase().includes('smakbot')
-  );
+    const commandText = musicCommand.build(musicCommand.arg);
+    console.log(`Smakbot command: ${commandText}`);
 
-  if (!musicBotPresent) {
-    console.log('smakbot not in channel — summoning first');
-    await channel.send('!summon').catch(err =>
-      console.error('Failed to send summon command:', err.message)
+    const musicBotPresent = activeVoiceChannel?.members?.some(
+      m => m.user.username.toLowerCase().includes('smakbot')
     );
+
+    if (!musicBotPresent && musicCommand.summon) {
+      console.log('smakbot not in channel — summoning first');
+      await channel.send('!summon').catch(err =>
+        console.error('Failed to send summon command:', err.message)
+      );
+    }
+
+    await channel.send(commandText).catch(err =>
+      console.error(`Failed to send ${commandText}:`, err.message)
+    );
+
+    const ack = musicCommand.ack(musicCommand.arg);
+    if (ack) {
+      queuePlayback(async () => {
+        const pt = await fetchTTS(ack);
+        if (pt) await playTTS(pt, connection);
+      }, userId, musicGeneration);
+    }
+    return;
   }
-
-  await channel.send(`!play ${songRequest}`).catch(err =>
-    console.error('Failed to send play music command:', err.message)
-  );
-
-  const musicGeneration = interruptOwnPlayback(userId);
-  queuePlayback(async () => {
-    const pt = await fetchTTS(`Okay, playing ${songRequest}.`);
-    if (pt) await playTTS(pt, connection);
-  }, userId, musicGeneration);
-  return;
-}
 
   // Supersede only this speaker's own pending response. Anyone else's queued
   // sentences survive and play in turn.
   const myGeneration = interruptOwnPlayback(userId);
 
-  // Fire chime (don't await — let it play while we fetch the LLM response)
   // Fire chime (don't await — let it play while we fetch the LLM response).
   //
   // Skipped while audio is already playing. playSound() creates its own
