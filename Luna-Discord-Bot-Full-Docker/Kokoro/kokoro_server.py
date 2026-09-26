@@ -15,10 +15,13 @@ Environment:
   KOKORO_DEVICE           auto (default: cuda > mps > cpu), or cuda / mps / cpu
 """
 import asyncio
+import importlib.metadata
 import io
 import os
 import queue
+import shutil
 import struct
+import tempfile
 import threading
 
 import numpy as np
@@ -68,6 +71,60 @@ def _pick_device() -> str:
 
 
 DEVICE = _pick_device()
+
+
+# Well under libespeak-ng's 160-byte path buffer: it also appends subpaths
+# like "/voices/..." to this. 136 chars is known to work; 166 is known to fail.
+_ESPEAK_MAX_DATA_PATH = 140
+
+
+def _ensure_short_espeak_data_path() -> None:
+    """
+    Keep espeak-ng's data path short enough for libespeak-ng to accept.
+
+    misaki points espeak at the espeak-ng-data bundled inside the
+    espeakng_loader wheel, i.e. deep inside the venv. libespeak-ng copies that
+    path into a fixed 160-byte buffer; if it does not fit it silently falls
+    back to the path compiled in on the wheel's build machine, and the first
+    synthesis dies with
+
+        Error processing file '/Users/runner/work/espeakng-loader/.../phontab'
+
+    so a venv nested a few directories too deep breaks Kokoro outright. When
+    the bundled path is too long, copy the data (~19 MB, once per version)
+    under the temp dir and point espeak there instead.
+    """
+    import espeakng_loader
+    import misaki.espeak  # noqa: F401 — sets the default path we override
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+    src = espeakng_loader.get_data_path()
+    if len(src) <= _ESPEAK_MAX_DATA_PATH:
+        return
+
+    # Versioned, so upgrading espeakng-loader never reuses stale data.
+    version = importlib.metadata.version("espeakng-loader")
+    dst = os.path.join(tempfile.gettempdir(), f"kokoro-espeak-ng-data-{version}")
+    if len(dst) > _ESPEAK_MAX_DATA_PATH:
+        dst = f"/tmp/kokoro-espeak-ng-data-{version}"
+
+    if not os.path.isdir(dst):
+        # Copy beside the target and rename, so an interrupted copy is never
+        # mistaken for a complete one on the next start.
+        staging = tempfile.mkdtemp(dir=os.path.dirname(dst))
+        shutil.copytree(src, os.path.join(staging, "data"))
+        try:
+            os.rename(os.path.join(staging, "data"), dst)
+        except OSError:
+            pass  # another process won the race; its copy is complete
+        shutil.rmtree(staging, ignore_errors=True)
+
+    EspeakWrapper.set_data_path(dst)
+    print(f"[kokoro] espeak-ng data path is {len(src)} chars (limit "
+          f"{_ESPEAK_MAX_DATA_PATH}); using copy at {dst}", flush=True)
+
+
+_ensure_short_espeak_data_path()
 
 # 'a' = American English, 'b' = British English
 pipeline = KPipeline(lang_code='a', device=DEVICE)

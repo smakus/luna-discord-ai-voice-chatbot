@@ -74,9 +74,23 @@ if [[ "$CURRENT_REF" != "$WHISPER_REF" ]]; then
   rm -rf build
 fi
 
+# An existing binary is only reusable if it can actually start. Builds made
+# before BUILD_SHARED_LIBS=OFF below link libwhisper/libggml via an absolute
+# rpath into the build tree, so moving WHISPER_DIR left a binary that dyld
+# aborts on ("Library not loaded: @rpath/libwhisper.1.dylib") — and the
+# existence check alone reused it forever.
+# Subshell with its own redirect: otherwise bash reports the dyld abort itself
+# ("Abort trap: 6"), which reads like a failure of this script.
+if [[ -x build/bin/whisper-server ]] && ! (build/bin/whisper-server --help) >/dev/null 2>&1; then
+  echo "==> Existing whisper-server build cannot start (moved since it was built?) — rebuilding"
+  rm -rf build
+fi
+
 if [[ ! -x build/bin/whisper-server ]]; then
   echo "==> Building whisper-server with Metal"
-  cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+  # Static libraries: the binary then has no dylib dependencies on the build
+  # tree and keeps working if WHISPER_DIR is moved or renamed.
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DBUILD_SHARED_LIBS=OFF
   cmake --build build --target whisper-server -j "$(sysctl -n hw.ncpu)"
 fi
 
