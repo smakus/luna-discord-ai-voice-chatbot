@@ -14,9 +14,10 @@
 # for CPU cycles — a limit that only exists because Kokoro is stuck sharing
 # CPU cores in the first place.
 #
-# Running kokoro_server.py natively with PYTORCH_ENABLE_MPS_FALLBACK=1 lets
-# PyTorch dispatch to the GPU via MPS (the handful of ops without an MPS
-# kernel silently fall back to CPU instead of erroring). That takes Kokoro
+# Running kokoro_server.py natively lets it load the model on the GPU via MPS
+# (kokoro_server.py selects the device itself — kokoro 0.9.4 never picks MPS
+# on its own). PYTORCH_ENABLE_MPS_FALLBACK=1 makes the handful of ops without
+# an MPS kernel fall back to CPU instead of erroring. That takes Kokoro
 # off the CPU entirely, freeing those cores back up for Whisper and the
 # wake-word detector, on top of whatever raw synthesis speedup MPS gives.
 #
@@ -28,8 +29,7 @@
 #   ./scripts/kokoro-metal.sh                     # first run: venv + deps
 #   KOKORO_VOICE=af_sarah ./scripts/kokoro-metal.sh
 #
-# Then, in another terminal, with docker-compose.metal.yml's kokoro service
-# removed and KOKORO_URL pointed at host.docker.internal (see README):
+# Then, in another terminal:
 #
 #   docker compose -f docker-compose.metal.yml up --build
 #
@@ -116,6 +116,8 @@ if not available:
     print('MPS is not available on this machine — Kokoro will run on CPU.')
     print('Check that you are on macOS 12.3+ with an Apple Silicon chip.')
 "
+echo "    Confirm with the '[kokoro] warm — device=mps' line below; that is the"
+echo "    device the model actually loaded on."
 
 echo "==> Starting Kokoro on http://127.0.0.1:8880  voice=$KOKORO_VOICE"
 echo "    (warmup runs before the server reports ready — watch for"

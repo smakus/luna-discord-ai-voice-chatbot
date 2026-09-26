@@ -278,17 +278,16 @@ docker compose up
 
 Add `--build` to the compose command whenever you've edited a source file.
 
-**Startup takes a minute or two, and that's intentional.** On Linux/Intel, Kokoro renders a warm-up phrase before it reports healthy, and Luna waits for that via Compose's healthcheck. On the Apple Silicon Metal path, that warm-up happens in terminal 2 instead — Compose has no visibility into Kokoro at all anymore, which is exactly why terminal 3 has to come last. Either way, Luna also sends a warm-up request to LM Studio so the model's weights are resident before anyone asks a question — otherwise that entire cost lands on whoever speaks first.
+**Startup takes a minute or two, and that's intentional.** On Linux/Intel, Kokoro renders a warm-up phrase before it reports healthy, and Luna waits for that via Compose's healthcheck. On the Apple Silicon Metal path, that warm-up happens in terminal 2 instead — Compose has no visibility into Kokoro at all anymore, which is exactly why terminal 3 has to come last.
 
 A healthy start, Linux/Intel path (Compose logs):
 
 ```
-[kokoro] warm — threads=2, concurrency=2, voice=af_heart
+[kokoro] warm — device=cpu, threads=2, concurrency=2, voice=af_heart
 Using LM Studio model: <your-model>
 [oww] loaded hey_luna.onnx (input="onnx::Flatten_0", window=16 frames)
 [oww] seeded feature buffer with 50 noise embeddings (baseline score 0.0009)
 [oww] active — threshold=0.15, Whisper gated on detection
-[LLM] warm — first inference took 4200ms. ...
 Ready! Wake phrase: "hey Luna"  •  text command: !luna
 ```
 
@@ -297,17 +296,16 @@ On the Apple Silicon Metal path, the `[kokoro] warm` line appears in **terminal 
 ```
 MPS built:     True
 MPS available: True
-[kokoro] warm — threads=4, concurrency=4, voice=af_heart
+[kokoro] warm — device=mps, threads=4, concurrency=4, voice=af_heart
 Starting Kokoro TTS server on http://localhost:8880
 ```
 
-Confirm both `MPS built` and `MPS available` read `True` before moving to terminal 3 — if `available` is `False`, Kokoro will run on CPU with no error at all, so this is the one line that actually tells you whether Metal is doing anything.
+Confirm the warm line says `device=mps` before moving to terminal 3. That is the device the model actually loaded on; `device=cpu` means Kokoro is running without Metal, with no other error. (If `MPS available` is `False`, see Troubleshooting.)
 
 Things to check in the Compose output (terminal 3 on the Metal path):
 
 - **baseline score** is your model scoring pure noise. If it is anywhere near your threshold, the model will false-fire constantly — fix that before debugging anything else.
 - **`[oww] unavailable (...)`** means the models aren't in place and Luna has fallen back to transcript matching. Still functional, just less accurate and more expensive.
-- **`[LLM] warm`** reports how long the first inference took. If that number is tens of seconds, your model is too large for your RAM — see [Hardware sizing](#hardware-sizing).
 
 To shut down: `Ctrl-C`, then `docker compose down` (add `-f docker-compose.metal.yml` on the Metal path), then `Ctrl-C` in the Kokoro terminal, then `Ctrl-C` in the Whisper terminal.
 
@@ -392,7 +390,7 @@ WHISPER_MODEL=ggml-small.en-q5_1.bin ./scripts/whisper-metal.sh
 | ----- | ---- | ----- |
 | `ggml-base.en-q5_1.bin` | ~60 MB | Fastest, least accurate |
 | `ggml-small.en-q5_1.bin` | ~180 MB | Good default when memory is tight |
-| `ggml-medium.en-q5_0.bin` | ~540 MB | Noticeably more accurate; the Metal default |
+| `ggml-medium.en-q5_0.bin` | ~540 MB | Noticeably more accurate; good Metal choice if you have headroom |
 | `ggml-large-v3-turbo-q5_0.bin` | ~570 MB | Most accurate; needs headroom |
 
 On the Docker path it's a build arg in `docker-compose.yml`, and `WHISPER_THREADS` sets CPU threads. `-bs 1 -bo 1` (greedy decoding) favours speed; raising them improves accuracy at real latency cost.
@@ -442,7 +440,6 @@ Environment variables in `Luna/.env`. Most take effect with a container recreate
 | -------- | ------- | ----------- |
 | `LM_MEMORY_TTL_MS` | `600000` | Drop a speaker's chain after this much silence |
 | `LM_MEMORY_MAX_TURNS` | `12` | Drop a speaker's chain after this many turns |
-| `LM_WARMUP` | `true` | Send a warm-up request at startup |
 
 Memory is per speaker. Both caps bound prefill: the chain grows with every turn and prefill cost is linear in context, so an unbounded chain makes each answer slower than the last.
 
@@ -463,7 +460,7 @@ On the Apple Silicon Metal path, Kokoro isn't sharing CPU cores with anything an
 KOKORO_THREADS=6 KOKORO_MAX_CONCURRENCY=6 ./scripts/kokoro-metal.sh
 ```
 
-`PYTORCH_ENABLE_MPS_FALLBACK=1` is what actually enables the GPU path — the script sets it for you, so ops without an MPS kernel silently fall back to CPU instead of erroring, rather than needing you to set it by hand.
+`kokoro_server.py` loads the model on MPS itself (override with `KOKORO_DEVICE=cpu|mps|cuda`) — kokoro 0.9.4 never selects MPS on its own. The script also sets `PYTORCH_ENABLE_MPS_FALLBACK=1`, so the few ops without an MPS kernel fall back to CPU instead of erroring. On MPS, inference steps are serialised internally, so raising `KOKORO_MAX_CONCURRENCY` past 2 buys little.
 
 ### Timeouts
 
