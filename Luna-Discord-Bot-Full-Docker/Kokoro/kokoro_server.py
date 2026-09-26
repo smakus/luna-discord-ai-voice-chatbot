@@ -12,6 +12,7 @@ Environment:
   KOKORO_VOICE            default voice (af_heart)
   KOKORO_THREADS          torch intra-op threads (default 2)
   KOKORO_MAX_CONCURRENCY  simultaneous syntheses (default 2)
+  KOKORO_DEVICE           auto (default: cuda > mps > cpu), or cuda / mps / cpu
 """
 import asyncio
 import io
@@ -46,8 +47,50 @@ except RuntimeError:
 
 app = FastAPI()
 
+
+def _pick_device() -> str:
+    """
+    Choose the torch device explicitly.
+
+    kokoro 0.9.4 (the current PyPI release) defaults to 'cuda' if available,
+    otherwise 'cpu' — it never selects MPS on its own, regardless of
+    PYTORCH_ENABLE_MPS_FALLBACK. Without passing device= here, the Apple
+    Silicon "Metal" path silently ran on CPU.
+    """
+    requested = os.getenv("KOKORO_DEVICE", "auto").lower()
+    if requested != "auto":
+        return requested
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+DEVICE = _pick_device()
+
 # 'a' = American English, 'b' = British English
-pipeline = KPipeline(lang_code='a')
+pipeline = KPipeline(lang_code='a', device=DEVICE)
+
+# The MPS backend is not safe for concurrent inference from several threads on
+# one model, and KOKORO_MAX_CONCURRENCY lets several syntheses run at once.
+# Serialise each generator step on MPS; requests still interleave chunk by
+# chunk, so the prefetch pipeline keeps overlapping with playback.
+_infer_lock = threading.Lock() if DEVICE == "mps" else None
+
+
+def _synth(text: str, voice: str, speed: float):
+    """Yields audio chunks from the pipeline, locking per step on MPS."""
+    it = iter(pipeline(text, voice=voice, speed=speed))
+    while True:
+        if _infer_lock is None:
+            result = next(it, None)
+        else:
+            with _infer_lock:
+                result = next(it, None)
+        if result is None:
+            return
+        yield result.audio
 
 # Good female voices to try:
 # af_bella, af_sarah, af_sky, af_nicole, af_heart
@@ -95,11 +138,16 @@ def make_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: in
     return header + fmt + data
 
 
-def pcm_chunk(audio) -> bytes:
-    """Convert float32 Tensor or numpy array to int16 PCM bytes."""
+def pcm_float(audio) -> np.ndarray:
+    """Tensor (possibly on MPS/CUDA) or numpy array -> float32 numpy on CPU."""
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().cpu().numpy()
-    clipped = np.clip(audio, -1.0, 1.0)
+    return audio
+
+
+def pcm_chunk(audio) -> bytes:
+    """Convert float32 Tensor or numpy array to int16 PCM bytes."""
+    clipped = np.clip(pcm_float(audio), -1.0, 1.0)
     return (clipped * 32767).astype(np.int16).tobytes()
 
 
@@ -134,7 +182,7 @@ def _synthesize_into(q, text: str, voice: str, speed: float, cancel: threading.E
     while holding a concurrency slot.
     """
     try:
-        for _, _, audio in pipeline(text, voice=voice, speed=speed):
+        for audio in _synth(text, voice, speed):
             if cancel.is_set():
                 break
             if audio is not None and not _put(q, pcm_chunk(audio), cancel):
@@ -205,7 +253,7 @@ async def text_to_speech(req: TTSRequest):
 
     # ── Non-streaming mode (original behaviour) ───────────────────────────────
     def _render():
-        chunks = [a for _, _, a in pipeline(req.input, voice=req.voice, speed=req.speed)
+        chunks = [pcm_float(a) for a in _synth(req.input, req.voice, req.speed)
                   if a is not None]
         if not chunks:
             return None
@@ -241,9 +289,9 @@ def warmup() -> None:
     thing a user says is not also the slowest thing Luna ever says.
     """
     try:
-        for _ in pipeline("Ready.", voice=DEFAULT_VOICE, speed=1.0):
+        for _ in _synth("Ready.", DEFAULT_VOICE, 1.0):
             pass
-        print(f"[kokoro] warm — threads={torch.get_num_threads()}, "
+        print(f"[kokoro] warm — device={DEVICE}, threads={torch.get_num_threads()}, "
               f"concurrency={MAX_CONCURRENCY}, voice={DEFAULT_VOICE}", flush=True)
     except Exception as exc:                      # noqa: BLE001
         print(f"[kokoro] warmup failed (continuing): {exc}", flush=True)

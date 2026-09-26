@@ -47,6 +47,13 @@ fi
 
 command -v cmake >/dev/null || { echo "cmake not found: brew install cmake" >&2; exit 1; }
 
+# Same pre-flight as kokoro-metal.sh: fail clearly instead of after the build.
+if lsof -i :"$WHISPER_PORT" >/dev/null 2>&1; then
+  echo "==> Port $WHISPER_PORT is already in use (another whisper-metal.sh, or a" >&2
+  echo "    leftover dockerized whisper). Details: lsof -i :$WHISPER_PORT" >&2
+  exit 1
+fi
+
 if [[ ! -d "$WHISPER_DIR/.git" ]]; then
   echo "==> Cloning whisper.cpp $WHISPER_REF"
   mkdir -p "$(dirname "$WHISPER_DIR")"
@@ -55,6 +62,17 @@ if [[ ! -d "$WHISPER_DIR/.git" ]]; then
 fi
 
 cd "$WHISPER_DIR"
+
+# Bumping WHISPER_REF must actually change the build. Previously an existing
+# clone and binary were reused forever, so the pin above only applied on the
+# very first run.
+CURRENT_REF=$(git describe --tags --exact-match 2>/dev/null || echo "unknown")
+if [[ "$CURRENT_REF" != "$WHISPER_REF" ]]; then
+  echo "==> Switching whisper.cpp $CURRENT_REF -> $WHISPER_REF"
+  git fetch --depth 1 origin tag "$WHISPER_REF"
+  git checkout -q "$WHISPER_REF"
+  rm -rf build
+fi
 
 if [[ ! -x build/bin/whisper-server ]]; then
   echo "==> Building whisper-server with Metal"
@@ -67,9 +85,13 @@ if [[ ! -f "models/$WHISPER_MODEL" ]]; then
   echo "==> Downloading $WHISPER_MODEL"
   # -f so a bad model name fails here rather than as a confusing model-load
   # error after an HTML 404 page is saved as a .bin.
+  #
+  # Download to .part and rename on success: an interrupted download otherwise
+  # leaves a truncated .bin that the existence check above skips forever.
   curl -fL --progress-bar \
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$WHISPER_MODEL" \
-    -o "models/$WHISPER_MODEL"
+    -o "models/$WHISPER_MODEL.part"
+  mv "models/$WHISPER_MODEL.part" "models/$WHISPER_MODEL"
 fi
 
 echo "==> whisper-server (Metal) on http://127.0.0.1:$WHISPER_PORT  model=$WHISPER_MODEL"
