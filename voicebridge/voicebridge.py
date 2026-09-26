@@ -39,7 +39,3 @@ class VoiceBridge(commands.Cog):
             await ctx.invoke(audio_cog.command_play, query=query)
         except Exception as e:
             print(f"[VoiceBridge] Error invoking play: {e}")
-
-
-def setup(bot):
-    bot.add_cog(VoiceBridge(bot))
