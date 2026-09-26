@@ -74,6 +74,19 @@ const IGNORED_USERS = new Set(
   (process.env.IGNORED_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
 );
 
+// ─── Join greetings ───────────────────────────────────────────────────────────
+//
+// When someone joins the voice channel Luna is in, she announces them by name
+// and says hello. The cooldown is per user, so a flaky connection that drops
+// and rejoins every few seconds is greeted once, not on every reconnect.
+const GREET_ON_JOIN     = (process.env.GREET_ON_JOIN || 'true').toLowerCase() !== 'false';
+const GREET_COOLDOWN_MS = parseInt(process.env.GREET_COOLDOWN_MS || '600000', 10);
+// A joining client takes a moment to connect its audio, and someone who joins
+// and immediately leaves (or passes through on the way to another channel)
+// should not be greeted at all. The greeting is spoken only if they are still
+// in the channel after this delay.
+const GREET_DELAY_MS    = parseInt(process.env.GREET_DELAY_MS || '1500', 10);
+
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 let whisperRR = 0;
@@ -1425,8 +1438,79 @@ async function playTTS(passThrough, connection) {
 
 client.on(Events.Error, console.warn);
 
+// ─── Join greetings ───────────────────────────────────────────────────────────
+
+const lastGreetedAt = new Map(); // userId -> ms timestamp of their last greeting
+
+const GREETINGS = [
+  name => `${name} just joined. Hey ${name}!`,
+  name => `Look who's here, it's ${name}. Hi there!`,
+  name => `${name} has joined the channel. Hello, ${name}!`,
+  name => `Heads up, ${name} is here. Welcome in, ${name}!`,
+];
+
+// Turns a display name into something Kokoro can say.
+//
+// NFKC folds "fancy font" names (𝓢𝓪𝓶, Ｓａｍ) back to plain letters. Emoji and
+// symbols are dropped rather than read aloud, separators become spaces, and a
+// trailing number tag ("sam_1234") is removed when there is a name before it.
+// Returns '' if nothing pronounceable is left.
+function speakableName(raw) {
+  let name = (raw || '').normalize('NFKC')
+    .replace(/[_.]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s'’-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const withoutTag = name.replace(/[\s-]*\d+$/, '');
+  if (/\p{L}/u.test(withoutTag)) name = withoutTag;
+  return name.slice(0, 32).trim();
+}
+
+function greetMember(member, connection) {
+  const now = Date.now();
+  if (now - (lastGreetedAt.get(member.id) || 0) < GREET_COOLDOWN_MS) return;
+  lastGreetedAt.set(member.id, now);
+
+  const name = speakableName(member.displayName);
+  const text = name
+    ? GREETINGS[Math.floor(Math.random() * GREETINGS.length)](name)
+    : 'Someone just joined. Hey there, welcome in!';
+  console.log(`[greet] ${member.user.tag} joined — "${text}"`);
+
+  // Queued under the joiner's own id: if they say the wake word before the
+  // greeting plays, their query supersedes it (barge-in), and the greeting
+  // never cuts off an answer someone else is already hearing.
+  const generation = nextGeneration(member.id);
+  queuePlayback(async () => {
+    if (activeConnection !== connection) return; // Luna left in the meantime
+    const pt = await fetchTTS(text);
+    if (pt) await playTTS(pt, connection);
+  }, member.id, generation);
+}
+
+// Someone arrived in Luna's channel — from outside voice, or moved in from
+// another channel. Mute/deafen/stream toggles also emit VoiceStateUpdate but
+// keep the same channelId, so they never match.
+function onVoiceJoin(oldState, newState) {
+  if (!GREET_ON_JOIN || !activeVoiceChannel || !activeConnection) return;
+  if (newState.channelId !== activeVoiceChannel.id) return;
+  if (oldState.channelId === newState.channelId) return;
+
+  const member = newState.member;
+  if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
+
+  const connection = activeConnection;
+  setTimeout(() => {
+    if (activeConnection !== connection) return;
+    if (member.voice.channelId !== activeVoiceChannel?.id) return; // left again
+    greetMember(member, connection);
+  }, GREET_DELAY_MS);
+}
+
 // Disconnect when the last real user (non-bot, non-ignored) leaves
-client.on(Events.VoiceStateUpdate, (oldState, _newState) => {
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  onVoiceJoin(oldState, newState);
+
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
   if (getRealMemberCount(activeVoiceChannel) === 0) {
     console.log('[voice] Last real user left — disconnecting.');
