@@ -1,0 +1,15 @@
+# Secrets are read by Compose at runtime (env_file) and must never be baked
+# into an image layer by `COPY . .`.
+.env
+.env.*
+!example.env
+
+# The image runs `npm ci` itself. A host node_modules (e.g. built on macOS)
+# would overwrite the Linux native binaries for onnxruntime-node and
+# @discordjs/opus and crash on load.
+node_modules
+npm-debug.log*
+
+.git
+Dockerfile
+.dockerignore

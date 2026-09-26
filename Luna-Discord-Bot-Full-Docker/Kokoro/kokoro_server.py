@@ -106,7 +106,18 @@ def pcm_chunk(audio) -> bytes:
 _SENTINEL = object()
 
 
-def _synthesize_into(q, text: str, voice: str, speed: float) -> None:
+def _put(q, item, cancel: threading.Event) -> bool:
+    """Blocking put that gives up once the consumer has gone away."""
+    while not cancel.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return True
+        except queue.Full:
+            pass
+    return False
+
+
+def _synthesize_into(q, text: str, voice: str, speed: float, cancel: threading.Event) -> None:
     """
     Runs the Kokoro generator on a worker thread, pushing PCM chunks onto `q`.
 
@@ -117,15 +128,27 @@ def _synthesize_into(q, text: str, voice: str, speed: float) -> None:
     answers no health check. The client's prefetch pipeline therefore did not
     actually overlap: sentence N+1 could not start until N finished, and a
     second speaker's request waited behind both.
+
+    `cancel` is set when the client disconnects (barge-in, timeout), so the
+    worker stops at the next chunk instead of rendering audio nobody will hear
+    while holding a concurrency slot.
     """
     try:
         for _, _, audio in pipeline(text, voice=voice, speed=speed):
-            if audio is not None:
-                q.put(pcm_chunk(audio))
+            if cancel.is_set():
+                break
+            if audio is not None and not _put(q, pcm_chunk(audio), cancel):
+                break
     except Exception as exc:                      # noqa: BLE001 — forwarded to caller
-        q.put(exc)
+        _put(q, exc, cancel)
     finally:
-        q.put(_SENTINEL)
+        # A pending executor q.get() must always be released. If the queue is
+        # full, that get returns immediately anyway.
+        if not _put(q, _SENTINEL, cancel):
+            try:
+                q.put_nowait(_SENTINEL)
+            except queue.Full:
+                pass
 
 
 async def stream_audio(input_text: str, voice: str, speed: float):
@@ -139,11 +162,12 @@ async def stream_audio(input_text: str, voice: str, speed: float):
         # maxsize applies backpressure: if Discord playback is slower than
         # synthesis, the worker parks instead of buffering a whole utterance.
         q = queue.Queue(maxsize=8)
+        cancel = threading.Event()
         loop = asyncio.get_running_loop()
 
         worker = threading.Thread(
             target=_synthesize_into,
-            args=(q, input_text, voice, speed),
+            args=(q, input_text, voice, speed, cancel),
             daemon=True,
         )
         worker.start()
@@ -157,14 +181,11 @@ async def stream_audio(input_text: str, voice: str, speed: float):
                     raise item
                 yield item
         finally:
-            # Drain, so a client that disconnects mid-sentence cannot leave the
-            # worker blocked forever on a full queue.
-            while worker.is_alive():
-                try:
-                    if q.get(timeout=0.1) is _SENTINEL:
-                        break
-                except queue.Empty:
-                    pass
+            # Tell the worker to stop rather than draining here. The previous
+            # synchronous drain loop ran ON the event loop and blocked the whole
+            # server until the abandoned sentence finished rendering — on every
+            # barge-in.
+            cancel.set()
 
 
 @app.post("/v1/audio/speech")

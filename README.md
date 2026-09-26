@@ -72,8 +72,8 @@ Key design decisions:
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/smakus/luna-discord-bot
-cd luna-discord-bot
+git clone https://github.com/smakus/luna-discord-ai-voice-chatbot
+cd luna-discord-ai-voice-chatbot
 ```
 
 ### 2. Wake word models
@@ -315,9 +315,9 @@ To shut down: `Ctrl-C`, then `docker compose down` (add `-f docker-compose.metal
 
 ```bash
 # ~/.zshrc or ~/.bashrc
-alias luna-whisper='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && ./scripts/whisper-metal.sh'
-alias luna-kokoro='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && ./scripts/kokoro-metal.sh'
-alias luna-up='cd ~/luna-discord-bot/Luna-Discord-Bot-Full-Docker && docker compose -f docker-compose.metal.yml up'
+alias luna-whisper='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && ./scripts/whisper-metal.sh'
+alias luna-kokoro='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && ./scripts/kokoro-metal.sh'
+alias luna-up='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && docker compose -f docker-compose.metal.yml up'
 ```
 
 ---

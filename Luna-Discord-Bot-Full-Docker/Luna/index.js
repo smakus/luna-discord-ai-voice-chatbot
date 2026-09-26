@@ -99,6 +99,10 @@ const LM_SYSTEM_PROMPT =
 const LM_FLAVOR_PROMPT = process.env.LM_FLAVOR_PROMPT || '';
 const LM_FLAVOR_CHANCE = parseFloat(process.env.LM_FLAVOR_CHANCE || '0.15');
 
+// Resolved against this file, not the working directory, so `node Luna/index.js`
+// from elsewhere still finds it.
+const CHIME_PATH = path.join(__dirname, 'chime.mp3');
+
 const KOKORO_URL   = process.env.KOKORO_URL;
 const KOKORO_VOICE = process.env.KOKORO_VOICE;
 
@@ -292,7 +296,9 @@ const listeningUsers   = new Set();
 client.on(Events.MessageCreate, async message => {
   if (message.content.toLowerCase().trim() === BOT_COMMAND) {
     const channel = message.member?.voice?.channel;
-    if (!channel) return message.reply('You need to join a voice channel first!');
+    // .catch: a rejected reply (e.g. no send permission) in an async listener is
+    // an unhandled rejection, which terminates Node.
+    if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
 
     const connection = joinVoiceChannel({
       channelId: channel.id,
@@ -300,12 +306,17 @@ client.on(Events.MessageCreate, async message => {
       adapterCreator: message.guild.voiceAdapterCreator,
     });
 
-    connection.on(VoiceConnectionStatus.Ready, () => {
+    // Once, not on: a connection returns to Ready after every network blip, and
+    // re-running this would re-post the join message and stack another
+    // speaking listener each time. If joinVoiceChannel() handed back an
+    // already-Ready connection (a second !luna), Ready never fires again, so
+    // run immediately instead of leaving the command unanswered.
+    const onReady = () => {
       message.reply(
         `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
         `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
         `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
-      );
+      ).catch(() => {});
       activeConnection   = connection;
       activeVoiceChannel = channel;
       startListening(connection, message.channel);
@@ -318,7 +329,15 @@ client.on(Events.MessageCreate, async message => {
         listeningUsers.add(member.id);
         continuousCapture(connection, member.id, message.channel);
       });
-    });
+    };
+
+    if (connection.state.status === VoiceConnectionStatus.Ready && activeConnection === connection) {
+      message.reply(`Already listening in **${channel.name}**.`).catch(() => {});
+    } else if (connection.state.status === VoiceConnectionStatus.Ready) {
+      onReady();
+    } else {
+      connection.once(VoiceConnectionStatus.Ready, onReady);
+    }
   }
 });
 
@@ -640,6 +659,10 @@ function continuousCapture(connection, userId, channel) {
       );
       flushing = false;
       flushStartedAt = 0;
+      // processUtterance's own guard is released in the same .finally() that
+      // never ran — without this every later utterance is still dropped as
+      // "previous one still being processed" and the self-heal heals nothing.
+      processingUsers.delete(userId);
     }
   }, 100);
 
@@ -956,7 +979,7 @@ function extractSmakbotCommand(query) {
       ? match[1]
           .trim()
           .replace(/[,.!?]+$/, '')
-          .replace(/^["'"'`]+|["'"'`]+$/g, '')  // strip surrounding quote characters
+          .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')  // strip surrounding quote characters, incl. curly quotes
           .trim()
       : null;
 
@@ -981,7 +1004,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     // sentence is mid-playback, including another speaker's.
     const musicGeneration = interruptOwnPlayback(userId);
     if (!currentPlayer) {
-      playSound('./chime.mp3', connection).catch(() => {});
+      playSound(CHIME_PATH, connection).catch(() => {});
     }
 
     const commandText = musicCommand.build(musicCommand.arg);
@@ -1024,7 +1047,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // whichever sentence was mid-playback. With several people in a channel that
   // presented as Luna's answers being randomly truncated.
   if (!currentPlayer) {
-    playSound('./chime.mp3', connection).catch(() => {});
+    playSound(CHIME_PATH, connection).catch(() => {});
   }
   // Same decision the LLM call will use — computed here so the status message
   // can say which mode Luna is in, then passed down so the two cannot drift.
@@ -1407,7 +1430,9 @@ client.on(Events.VoiceStateUpdate, (oldState, _newState) => {
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
   if (getRealMemberCount(activeVoiceChannel) === 0) {
     console.log('[voice] Last real user left — disconnecting.');
-    activeConnection.destroy();
+    // Throws if the connection was already destroyed (e.g. Luna was kicked
+    // from the channel), and an exception here escapes into discord.js.
+    try { activeConnection.destroy(); } catch (_) {}
     activeConnection   = null;
     activeVoiceChannel = null;
     listeningUsers.clear();
