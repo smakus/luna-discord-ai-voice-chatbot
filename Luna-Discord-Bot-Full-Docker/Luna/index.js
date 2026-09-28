@@ -87,6 +87,13 @@ const GREET_COOLDOWN_MS = parseInt(process.env.GREET_COOLDOWN_MS || '600000', 10
 // in the channel after this delay.
 const GREET_DELAY_MS    = parseInt(process.env.GREET_DELAY_MS || '1500', 10);
 
+// Leave announcements: the same idea in reverse. The delay is longer than the
+// join one because a dropped connection typically takes a few seconds to come
+// back, and someone who is back by then did not really leave.
+const ANNOUNCE_LEAVE    = (process.env.ANNOUNCE_LEAVE || 'true').toLowerCase() !== 'false';
+const LEAVE_COOLDOWN_MS = parseInt(process.env.LEAVE_COOLDOWN_MS || '600000', 10);
+const LEAVE_DELAY_MS    = parseInt(process.env.LEAVE_DELAY_MS || '3000', 10);
+
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 let whisperRR = 0;
@@ -1476,16 +1483,65 @@ function greetMember(member, connection) {
     ? GREETINGS[Math.floor(Math.random() * GREETINGS.length)](name)
     : 'Someone just joined. Hey there, welcome in!';
   console.log(`[greet] ${member.user.tag} joined — "${text}"`);
+  announce(member, connection, text);
+}
 
-  // Queued under the joiner's own id: if they say the wake word before the
-  // greeting plays, their query supersedes it (barge-in), and the greeting
-  // never cuts off an answer someone else is already hearing.
+// Queued under the member's own id: if they say the wake word before the
+// greeting plays, their query supersedes it (barge-in), and an announcement
+// never cuts off an answer someone else is already hearing.
+function announce(member, connection, text) {
   const generation = nextGeneration(member.id);
   queuePlayback(async () => {
     if (activeConnection !== connection) return; // Luna left in the meantime
     const pt = await fetchTTS(text);
     if (pt) await playTTS(pt, connection);
   }, member.id, generation);
+}
+
+// ─── Leave announcements ──────────────────────────────────────────────────────
+
+const lastFarewellAt = new Map(); // userId -> ms timestamp of their last announcement
+
+const FAREWELLS = [
+  name => `${name} just left. See you later, ${name}!`,
+  name => `${name} has left the channel.`,
+  name => `${name} headed out. Bye, ${name}!`,
+  name => `And ${name} is gone. Catch you next time!`,
+];
+
+function announceLeave(member, connection) {
+  const now = Date.now();
+  if (now - (lastFarewellAt.get(member.id) || 0) < LEAVE_COOLDOWN_MS) return;
+  lastFarewellAt.set(member.id, now);
+
+  const name = speakableName(member.displayName);
+  const text = name
+    ? FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)](name)
+    : 'Someone just left the channel.';
+  console.log(`[farewell] ${member.user.tag} left — "${text}"`);
+
+  // Also supersedes anything still queued for the leaver — an unplayed
+  // greeting, or the rest of an answer nobody is there to hear.
+  announce(member, connection, text);
+}
+
+// Someone left Luna's channel — disconnected from voice, or moved to another
+// channel. If they were the last real user, the disconnect handler below
+// tears the connection down, and the activeConnection check skips this.
+function onVoiceLeave(oldState, newState) {
+  if (!ANNOUNCE_LEAVE || !activeVoiceChannel || !activeConnection) return;
+  if (oldState.channelId !== activeVoiceChannel.id) return;
+  if (oldState.channelId === newState.channelId) return;
+
+  const member = oldState.member;
+  if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
+
+  const connection = activeConnection;
+  setTimeout(() => {
+    if (activeConnection !== connection) return;
+    if (member.voice.channelId === activeVoiceChannel?.id) return; // came back
+    announceLeave(member, connection);
+  }, LEAVE_DELAY_MS);
 }
 
 // Someone arrived in Luna's channel — from outside voice, or moved in from
@@ -1510,6 +1566,7 @@ function onVoiceJoin(oldState, newState) {
 // Disconnect when the last real user (non-bot, non-ignored) leaves
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   onVoiceJoin(oldState, newState);
+  onVoiceLeave(oldState, newState);
 
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
   if (getRealMemberCount(activeVoiceChannel) === 0) {
