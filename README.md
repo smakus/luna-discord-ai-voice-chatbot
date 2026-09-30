@@ -82,7 +82,7 @@ docker compose -f docker-compose.metal.yml up --build   # 3. Luna
 
 Luna has no health check to wait on for the native services, so start terminal 3 only after the first two report they're ready. In terminal 2, `[kokoro] warm — device=mps` confirms Kokoro is actually on the GPU.
 
-**Linux or Intel Mac.** Everything runs in containers:
+**Linux or Intel Mac ONLY:** Everything runs in containers:
 
 ```bash
 docker compose up --build
