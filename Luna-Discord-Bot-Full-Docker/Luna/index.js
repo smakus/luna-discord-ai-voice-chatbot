@@ -94,6 +94,21 @@ const ANNOUNCE_LEAVE    = (process.env.ANNOUNCE_LEAVE || 'true').toLowerCase() !
 const LEAVE_COOLDOWN_MS = parseInt(process.env.LEAVE_COOLDOWN_MS || '600000', 10);
 const LEAVE_DELAY_MS    = parseInt(process.env.LEAVE_DELAY_MS || '3000', 10);
 
+// Custom wording for both announcements: phrases separated by "|", with
+// {name} where the person's name goes, e.g.
+//   FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+// One is picked at random each time. Unset or empty keeps the built-in lines.
+function parsePhrases(raw) {
+  return (raw || '').split('|').map(s => s.trim()).filter(Boolean);
+}
+const GREET_PHRASES    = parsePhrases(process.env.GREET_PHRASES);
+const FAREWELL_PHRASES = parsePhrases(process.env.FAREWELL_PHRASES);
+
+// Luna introduces herself when she joins a voice channel. INTRO_PHRASES works
+// like the two above, with {wake} for the wake phrase instead of {name}.
+const ANNOUNCE_SELF = (process.env.ANNOUNCE_SELF || 'true').toLowerCase() !== 'false';
+const INTRO_PHRASES = parsePhrases(process.env.INTRO_PHRASES);
+
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 let whisperRR = 0;
@@ -349,6 +364,8 @@ client.on(Events.MessageCreate, async message => {
         listeningUsers.add(member.id);
         continuousCapture(connection, member.id, message.channel);
       });
+
+      introduceSelf(connection);
     };
 
     if (connection.state.status === VoiceConnectionStatus.Ready && activeConnection === connection) {
@@ -1449,12 +1466,20 @@ client.on(Events.Error, console.warn);
 
 const lastGreetedAt = new Map(); // userId -> ms timestamp of their last greeting
 
-const GREETINGS = [
-  name => `${name} just joined. Hey ${name}!`,
-  name => `Look who's here, it's ${name}. Hi there!`,
-  name => `${name} has joined the channel. Hello, ${name}!`,
-  name => `Heads up, ${name} is here. Welcome in, ${name}!`,
+// {name} is filled in by fillPhrase(). Overridable with GREET_PHRASES.
+const GREETINGS = GREET_PHRASES.length ? GREET_PHRASES : [
+  '{name} just joined. Hey {name}!',
+  "Look who's here, it's {name}. Hi there!",
+  '{name} has joined the channel. Hello, {name}!',
+  'Heads up, {name} is here. Welcome in, {name}!',
 ];
+
+// A random phrase from `phrases` with every {key} in `vars` replaced.
+function fillPhrase(phrases, vars) {
+  let text = phrases[Math.floor(Math.random() * phrases.length)];
+  for (const [key, value] of Object.entries(vars)) text = text.replaceAll(`{${key}}`, value);
+  return text;
+}
 
 // Turns a display name into something Kokoro can say.
 //
@@ -1480,7 +1505,7 @@ function greetMember(member, connection) {
 
   const name = speakableName(member.displayName);
   const text = name
-    ? GREETINGS[Math.floor(Math.random() * GREETINGS.length)](name)
+    ? fillPhrase(GREETINGS, { name })
     : 'Someone just joined. Hey there, welcome in!';
   console.log(`[greet] ${member.user.tag} joined — "${text}"`);
   announce(member, connection, text);
@@ -1498,15 +1523,42 @@ function announce(member, connection, text) {
   }, member.id, generation);
 }
 
+// ─── Self-introduction ────────────────────────────────────────────────────────
+
+// Overridable with INTRO_PHRASES.
+const INTROS = INTRO_PHRASES.length ? INTRO_PHRASES : [
+  "Hi everyone, Luna here! Just say {wake} whenever you need me.",
+  "Hey all, it's Luna. Say {wake} if you want anything.",
+  "Luna has arrived! Say {wake} to get my attention.",
+];
+
+const INTRO_QUEUE_ID = 'luna:intro';
+
+// Spoken once when Luna joins, so the channel knows she is listening. Queued
+// under its own id, so nobody's query can be superseded by it or supersede it
+// by accident; whoever speaks first after it is simply answered next.
+function introduceSelf(connection) {
+  if (!ANNOUNCE_SELF) return;
+  const text = fillPhrase(INTROS, { wake: WAKE_LABEL });
+  console.log(`[intro] "${text}"`);
+  const generation = nextGeneration(INTRO_QUEUE_ID);
+  queuePlayback(async () => {
+    if (activeConnection !== connection) return;
+    const pt = await fetchTTS(text);
+    if (pt) await playTTS(pt, connection);
+  }, INTRO_QUEUE_ID, generation);
+}
+
 // ─── Leave announcements ──────────────────────────────────────────────────────
 
 const lastFarewellAt = new Map(); // userId -> ms timestamp of their last announcement
 
-const FAREWELLS = [
-  name => `${name} just left. See you later, ${name}!`,
-  name => `${name} has left the channel.`,
-  name => `${name} headed out. Bye, ${name}!`,
-  name => `And ${name} is gone. Catch you next time!`,
+// Overridable with FAREWELL_PHRASES.
+const FAREWELLS = FAREWELL_PHRASES.length ? FAREWELL_PHRASES : [
+  '{name} just left. See you later, {name}!',
+  '{name} has left the channel.',
+  '{name} headed out. Bye, {name}!',
+  'And {name} is gone. Catch you next time!',
 ];
 
 function announceLeave(member, connection) {
@@ -1516,7 +1568,7 @@ function announceLeave(member, connection) {
 
   const name = speakableName(member.displayName);
   const text = name
-    ? FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)](name)
+    ? fillPhrase(FAREWELLS, { name })
     : 'Someone just left the channel.';
   console.log(`[farewell] ${member.user.tag} left — "${text}"`);
 
