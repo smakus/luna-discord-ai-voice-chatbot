@@ -1,372 +1,212 @@
 # Luna — Discord AI Voice Assistant
 
-Want a real AI voice chatbot in your Discord audio channel ready to answer questions or give advice (for entertainment purposes only)?  Then Luna is the AI voice assistant for you!
+Luna is a locally hosted AI voice assistant for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud. Speech-to-text (Whisper), the LLM (LM Studio) and text-to-speech (Kokoro) all run on your own machine, so there are no cloud AI costs. The one exception is the optional Tavily web search.
 
-Responsibly coded with assitance from Claude for some audio conversion heavy lifting. If you find this fun, interesting, or valuable, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
-
-Luna is a locally-hosted AI voice assistant for Discord. She listens for her wake word using a neural wake word model, transcribes speech using Whisper, generates responses via LM Studio, and speaks back using Kokoro TTS — all running on your own machine with no cloud AI dependencies.  Never run out of tokens again, or pay a single cent for api services (unless you get crazy with internet searches via the optional Tavily integration).
+If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
 ## Features
 
-- 🎤 Neural wake word detection — say "hey Luna" to activate, via [openWakeWord](https://github.com/dscripka/openWakeWord) running on the raw audio stream
-- 🧠 Local LLM via LM Studio, with per-speaker conversation memory
-- 🔊 Local TTS via Kokoro TTS with streaming audio output
-- 🌐 Optional web search via Tavily MCP
-- 👥 Multi-user support with per-user audio capture and per-user wake word detection
-- ⚡ Low-latency streaming pipeline — LLM response streams sentence-by-sentence directly into TTS, so Luna starts speaking before she's finished generating
-- 🔁 Interruptible — say "hey Luna" at any time to cut off *your own* answer, without interrupting someone else's
-- 🗣️ Responses queue — with several people in a channel, a new question no longer cancels someone else's answer
-- 🍎 Metal-accelerated Whisper and Kokoro TTS on Apple Silicon
-- 🔇 Configurable ignored users (e.g. music bots)
+- 🎤 **Neural wake word.** Say "hey Luna" to activate. [openWakeWord](https://github.com/dscripka/openWakeWord) runs on the raw audio, so only real requests get transcribed.
+- 🧠 **Local LLM** via LM Studio, with separate conversation memory for each speaker.
+- 🔊 **Streaming TTS** via Kokoro. Luna starts speaking her first sentence while the rest is still being generated.
+- 👥 **Multi-user.** Every speaker gets their own audio capture and wake word detector, and answers queue so no one's question cancels someone else's.
+- 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer.
+- 👋 **Voice-channel announcements.** Luna introduces herself when she joins, greets people who join the channel by name, and announces who left. The wording is customizable.
+- 🎵 **Music control.** "Hey Luna, play…", "skip" and "stop" are relayed to a music bot.
+- 🌐 **Optional web search** via Tavily, for questions about current events.
+- 🍎 **Metal acceleration** for Whisper and Kokoro on Apple Silicon.
 
----
-
-## How It Works
-
-Wake word detection runs on the **raw audio stream**, before Whisper, and acts as a gate. Only utterances containing a detection are transcribed — cheaper than transcribing everything, and far more accurate than substring-matching a transcript:
+## How it works
 
 ```
-You speak
-    ↓  48kHz Opus from Discord
-    ↓  anti-aliased decimation to 16kHz + automatic gain control
-openWakeWord  (melspectrogram → embedding → classifier, one score per 80ms)
-    ↓  (score ≥ threshold — gate opens)
-    ↓  (1000ms silence detection)
-Whisper transcribes locally          ← only runs after a detection
-    ↓
-LM Studio streams response tokens
-    ↓  (sentence boundary detected)
-Kokoro streams sentence 1 audio ──► Discord plays sentence 1
-    ↓  (sentence 2 already being fetched in parallel)
-Kokoro streams sentence 2 audio ──► Discord plays sentence 2
-    ...
+You speak ─► openWakeWord (on the raw audio) ─► detection opens the gate
+          ─► Whisper transcribes ─► LM Studio streams a reply
+          ─► each finished sentence goes to Kokoro ─► Discord plays it
+             (sentence N+1 is synthesized while N plays)
 ```
 
-Key design decisions:
-
-- **Wake word gates Whisper**: detection happens on the audio itself, so Whisper no longer transcribes every utterance in the channel. If the models fail to load, Luna falls back to the original behaviour — transcribe everything, then match the wake word in the text.
-- **Per-speaker detectors**: each user gets an independent feature pipeline. Sharing one would interleave their audio and corrupt every detection. The ONNX sessions themselves are shared.
-- **Pre-roll buffer**: the energy gate discards audio below `ENERGY_THRESHOLD`, which clips quiet word onsets — `s`, `f`, `th`, `wh`, `k`, `p`. Luna keeps the last `PREROLL_MS` of sub-threshold audio and prepends it, so Whisper receives the start of the word rather than guessing it.
-- **Sentence-chunked TTS**: the LLM response is split into sentences as tokens arrive. Each sentence is sent to Kokoro immediately — Luna starts speaking the first sentence while the LLM is still generating the rest.
-- **Prefetch pipeline**: Kokoro begins generating sentence N+1 while sentence N is still playing, eliminating gaps between sentences. Kokoro runs synthesis on a worker thread so this actually overlaps rather than serialising on the event loop.
-- **Per-speaker conversation memory**: each speaker gets their own LM Studio chain, dropped after an idle timeout or a turn cap. A single shared chain carries no speaker attribution, so the model reads several people's turns as one self-contradicting user — and unbounded chains make every turn slower than the last.
-- **Interrupt on wake word, scoped per speaker**: audio capture runs continuously regardless of whether Luna is speaking. A new wake word stops *that speaker's* current response; other speakers' queued responses are unaffected.
+If the wake word models fail to load, Luna falls back to transcribing everything and matching "hey Luna" in the text.
 
 ---
 
 ## Requirements
 
-- macOS or Linux
+- macOS or Linux, with Docker
+- [LM Studio](https://lmstudio.ai) with a model loaded. See [Hardware sizing](#hardware-sizing); a model too big for your RAM is the most common cause of slow replies.
 - A Discord bot token
-- [LM Studio](https://lmstudio.ai) with a loaded model (required regardless of install method)
-- Docker
-- **Optional**: A trained openWakeWord model (a basic trained version of 'hey luna' is provided, and works reasonably well) plus the two shared feature models (see step 2)
-- **Optional but recommended**: A [Tavily](https://tavily.com) API key (free tier, for web search)
+- Optional: a [Tavily](https://tavily.com) API key (the free tier is enough) for web search
+- Apple Silicon only: Homebrew, `cmake` (`brew install cmake`) and the Xcode command line tools (`xcode-select --install`)
 
-**Before you go further, read [Hardware sizing](#hardware-sizing).** Picking a model that doesn't fit your RAM is by far the most common way to end up with a 25-second voice assistant, and no amount of tuning elsewhere compensates for it.
+## Setup
 
----
-
-## Installation
-
-### 1. Clone the repo
+### 1. Clone
 
 ```bash
 git clone https://github.com/smakus/luna-discord-ai-voice-chatbot
-cd luna-discord-ai-voice-chatbot
+cd luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker
 ```
 
-### 2. Wake word models
+The wake word models (`hey_luna.onnx` plus openWakeWord's two feature models) and the activation chime are already included in `Luna/`.
 
-openWakeWord is a **three-model chain**, and a trained wake word model is only the last stage. It consumes speech embeddings, not audio — it cannot process a waveform on its own:
+### 2. LM Studio
 
-| Model | Input | Output | Where from |
-| ----- | ----- | ------ | ---------- |
-| `melspectrogram.onnx` | 16kHz PCM | 32-bin mel frames | shared, download below |
-| `embedding_model.onnx` | 76 mel frames | 96-dim embedding | shared, download below |
-| `hey_luna.onnx` | 16 embeddings | score 0–1 | **you train this yourself if the provided model isn't good enough** |
+1. Download an instruction-tuned model sized for your machine, and load it with GPU offload at maximum and a context length of about 4096.
+2. Start the local server, bound to `0.0.0.0` so Docker can reach it.
+3. Enable authentication and copy the bearer token. Enable MCP too if you want web search.
 
-Download the two shared models into `Luna-Discord-Bot-Full-Docker/Luna/`:
+### 3. Discord bot
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and add a bot.
+2. Under **Privileged Gateway Intents**, enable **Message Content Intent**. It's the only privileged intent Luna needs.
+3. Invite the bot with these permissions: **View Channels**, **Send Messages**, **Connect**, **Speak**, **Use Voice Activity**.
+
+### 4. Configure `.env`
 
 ```bash
-cd Luna-Discord-Bot-Full-Docker/Luna
-curl -LO https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx
-curl -LO https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx
-ls -la *.onnx     # both should be ~1MB+, not a few KB
+cp Luna/example.env Luna/.env
 ```
 
-Train your own wake word model with the official [Google Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing) — about an hour, fully synthetic training data, no recording required. Or search [OpenWakeWord's Library](https://openwakeword.com/library) for a pre-trained phrase.  Use the phrase **"hey luna"**, export **ONNX**, and save it as `Luna/hey_luna.onnx`.
+Fill in at least `DISCORD_TOKEN` and `LM_STUDIO_MCP_BEARER_TOKEN`, and add `TAVILY_API_KEY` if you want web search. Under Docker Compose, `LM_STUDIO_URL`, `KOKORO_URL` and `WHISPER_SERVER_URLS` come from the compose file, which overrides whatever `.env` says. `.env` is kept out of the Docker image, so your tokens are never baked into it.
 
-> **Use a multi-syllable phrase.** A single-word "luna" trains poorly — two syllables of common phonemes with no distinctive onset. Every official openWakeWord model is 3–4 syllables (`hey_jarvis`, `hey_mycroft`, `alexa`) for exactly this reason.
+### 5. Start it
 
-To check the model is working, set `OWW_DEBUG_SCORE=0.05` in `.env` and watch the logs while you speak. A healthy model peaks above 0.9 on the wake phrase and sits near 0.000 otherwise — see [Reading the scores](#reading-the-scores).
+**Apple Silicon (recommended on any M-series Mac).** Whisper and Kokoro run natively on the GPU; only Luna runs in Docker. Docker's Linux VM can't use Metal, so running them in containers would leave them CPU-only.
 
-### 3. Set up LM Studio
-
-1. Download and install [LM Studio](https://lmstudio.ai)
-2. Download an instruction-tuned model sized for your machine — see [Hardware sizing](#hardware-sizing). LM Studio flags whether a model is fully GPU-offloadable on your hardware; trust that indicator.
-3. Load the model, set GPU offload to maximum, and set context length to ~4096. Luna's prompts are short, and KV cache competes with the weights for the same memory.
-4. Start the local server (green toggle in the Server tab). Bind to `0.0.0.0`, not just `127.0.0.1`, so Docker can reach it.
-5. Enable authentication in LM Studio settings and copy the bearer token
-6. Enable MCP in LM Studio if you want web search
-
-### 4. Create a Discord bot
-
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application and add a bot
-3. Under **Privileged Gateway Intents**, enable:
-   - Server Members Intent
-   - Message Content Intent
-   - Voice States
-4. Copy the bot token
-5. Invite the bot to your server with these permissions:
-   - Read Messages / View Channels
-   - Send Messages
-   - Connect
-   - Speak
-   - Use Voice Activity
-
-### 5. Configure environment variables
-
-Create a `.env` file in `Luna-Discord-Bot-Full-Docker/Luna/` (see `example.env`):
-
-```env
-# Discord
-DISCORD_TOKEN=your_discord_bot_token
-
-# LM Studio — use host.docker.internal when running in Docker
-LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
-LM_STUDIO_MCP_BEARER_TOKEN=your_lm_studio_bearer_token
-
-# Kokoro TTS — use the Docker service name when running in Docker Compose
-KOKORO_URL=http://kokoro:8880/v1/audio/speech
-KOKORO_VOICE=af_heart
-
-# Tavily web search (optional)
-TAVILY_API_KEY=your_tavily_api_key
-
-# Comma-separated Discord user IDs to ignore (e.g. music bots)
-IGNORED_USER_IDS=
-
-# Wake word detection confidence. openWakeWord's default is 0.5; the right value
-# depends entirely on your model — tune it against real scores, see Tuning below.
-OWW_THRESHOLD=0.15
-
-# Minimum audio energy to buffer speech for Whisper. Independent of wake word
-# detection: the detector always sees every frame regardless of this.
-ENERGY_THRESHOLD=175
-
-# Audio kept from before the energy gate opens, so quiet word onsets survive.
-PREROLL_MS=320
-
-#see the example .env file for more settings!
-```
-
-> **Note:** If running outside Docker, replace `host.docker.internal` with `127.0.0.1` and `kokoro` with `localhost`. Under Docker Compose, `LM_STUDIO_URL`, `KOKORO_URL` and `WHISPER_SERVER_URLS` are also set in the compose file, and those values take precedence over `.env`.
-
-`.env` is excluded from the Docker build context, so your tokens are never baked into an image layer. Compose reads it from the host at runtime.
-
-**Available Kokoro voices:**
-
-| Voice         | Description                  |
-| ------------- | ----------------------------- |
-| `af_heart`    | American female (warm)       |
-| `af_sarah`    | American female (clear)      |
-| `af_bella`    | American female (expressive) |
-| `af_sky`      | American female (bright)     |
-| `bf_emma`     | British female                |
-| `bf_isabella` | British female (formal)      |
-
-### 6. Add a chime sound
-
-Place a file named `chime.mp3` in `Luna-Discord-Bot-Full-Docker/Luna/`. This plays when Luna is activated. Any short MP3 works — keep it under 2 seconds.
-
-### 7. Build
-
-Two supported layouts. Pick one based on your hardware.
-
-#### Apple Silicon (recommended on any M-series Mac)
-
-Whisper and Kokoro both run natively with Metal; only Luna runs in a container.
-
-Docker Desktop on Apple Silicon runs a Linux VM with no access to Metal, CoreML or the Neural Engine — it gets a slice of your CPU cores and nothing else. Whisper's encoder and Kokoro's synthesis are exactly the kind of dense matmul workload the GPU exists for, so containerising either one on this hardware gives up the machine's main advantage. For Kokoro specifically, staying in Docker is a double cost: it's stuck on CPU *and* `docker-compose.yml` deliberately throttles it to `KOKORO_THREADS=2` / `KOKORO_MAX_CONCURRENCY=2` so it doesn't starve Whisper and LM Studio for cores. Move it to the GPU via MPS and that throttle stops being necessary — Kokoro isn't competing for CPU cycles at all anymore.
-
-**Terminal 1** — Whisper:
+Use three terminals, all in `Luna-Discord-Bot-Full-Docker/`, and start them in this order:
 
 ```bash
-cd Luna-Discord-Bot-Full-Docker
-
-# Builds whisper.cpp with Metal and downloads the model. First run takes
-# a few minutes; afterwards it starts immediately.
-./scripts/whisper-metal.sh
+./scripts/whisper-metal.sh      # 1. first run builds whisper.cpp and downloads the model
+./scripts/kokoro-metal.sh       # 2. first run creates a venv; wait for "Starting Kokoro TTS server"
+docker compose -f docker-compose.metal.yml up --build   # 3. Luna
 ```
 
-Requires `cmake` (`brew install cmake`) and the Xcode command line tools (`xcode-select --install`).
+Luna has no health check to wait on for the native services, so start terminal 3 only after the first two report they're ready. In terminal 2, `[kokoro] warm — device=mps` confirms Kokoro is actually on the GPU.
 
-**Terminal 2** — Kokoro:
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
-
-# Creates a venv, installs kokoro + deps, and runs the TTS server with
-# PYTORCH_ENABLE_MPS_FALLBACK=1 so PyTorch dispatches to the GPU. First run
-# takes a few minutes (venv + model download); afterwards it's quick.
-./scripts/kokoro-metal.sh
-```
-
-Requires Homebrew (for `espeak-ng`). kokoro's PyPI releases don't yet support Python 3.13+, so the script hunts your PATH for a 3.10–3.12 interpreter and, failing that, installs `python@3.11` via Homebrew automatically — no manual pyenv juggling needed.
-
-Wait for `Starting Kokoro TTS server on http://localhost:8880` before moving on — that line only prints after the warm-up render completes, so it's your real readiness signal.
-
-**Terminal 3** — everything else:
+**Linux or Intel Mac.** Everything runs in containers:
 
 ```bash
-cd Luna-Discord-Bot-Full-Docker
-docker compose -f docker-compose.metal.yml up --build
-```
-
-Order matters here in a way it didn't before: with both Whisper and Kokoro pulled out of Compose, Luna has no container-level healthcheck to wait on for either of them. Start terminals 1 and 2 and let each report ready *before* starting terminal 3, or Luna's first request or two will hit a service that isn't listening yet.
-
-#### Linux, or Intel Mac
-
-Everything in containers.
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
 docker compose up --build
 ```
 
-This builds and starts three containers: **luna** (the Discord bot), **kokoro** (TTS), and **whisper** (speech-to-text).
+Add `--build` whenever you've changed a source file. To stop, press `Ctrl-C` and run `docker compose down` (with `-f docker-compose.metal.yml` on Apple Silicon).
 
-> `npm install` is not required before building. The image runs `npm ci` against the committed lockfile, and `node_modules` is excluded from the build context. You only need a local install if you change `package.json`.
-
----
-
-## Running Luna
-
-Once the above is set up, day-to-day startup is:
-
-**1.** Start LM Studio and load your model.
-
-**2. Apple Silicon** — terminal 1:
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
-./scripts/whisper-metal.sh
-```
-
-Terminal 2, once terminal 1 says it's listening:
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
-./scripts/kokoro-metal.sh
-```
-
-Terminal 3, once terminal 2 prints `Starting Kokoro TTS server on http://localhost:8880`:
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
-docker compose -f docker-compose.metal.yml up
-```
-
-**Linux / Intel Mac** — one terminal:
-
-```bash
-cd Luna-Discord-Bot-Full-Docker
-docker compose up
-```
-
-Add `--build` to the compose command whenever you've edited a source file.
-
-**Startup takes a minute or two, and that's intentional.** On Linux/Intel, Kokoro renders a warm-up phrase before it reports healthy, and Luna waits for that via Compose's healthcheck. On the Apple Silicon Metal path, that warm-up happens in terminal 2 instead — Compose has no visibility into Kokoro at all anymore, which is exactly why terminal 3 has to come last.
-
-A healthy start, Linux/Intel path (Compose logs):
+A healthy start looks like:
 
 ```
-[kokoro] warm — device=cpu, threads=2, concurrency=2, voice=af_heart
 Using LM Studio model: <your-model>
-[oww] loaded hey_luna.onnx (input="onnx::Flatten_0", window=16 frames)
 [oww] seeded feature buffer with 50 noise embeddings (baseline score 0.0009)
 [oww] active — threshold=0.15, Whisper gated on detection
 Ready! Wake phrase: "hey Luna"  •  text command: !luna
-```
-
-On the Apple Silicon Metal path, the `[kokoro] warm` line appears in **terminal 2**, not in Compose's output, and looks like this instead:
-
-```
-MPS built:     True
-MPS available: True
-[kokoro] warm — device=mps, threads=4, concurrency=4, voice=af_heart
-Starting Kokoro TTS server on http://localhost:8880
-```
-
-Confirm the warm line says `device=mps` before moving to terminal 3. That is the device the model actually loaded on; `device=cpu` means Kokoro is running without Metal, with no other error. (If `MPS available` is `False`, see Troubleshooting.)
-
-Things to check in the Compose output (terminal 3 on the Metal path):
-
-- **baseline score** is your model scoring pure noise. If it is anywhere near your threshold, the model will false-fire constantly — fix that before debugging anything else.
-- **`[oww] unavailable (...)`** means the models aren't in place and Luna has fallen back to transcript matching. Still functional, just less accurate and more expensive.
-
-To shut down: `Ctrl-C`, then `docker compose down` (add `-f docker-compose.metal.yml` on the Metal path), then `Ctrl-C` in the Kokoro terminal, then `Ctrl-C` in the Whisper terminal.
-
-### Optional: shell aliases
-
-```bash
-# ~/.zshrc or ~/.bashrc
-alias luna-whisper='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && ./scripts/whisper-metal.sh'
-alias luna-kokoro='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && ./scripts/kokoro-metal.sh'
-alias luna-up='cd ~/luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker && docker compose -f docker-compose.metal.yml up'
 ```
 
 ---
 
 ## Usage
 
-1. Join a Discord voice channel
-2. In any text channel, type `!luna`
-3. Luna will join your voice channel
-4. Say **"hey Luna"** followed by your question or command
+1. Join a voice channel and type `!luna` in any text channel. Luna joins and introduces herself.
+2. Say **"hey Luna"** followed by your request, as one continuous phrase. Discord doesn't transmit pauses, so "hey… Luna" is harder to detect.
 
-**Examples:**
+| Say | What happens |
+| --- | ------------ |
+| "Hey Luna, tell me a joke" | LLM answer |
+| "Hey Luna, what's the weather today?" | Web search, then answer |
+| "Hey Luna, what did I just ask you?" | Uses your conversation memory |
+| "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
 
-- *"Hey Luna, what's the weather today?"* — triggers web search via Tavily
-- *"Hey Luna, tell me a joke"* — direct LLM response
-- *"Hey Luna, what did I just ask you?"* — uses conversation memory
-- *"Hey Luna, play Bohemian Rhapsody"* — triggers music bot integration
+Web search triggers on current-information terms ("price", "weather", "score", "the latest", "any news"). A time word only counts next to one of those, so "weather today" searches but "how are you today" doesn't.
 
-**Say the wake phrase as one continuous run.** Discord only transmits while you are speaking, so a deliberate pause between "hey" and "Luna" gets dropped from the stream entirely. Luna reconstructs that silence from packet timings, but a natural delivery still works best.
+Luna leaves the voice channel automatically when the last person does.
 
-**Interrupting Luna:** say "hey Luna" at any point while she is answering *you* to interrupt and ask something new. This is scoped per speaker — interrupting no longer cancels an answer Luna is giving to someone else. Barge-in only takes effect once the LLM has finished generating; utterances during generation are buffered, not lost.
+### Announcements
 
-**Web search** fires when the query looks like it needs current information. Entity terms (`price`, `weather`, `score`) and unambiguous recency phrases (`the latest`, `any news`, `release date`) trigger it on their own. Bare time words like "today" only count when paired with a subject whose answer changes — so *"what's the weather today"* searches and *"how are you doing today"* does not.
+- **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
+- **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
+- **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
+
+Bots, `IGNORED_USER_IDS` and mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
+
+To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
+
+```env
+GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
+FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
+```
+
+---
+
+## Configuration
+
+Everything is set in `Luna/.env`. Most changes only need a container recreate (`docker compose up -d --force-recreate luna`), not a rebuild.
+
+### Announcement settings
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `ANNOUNCE_SELF` | `true` | Intro when Luna joins |
+| `GREET_ON_JOIN` | `true` | Greet people who join |
+| `ANNOUNCE_LEAVE` | `true` | Announce people who leave |
+| `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
+| `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
+| `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+
+### Wake word
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `OWW_ENABLED` | `true` | `false` falls back to matching "hey Luna" in the transcript |
+| `OWW_MODEL_PATH` | `hey_luna.onnx` | Wake word classifier |
+| `OWW_THRESHOLD` | `0.5` | Detection confidence; tune it against real scores |
+| `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
+| `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
+| `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
+| `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
+| `OWW_DEBUG_SCORE` | `0` | Log every score at or above this value |
+
+### Audio and memory
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `ENERGY_THRESHOLD` | `300` | Minimum level that counts as speech |
+| `SILENCE_MS` | `1000` | Silence that ends an utterance; the biggest fixed latency. About 700 is worth trying |
+| `MIN_SPEECH_MS` | `300` | Shorter utterances are ignored |
+| `MAX_SPEECH_MS` | `15000` | Force-end an utterance after this much unbroken speech |
+| `PREROLL_MS` | `320` | Audio kept from just before speech starts, so first syllables aren't clipped |
+| `LM_MEMORY_TTL_MS` | `600000` | Forget a speaker's conversation after this much silence |
+| `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
+| `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
+| `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
+
+### Voices, TTS and timeouts
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
+| `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
+| `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
+| `WHISPER_TIMEOUT_MS` / `LM_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `120000` / `30000` | Request timeouts |
+
+The Whisper model is `ggml-small.en-q5_1.bin` by default. On Apple Silicon you can afford a more accurate one: `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh` (or `ggml-large-v3-turbo-q5_0.bin`). On the Docker path it's a build arg in `docker-compose.yml`.
+
+### Tuning the wake word
+
+Set `OWW_DEBUG_SCORE=0.05` and watch the logs as you speak. Every ignored utterance reports its best score:
+
+```
+utterance discarded — no wake word (2100ms, peak score 0.234, threshold 0.15)
+```
+
+- **Peak just under the threshold:** lower `OWW_THRESHOLD`.
+- **Peak around `0.00x`:** the model didn't react at all. Retrain it rather than tuning.
+- **Triggers on background noise:** raise `OWW_THRESHOLD`. Compare against the baseline score printed at startup.
+
+To train your own model, use the openWakeWord [Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing). It takes about an hour with synthetic data. Export it as ONNX and save it as `Luna/hey_luna.onnx`. Use a phrase of 3–4 syllables; a bare "luna" trains poorly. More detail is in [`openWakeWordNotes.md`](Luna-Discord-Bot-Full-Docker/Luna/openWakeWordNotes.md).
 
 ---
 
 ## Hardware sizing
 
-**The LLM is almost always your latency.** Once Whisper and Kokoro are set up correctly they are sub-second; a model that doesn't fit your RAM will take 25 seconds to produce eight tokens. On unified-memory Macs, macOS also caps how much memory the GPU may wire — roughly two thirds of total — so a model larger than that ceiling cannot be fully offloaded no matter what LM Studio says.
-
-Rough budget, since the LLM shares the machine with everything else:
-
-**Linux / Intel Mac (everything in Docker):**
-
-| Consumer | Approx |
-| -------- | ------ |
-| OS + apps | ~4 GB |
-| Docker (Kokoro's torch + Luna) | ~3–4 GB |
-| Whisper | ~0.5–1 GB |
-
-**Apple Silicon Metal path (only Luna in Docker):**
-
-| Consumer | Approx |
-| -------- | ------ |
-| OS + apps | ~4 GB |
-| Docker (Luna only) | ~1 GB |
-| Native Whisper + Kokoro | ~1–1.5 GB, plus whatever the Metal backend wires for GPU use |
-
-The Metal path shows up as a smaller number here but isn't free — it trades Docker's CPU-shared RAM for memory the GPU wires directly, which counts against the same unified-memory ceiling described above. It leaves more *budget* for the LLM mainly because Kokoro and Whisper are no longer holding CPU-side allocations at all, not because the work vanished.
-
-Whatever's left is your LLM budget, weights plus KV cache:
+**The LLM is almost always the bottleneck.** Whisper and Kokoro are sub-second; a model that doesn't fit in memory can take 25 seconds to reply. On Macs, the GPU can only use about two thirds of total RAM.
 
 | Total RAM | Realistic LLM |
 | --------- | ------------- |
@@ -374,155 +214,13 @@ Whatever's left is your LLM budget, weights plus KV cache:
 | 24 GB | 12–14B at Q4 |
 | 32 GB+ | 24–27B at Q4 |
 
-If you're unsure whether your model fits, watch memory while Luna answers. On macOS, Activity Monitor → Memory: yellow or red pressure, or swap in the gigabytes, means it doesn't. On Linux, `vmstat 1` and watch `si`/`so`.
-
-For a voice assistant producing two-sentence spoken replies, a smaller model that answers in 2 seconds beats a larger one that answers in 25 — you will notice the latency constantly and the capability difference almost never.
-
-### Whisper tuning
-
-On the Metal path the model is an env var:
-
-```bash
-WHISPER_MODEL=ggml-small.en-q5_1.bin ./scripts/whisper-metal.sh
-```
-
-| Model | Size | Notes |
-| ----- | ---- | ----- |
-| `ggml-base.en-q5_1.bin` | ~60 MB | Fastest, least accurate |
-| `ggml-small.en-q5_1.bin` | ~180 MB | Good default when memory is tight |
-| `ggml-medium.en-q5_0.bin` | ~540 MB | Noticeably more accurate; good Metal choice if you have headroom |
-| `ggml-large-v3-turbo-q5_0.bin` | ~570 MB | Most accurate; needs headroom |
-
-On the Docker path it's a build arg in `docker-compose.yml`, and `WHISPER_THREADS` sets CPU threads. `-bs 1 -bo 1` (greedy decoding) favours speed; raising them improves accuracy at real latency cost.
-
-whisper.cpp is pinned to a specific release in `Whisper/Dockerfile` and `scripts/whisper-metal.sh`. Bump it deliberately — server CLI flags have changed between versions.
-
----
-
-## Tuning
-
-Environment variables in `Luna/.env`. Most take effect with a container recreate (`docker compose up -d --force-recreate luna`) rather than a full rebuild.
-
-### Wake word
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `OWW_ENABLED` | `true` | `false` reverts to transcript matching |
-| `OWW_MODEL_PATH` | `./hey_luna.onnx` | Your trained classifier |
-| `OWW_MELSPEC_PATH` | `./melspectrogram.onnx` | Shared feature model |
-| `OWW_EMBEDDING_PATH` | `./embedding_model.onnx` | Shared feature model |
-| `OWW_THRESHOLD` | `0.5` | Detection confidence |
-| `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
-| `OWW_REFRACTORY_MS` | `1500` | Ignore re-fires after a detection |
-| `OWW_GRACE_MS` | `2000` | How far before an utterance a detection still counts |
-| `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
-| `OWW_AGC_TARGET_RMS` | `4000` | Level the AGC normalises toward |
-| `OWW_DEBUG_SCORE` | `0` | Log every score at or above this |
-
-### Audio gate
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `ENERGY_THRESHOLD` | `300` | Minimum audio energy level to count as speech |
-| `SILENCE_MS` | `1000` | ms of silence before processing utterance |
-| `MIN_SPEECH_MS` | `300` | Minimum utterance length to bother transcribing |
-| `MAX_SPEECH_MS` | `15000` | Force-flush after this much unbroken speech |
-| `MAX_SILENCE_FILL_MS` | `2000` | Max silence reconstructed across packet gaps |
-| `PREROLL_MS` | `320` | Audio kept from *before* the gate opens |
-
-`PREROLL_MS` exists because `ENERGY_THRESHOLD` clips word onsets. Unvoiced consonants sit below the threshold for 50–150 ms, so without pre-roll the audio Whisper receives starts mid-word and Whisper guesses the rest: *"what's the score"* arrives as *"the score"*. Raise it if first words still go missing; `0` restores the old behaviour. `MIN_SPEECH_MS` is measured against real speech only, so pre-roll doesn't weaken that gate.
-
-`SILENCE_MS` is a flat second added to every interaction and is usually the largest remaining fixed latency. Lowering it to ~700 is worth trying; too low and Luna cuts you off mid-thought.
-
-### Conversation memory
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `LM_MEMORY_TTL_MS` | `600000` | Drop a speaker's chain after this much silence |
-| `LM_MEMORY_MAX_TURNS` | `12` | Drop a speaker's chain after this many turns |
-
-Memory is per speaker. Both caps bound prefill: the chain grows with every turn and prefill cost is linear in context, so an unbounded chain makes each answer slower than the last.
-
-### TTS server
-
-On Linux/Intel, set these in the compose file, not `.env`.
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `KOKORO_THREADS` | `2` | torch intra-op threads |
-| `KOKORO_MAX_CONCURRENCY` | `2` | Simultaneous syntheses |
-
-torch otherwise takes one thread per core, and because sentence N+1 is prefetched while N plays, that collides with the LLM still generating sentence N+2.
-
-On the Apple Silicon Metal path, Kokoro isn't sharing CPU cores with anything anymore — synthesis runs on the GPU via MPS — so `kokoro-metal.sh` defaults both values higher (`4`/`4`). Override by exporting before running the script:
-
-```bash
-KOKORO_THREADS=6 KOKORO_MAX_CONCURRENCY=6 ./scripts/kokoro-metal.sh
-```
-
-`kokoro_server.py` loads the model on MPS itself (override with `KOKORO_DEVICE=cpu|mps|cuda`) — kokoro 0.9.4 never selects MPS on its own. The script also sets `PYTORCH_ENABLE_MPS_FALLBACK=1`, so the few ops without an MPS kernel fall back to CPU instead of erroring. On MPS, inference steps are serialised internally, so raising `KOKORO_MAX_CONCURRENCY` past 2 buys little.
-
-### Timeouts
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `WHISPER_TIMEOUT_MS` | `60000` | |
-| `LM_TIMEOUT_MS` | `120000` | |
-| `KOKORO_TIMEOUT_MS` | `30000` | Awaited inside the shared playback chain |
-
-**Tips:**
-
-- If Luna triggers on background noise, **increase** `OWW_THRESHOLD`
-- If Luna misses the wake word, **decrease** `OWW_THRESHOLD` — but check the peak scores first
-- If Luna cuts you off too early, **increase** `SILENCE_MS`
-- **Setting `ENERGY_THRESHOLD` too low is worse than too high** — see Troubleshooting
-
-### Reading the scores
-
-Set `OWW_DEBUG_SCORE=0.05` and watch the logs while speaking normally:
-
-```
-[oww] score=0.646 gain=1.7x rms=2108
-```
-
-Every discarded utterance also reports the model's best score across it:
-
-```
-utterance discarded — no wake word (2100ms, peak score 0.234, threshold 0.15)
-```
-
-That peak is the fastest diagnostic available:
-
-| Peak on a missed attempt | Meaning | Action |
-| ------------------------ | ------- | ------ |
-| Just under threshold | Threshold too high | Lower `OWW_THRESHOLD` |
-| `0.00x` | Model didn't react at all | Tuning won't help — retrain |
-| No line logged | Audio never reached the gate | Problem is upstream |
-
-Compare against the baseline printed at startup. If noise scores 0.001 and your wake word scores 0.6, you have a wide margin and can lower the threshold safely. If detections fire at 0.23 while ordinary conversation reaches 0.10, the margin is thin — and neither raising the threshold nor `OWW_TRIGGER_FRAMES=2` is safe. Retrain instead.
-
-Deeper detail on the openWakeWord port: [`Luna/openWakeWordNotes.md`](Luna-Discord-Bot-Full-Docker/Luna/openWakeWordNotes.md).
+Leave roughly 5–6 GB for the OS, Docker, Whisper and Kokoro. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
 
 ---
 
 ## Troubleshooting
 
-Luna logs a `[health]` line every 30 seconds per speaker, which is where most diagnosis starts:
-
-```
-[health] 73473[audio 0s ago, frames 254, peak30s 0.937, qdepth 0, flushing false, buffered 0]
-```
-
-| Field | Meaning | Bad sign |
-| ----- | ------- | -------- |
-| `audio Ns ago` | Last packet received | Frozen while you're speaking |
-| `frames` | Chunks the detector processed | Not increasing |
-| `peak30s` | Best score in the last 30s | `0.00x` while saying the wake phrase |
-| `qdepth` | Inference backlog | Climbing toward 25 — CPU starved |
-| `flushing` | A request is in flight | Stuck `true` for minutes |
-| `buffered` | Chunks awaiting flush | Hundreds while `flushing false` |
-
-Luna also logs three timings per exchange. Whichever dominates is your bottleneck:
+Luna logs timings for every exchange; whichever is largest is your bottleneck:
 
 ```
 [timing] Whisper done: 843ms
@@ -530,81 +228,36 @@ Luna also logs three timings per exchange. Whichever dominates is your bottlenec
 [timing] First audio start: 2560ms
 ```
 
-**Responses take 20+ seconds** — the model is too large for your RAM. See [Hardware sizing](#hardware-sizing). Nothing else will fix this.
+She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck at `true`, or `buffered` climbing into the hundreds, means that speaker's audio is stuck.
 
-**Luna doesn't respond to the wake word** — check the peak score on the discarded utterance. Near your threshold, lower `OWW_THRESHOLD`. If it's `0.00x`, the model didn't recognise the phrase and no threshold will help.
+| Symptom | Fix |
+| ------- | --- |
+| Replies take 20+ seconds | The model is too big for your RAM; see [Hardware sizing](#hardware-sizing) |
+| Doesn't respond to "hey Luna" | Check the peak score; see [Tuning the wake word](#tuning-the-wake-word) |
+| Answers once, then stops responding | Luna is probably hearing herself through your speakers. Use headphones, or raise `ENERGY_THRESHOLD` |
+| Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
+| LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
+| No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
+| `kokoro-metal.sh` reports port 8880 in use | Another Kokoro is running: a leftover container (`docker compose down`) or a second copy of the script |
+| `MPS available: False` | Metal needs macOS 12.3+ on Apple Silicon; otherwise Kokoro runs on CPU |
+| Slow Whisper or Kokoro on a Mac | You're on the Docker path. Use the Metal scripts instead |
 
-**Luna answers once, then stops responding** — `buffered` climbing into the hundreds while `flushing` reads `false` means the energy gate never closed: an utterance only ends after `SILENCE_MS` of audio below `ENERGY_THRESHOLD`. If that sits under your room's noise floor, the utterance never ends and that speaker buffers audio indefinitely. Raise `ENERGY_THRESHOLD`. The most common cause is Luna hearing herself through your speakers. **Headphones fix this outright.**
-
-**Wake word fires inconsistently** — bimodal scores (≈0.9 or ≈0.001, nothing between) are never a threshold problem. Usually the phrase was spoken with a pause Discord dropped from the stream, so the detector received a compressed "heyLuna". Say it as one continuous run.
-
-**I have to speak loudly for it to trigger** — `OWW_GAIN=auto` normalises detector input toward `OWW_AGC_TARGET_RMS`; it only ever boosts, so it cannot regress a working setup. If `gain` reads `1.0x` while you speak, raise the target. Also turn off Discord's **Noise Suppression** and **Automatic Gain Control**, both of which work against wake word models.
-
-**Whisper returns empty transcripts** — Whisper runs as its own server. On the Metal path, check the terminal running `whisper-metal.sh`. In Docker, `docker compose logs -f whisper`.
-
-**Whisper is slow** — on Apple Silicon, use the Metal path; a containerised Whisper has no GPU access. On Linux, lower `WHISPER_THREADS` before adding containers; the bottleneck is total core contention, not parallelism.
-
-**Kokoro is slow, or seems to be eating a CPU core, on Apple Silicon** — same story as Whisper: a containerised Kokoro has no access to Metal at all, and is additionally throttled to `KOKORO_THREADS=2` so it doesn't starve Whisper and LM Studio. Use `./scripts/kokoro-metal.sh` instead — see [Build](#7-build).
-
-**Kokoro is slow on the first request** — the warm-up failed. Check for `[kokoro] warm` in the logs (Compose output on Linux/Intel, terminal 2 on the Metal path); the failure message says why.
-
-**`kokoro-metal.sh` fails with `address already in use` on port 8880** — something else already has that port. Almost always either a dockerized `kokoro` container left over from before you switched to the Metal path, or a second `kokoro-metal.sh` already running in another tab. Check both:
-
-```bash
-lsof -i :8880
-docker compose -f docker-compose.metal.yml ps
-```
-
-`docker compose down` (or kill the stray process) and try again.
-
-**`kokoro-metal.sh` fails to install `kokoro`, citing a Python version requirement** — kokoro's PyPI releases require Python 3.10–3.12; if your default `python3` is 3.13+, `pip install` will fail with no matching distribution. The script handles this itself by searching for a compatible interpreter and installing `python@3.11` via Homebrew if it can't find one — if you still hit this, delete the stale venv and rerun: `rm -rf ~/.luna/kokoro-venv && ./scripts/kokoro-metal.sh`.
-
-**MPS available: False when starting Kokoro** — Metal acceleration requires macOS 12.3+ on Apple Silicon. If both conditions are met and it's still `False`, Kokoro will silently run on CPU with no error — check your macOS version before assuming something else is wrong.
-
-**LM Studio not reachable from Docker** — ensure its server is bound to `0.0.0.0`, not just `127.0.0.1`.
-
-**No audio in voice channel** — check the bot has **Connect** and **Speak** permissions.
-
-**Answers get truncated when several people are talking** — should no longer happen; the activation chime is suppressed while audio is playing. If you still see it, file an issue with the surrounding logs.
+Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.sh` rebuilds a build that can't start (for example after the folder was moved). Kokoro works around espeak-ng's path-length limit when its venv sits in a deeply nested folder.
 
 ---
 
-## Licensing note
+## MusicBot integration
 
-The openWakeWord **code** is Apache-2.0, and so are the two feature models (`melspectrogram.onnx`, `embedding_model.onnx`). Those are fine to ship.
+Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`.
 
-The **pre-trained wake word models** — `hey_jarvis`, `alexa`, `hey_mycroft` — are **CC BY-NC-SA 4.0 (non-commercial)**, because their training data includes datasets with restrictive licensing. They're excellent for validating your pipeline, but don't ship them in a commercial deployment. A model you train yourself carries no such restriction.
-
----
-
-## Advanced — MusicBot Integration
-
-If you run [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) in the same server, Luna can control music playback by saying *"hey Luna, play [song name]"*.
-
-Unlike some setups that need a relay cog to get around Discord's bot-to-bot message filtering, this integration works directly: MusicBot's own config supports whitelisting another bot's user ID so it stops ignoring Luna's commands. No extra cog required.
-
-### How it works
-
-Luna detects "play", "play song", or "play music" immediately following the wake word, extracts the song name, strips any stray quote marks Whisper sometimes adds around titles, and posts `!play <song>` to the text channel MusicBot is bound to. Luna also checks whether MusicBot is already present in the current voice channel — if not, she sends `!summon` first so MusicBot joins based on her own voice presence rather than failing with "not in the voice channel."
-
-### Setup
-
-**1. Get Luna's Discord user ID**
-
-Right-click Luna in Discord (with Developer Mode enabled) and copy her user ID.
-
-**2. Whitelist Luna in MusicBot's config**
-
-In MusicBot's `config/options.ini`, add Luna's user ID to `BotExceptionIDs` under `[Permissions]` so MusicBot stops ignoring her messages:
+MusicBot normally ignores messages from other bots, so whitelist Luna in its config. In `config/options.ini`:
 
 ```ini
 [Permissions]
 BotExceptionIDs = <Luna's Discord user ID>
 ```
 
-**3. Give Luna her own permission group (recommended)**
-
-MusicBot's `[Default]` permission group caps song length (`MaxSongLength`) and other limits for anyone not explicitly assigned elsewhere. Since commands relayed through Luna are attributed to Luna's own bot account, they fall under `[Default]` by default and can hit that cap unexpectedly. Add a dedicated group in `config/permissions.ini`:
+Commands relayed through Luna count as Luna's, so give her a permission group in `config/permissions.ini` without MusicBot's default song-length cap:
 
 ```ini
 [LunaBot]
@@ -612,44 +265,22 @@ UserList = <Luna's Discord user ID>
 MaxSongs = 0
 MaxSongLength = 0
 MaxPlaylistLength = 0
-MaxSearchItems = 10
 AllowPlaylists = yes
-InstaSkip = yes
-SkipLooped = no
-Remove = no
-SkipWhenAbsent = no
-BypassKaraokeMode = no
-SummonNoVoice = no
-Extractors = Bandcamp, generic, soundcloud, spotify:musicbot, youtube
 ```
 
-**4. Usage**
-
-Say: *"Hey Luna, play Bohemian Rhapsody"*
-
-Luna summons MusicBot into the channel if needed, posts `!play Bohemian Rhapsody`, and confirms with a short spoken response while the song loads.
-
-### Known issue — YouTube 403 errors / SABR streaming
-
-YouTube has been progressively rolling out server-side adaptive bitrate (SABR) enforcement that blocks some yt-dlp client profiles outright, and increasingly requires a proof-of-origin (PO) token to fetch media even when extraction succeeds. If MusicBot's `!play` commands fail with `HTTP Error 403: Forbidden`, this is almost certainly why — it's an active, ongoing change on YouTube's end, not something specific to this integration, and it can resurface after previously working.
-
-The fix that's currently reliable (as of this writing) requires three changes to MusicBot's own Docker setup, independent of Luna:
-
-1. **A PO token provider.** Add the [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin to MusicBot's image, along with a Deno runtime it depends on. This requires MusicBot's base image to have real glibc (`python:3.12-slim` works; Alpine's musl libc cannot run Deno even with the `gcompat` compatibility package).
-2. **A PO token provider sidecar.** Run `brainicism/bgutil-ytdlp-pot-provider` as a companion container with `network_mode: "service:musicbot"` in `docker-compose.yml`, so it's reachable at the plugin's default `127.0.0.1:4416` with no extra yt-dlp configuration.
-3. **A forced yt-dlp client list.** MusicBot has no built-in way to pass `--extractor-args` to yt-dlp, so this requires a small source patch to `musicbot/downloader.py`, forcing `extractor_args: {"youtube": {"player_client": ["android", "ios", "web_safari"]}}`. Some individual videos get served exclusively through YouTube's `android_vr` client, which is currently one of the profiles most consistently hit with 403s — this patch steers yt-dlp away from it in favor of clients that reliably attach a valid PO token.
-
-This is MusicBot-side configuration, not something Luna's code can work around — Luna just relays a plain `!play` command and has no visibility into how MusicBot resolves the download.
+If `!play` fails with `HTTP Error 403`, that's YouTube's ongoing anti-download changes, not Luna. The usual fix, on MusicBot's side, is the [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin and sidecar.
 
 ---
 
 ## Known limitations
 
-- Detection lags audio by up to ~160ms (80ms accumulation granularity plus inference).
-- Barge-in only works once the LLM has finished generating; utterances during generation are buffered.
-- Conversation memory is per speaker, so Luna can't follow a question that refers to what someone *else* just asked.
-- `SILENCE_MS` adds a flat ~1s of endpointing latency to every interaction.
-- English only — openWakeWord's synthetic training data is English-based.
+- Interrupting only takes effect once the LLM finishes generating; speech during generation is buffered, not lost.
+- Memory is per speaker, so Luna can't follow a question about what someone *else* asked.
+- English only.
+
+## Licensing note
+
+openWakeWord's code and its two feature models are Apache-2.0. Its pre-trained phrase models (`hey_jarvis`, `alexa`, `hey_mycroft`) are **CC BY-NC-SA 4.0, non-commercial only**. A model you train yourself has no such restriction.
 
 ## License
 
