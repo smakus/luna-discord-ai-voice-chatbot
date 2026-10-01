@@ -1,6 +1,6 @@
 # Luna — Discord AI Voice Assistant
 
-Luna is a locally hosted AI voice assistant for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud. Speech-to-text (Whisper), the LLM (LM Studio) and text-to-speech (Kokoro) all run on your own machine, so there are no cloud AI costs. The one exception is the optional Tavily web search.
+Luna is a locally hosted AI voice assistant for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud. Speech-to-text (Whisper), the LLM (LM Studio) and text-to-speech (Kokoro) all run on your own machine, so there are no cloud AI costs. The exceptions are opt-in: Tavily web search, and ElevenLabs as an alternative voice.
 
 If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
@@ -9,6 +9,7 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 🎤 **Neural wake word.** Say "hey Luna" to activate. [openWakeWord](https://github.com/dscripka/openWakeWord) runs on the raw audio, so only real requests get transcribed.
 - 🧠 **Local LLM** via LM Studio, with separate conversation memory for each speaker.
 - 🔊 **Streaming TTS** via Kokoro. Luna starts speaking her first sentence while the rest is still being generated.
+- 🎭 **Optional ElevenLabs voice** (v4 Turbo), with expressive audio tags like `[laughs]` and `[whispers]`. Luna falls back to Kokoro automatically when credits run out. See [Text-to-speech providers](#text-to-speech-providers).
 - 👥 **Multi-user.** Every speaker gets their own audio capture and wake word detector, and answers queue so no one's question cancels someone else's.
 - 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer.
 - 👋 **Voice-channel announcements.** Luna introduces herself when she joins, greets people who join the channel by name, and announces who left. The wording is customizable.
@@ -133,6 +134,24 @@ FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
 INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
 ```
 
+### Text-to-speech providers
+
+Kokoro is the default. To use ElevenLabs instead, set this in `.env`:
+
+```env
+TTS_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=your_key
+ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
+```
+
+- **Fallback:** keep Kokoro running, because it's the fallback.
+  - When ElevenLabs runs out of credits, or the key, voice or plan is rejected, Luna switches to Kokoro for 30 minutes (`TTS_PROVIDER_RETRY_MS`), then tries ElevenLabs again. Topping up brings it back without a restart.
+  - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
+- **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro never gets that instruction, and any tag that does reach it is removed, so it never reads "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
+- **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
+
+The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4_turbo) → fallback Kokoro, expressive`.
+
 ---
 
 ## Configuration
@@ -181,6 +200,14 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
+| `TTS_PROVIDER` | `kokoro` | `kokoro` or `elevenlabs` |
+| `TTS_FALLBACK` | `kokoro` | `none` disables falling back |
+| `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after running out of credits or a key/voice error |
+| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
+| `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
+| `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
+| `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
+| `ELEVENLABS_TIMEOUT_MS` | `10000` | Falls back to Kokoro after this |
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
 | `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
@@ -241,6 +268,7 @@ She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck a
 | `kokoro-metal.sh` reports port 8880 in use | Another Kokoro is running: a leftover container (`docker compose down`) or a second copy of the script |
 | `MPS available: False` | Metal needs macOS 12.3+ on Apple Silicon; otherwise Kokoro runs on CPU |
 | Slow Whisper or Kokoro on a Mac | You're on the Docker path. Use the Metal scripts instead |
+| Voice switches to Kokoro mid-session | ElevenLabs ran out of credits or rejected the key or voice. The `[tts]` log line says which |
 
 Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.sh` rebuilds a build that can't start (for example after the folder was moved). Kokoro works around espeak-ng's path-length limit when its venv sits in a deeply nested folder.
 
