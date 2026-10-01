@@ -8,9 +8,9 @@ const {
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
 const prism = require('prism-media');
-const { PassThrough } = require('stream');
 const path = require('path');
 const { WakeWordEngine } = require('./wakeword');
+const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -138,9 +138,6 @@ const LM_FLAVOR_CHANCE = parseFloat(process.env.LM_FLAVOR_CHANCE || '0.15');
 // from elsewhere still finds it.
 const CHIME_PATH = path.join(__dirname, 'chime.mp3');
 
-const KOKORO_URL   = process.env.KOKORO_URL;
-const KOKORO_VOICE = process.env.KOKORO_VOICE;
-
 // ─── Conversation memory scope ────────────────────────────────────────────────
 //
 // LM Studio's `previous_response_id` chains a conversation server-side. Two
@@ -224,9 +221,7 @@ const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 // genuinely slow — these are for hangs, not slowness.
 const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000', 10);
 const LM_TIMEOUT_MS      = parseInt(process.env.LM_TIMEOUT_MS      || '120000', 10);
-// Kokoro's is the most important of the three: its result is awaited INSIDE the
-// shared playback chain, so a hang here blocks audio for every speaker.
-const KOKORO_TIMEOUT_MS  = parseInt(process.env.KOKORO_TIMEOUT_MS  || '30000',  10);
+// TTS timeouts live in tts.js with the providers.
 
 // Backstop if something still wedges despite the timeouts above.
 const STUCK_FLUSH_MS = 180000;
@@ -319,6 +314,7 @@ async function initWakeWord() {
 client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
+  console.log(`[tts] ${describeTTS()}`);
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
@@ -1235,7 +1231,10 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
   const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE
     ? ' ' + LM_FLAVOR_PROMPT
     : '';
-  body.system_prompt = LM_SYSTEM_PROMPT + flavor;
+  // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
+  // the one speaking; empty for Kokoro, so it is never told to use tags.
+  const expressive = expressivePrompt();
+  body.system_prompt = LM_SYSTEM_PROMPT + flavor + (expressive ? ' ' + expressive : '');
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
@@ -1367,62 +1366,13 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
 
 // ─── TTS: fetch and play (split for prefetch pipeline) ──────────────────────
 //
-// fetchTTS()  — starts the Kokoro request and returns a PassThrough stream.
+// fetchTTS()  — (tts.js) starts synthesis on the configured provider and
+//               returns a readable audio stream, falling back between providers.
 //               Called as soon as a sentence is ready, even while a previous
 //               sentence is still playing, so audio is ready with zero wait.
 //
 // playTTS()   — subscribes the stream to the Discord player and awaits completion.
 //               Called by the playback queue in order.
-
-async function fetchTTS(text) {
-  try {
-    const res = await fetch(KOKORO_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, voice: KOKORO_VOICE, stream: true }),
-      signal: AbortSignal.timeout(KOKORO_TIMEOUT_MS),
-    });
-
-    if (!res.ok) {
-      console.error(`Kokoro error ${res.status}:`, await res.text());
-      return null;
-    }
-
-    // Pipe HTTP response body into a PassThrough so playTTS can consume it
-    const passThrough = new PassThrough();
-
-    // Load-bearing. destroy(err) below emits 'error', and an 'error' event with
-    // no listener is an uncaught exception that kills the process. A listener is
-    // otherwise only attached once createAudioResource() runs in playTTS — which
-    // may be seconds away while this sentence waits behind another speaker's
-    // response, or may never happen at all if the sentence is superseded.
-    passThrough.on('error', () => {});
-    const reader = res.body.getReader();
-    (async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { passThrough.end(); break; }
-          passThrough.write(value);
-        }
-      } catch (err) {
-        // Without this the sentence truncates mid-word with nothing logged,
-        // since the 'error' listener above is intentionally a no-op.
-        console.error('Kokoro stream aborted:', err.message);
-        passThrough.destroy(err);
-      }
-    })();
-
-    return passThrough;
-  } catch (err) {
-    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      console.error(`Kokoro timed out after ${KOKORO_TIMEOUT_MS}ms`);
-    } else {
-      console.error('fetchTTS error:', err.message);
-    }
-    return null;
-  }
-}
 
 async function playTTS(passThrough, connection) {
   try {
