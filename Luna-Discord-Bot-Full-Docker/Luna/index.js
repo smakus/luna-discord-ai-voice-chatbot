@@ -3,7 +3,7 @@ require('dotenv').config();
 const {
   joinVoiceChannel, createAudioResource, StreamType,
   AudioPlayerStatus, VoiceConnectionStatus, createAudioPlayer,
-  EndBehaviorType,
+  EndBehaviorType, entersState,
 } = require('@discordjs/voice');
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
@@ -108,6 +108,21 @@ const FAREWELL_PHRASES = parsePhrases(process.env.FAREWELL_PHRASES);
 // like the two above, with {wake} for the wake phrase instead of {name}.
 const ANNOUNCE_SELF = (process.env.ANNOUNCE_SELF || 'true').toLowerCase() !== 'false';
 const INTRO_PHRASES = parsePhrases(process.env.INTRO_PHRASES);
+
+// Spoken heads-up when a question is going to a web search — the slowest kind
+// of answer, where silence most reads as Luna not having heard. Audio tags are
+// performed by ElevenLabs v3/v4 and stripped for Kokoro.
+const ANNOUNCE_SEARCH = (process.env.ANNOUNCE_SEARCH || 'true').toLowerCase() !== 'false';
+const SEARCH_PHRASES  = (() => {
+  const custom = parsePhrases(process.env.SEARCH_PHRASES);
+  return custom.length ? custom : [
+    'Let me search for that.',
+    '[curious] Hmm, let me take a look.',
+    "One sec, I'll check the web.",
+    '[thoughtful] Good question. Let me look that up.',
+    'Hang on, let me find out.',
+  ];
+})();
 
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -220,11 +235,28 @@ const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 // deaf with nothing logged. Generous, because a saturated CPU makes Whisper
 // genuinely slow — these are for hangs, not slowness.
 const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000', 10);
-const LM_TIMEOUT_MS      = parseInt(process.env.LM_TIMEOUT_MS      || '120000', 10);
+
+// The LLM gets two limits, because a single overall timeout cannot tell a
+// hung request from a slow one. A large model that reasons and searches before
+// answering can legitimately take minutes, and its answer then streams for a
+// while longer; an overall 2-minute cap cut such answers off mid-sentence.
+//
+//   LM_IDLE_TIMEOUT_MS — abort only after this long with NO data from LM
+//                        Studio. Reasoning, tool-call and token events all
+//                        reset it, so a working model never trips it.
+//   LM_TIMEOUT_MS      — overall backstop for a request that keeps trickling.
+const LM_IDLE_TIMEOUT_MS = parseInt(process.env.LM_IDLE_TIMEOUT_MS || '90000', 10);
+const LM_TIMEOUT_MS      = parseInt(process.env.LM_TIMEOUT_MS      || '600000', 10);
 // TTS timeouts live in tts.js with the providers.
 
-// Backstop if something still wedges despite the timeouts above.
-const STUCK_FLUSH_MS = 180000;
+// How many sentences beyond the one playing are synthesised in advance. Enough
+// to keep playback gapless; more only burns TTS work (and ElevenLabs credits)
+// on sentences that a barge-in may never let play.
+const TTS_LOOKAHEAD = Math.max(1, parseInt(process.env.TTS_LOOKAHEAD || '2', 10));
+
+// Backstop if something still wedges despite the timeouts above. Must exceed
+// the longest legitimate request, or it would release a speaker mid-answer.
+const STUCK_FLUSH_MS = WHISPER_TIMEOUT_MS + LM_TIMEOUT_MS + 60000;
 
 const MAX_UTTERANCE_MS    = 30000;
 const DECODER_CHUNK_MS    = 20; // 960 samples @ 48 kHz
@@ -274,7 +306,10 @@ const client = new Client({
 
 let lmStudioModel = null;
 
-async function resolveModel() {
+// Fatal at startup (nothing works without a model); afterwards it is re-run
+// whenever LM Studio rejects a request, so switching or reloading the model in
+// LM Studio no longer breaks every query until Luna is restarted.
+async function resolveModel({ fatal = true } = {}) {
   try {
     const res = await fetch(
       LM_STUDIO_URL.replace('/api/v1/chat', '/api/v1/models'),
@@ -283,11 +318,14 @@ async function resolveModel() {
     const data = await res.json();
     const loaded = data?.models?.find(m => m.type === 'llm' && m.loaded_instances?.length > 0);
     if (!loaded) throw new Error('No models loaded');
-    lmStudioModel = loaded.loaded_instances[0].id;
-    console.log(`Using LM Studio model: ${lmStudioModel}`);
+    const id = loaded.loaded_instances[0].id;
+    if (id !== lmStudioModel) console.log(`Using LM Studio model: ${id}`);
+    lmStudioModel = id;
+    return true;
   } catch (err) {
     console.error('Failed to resolve LM Studio model:', err.message);
-    process.exit(1);
+    if (fatal) process.exit(1);
+    return false;
   }
 }
 
@@ -311,10 +349,15 @@ async function initWakeWord() {
   }
 }
 
+// !luna is refused until startup finishes. A capture created before the wake
+// word models load runs without detection until its stream next restarts.
+let ready = false;
+
 client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
+  ready = true;
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
@@ -325,54 +368,124 @@ let activeVoiceChannel = null;
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
-  if (message.content.toLowerCase().trim() === BOT_COMMAND) {
-    const channel = message.member?.voice?.channel;
-    // .catch: a rejected reply (e.g. no send permission) in an async listener is
-    // an unhandled rejection, which terminates Node.
-    if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
+  if (message.content.toLowerCase().trim() !== BOT_COMMAND) return;
+  // .catch: a rejected reply (e.g. no send permission) in an async listener is
+  // an unhandled rejection, which terminates Node.
+  if (!ready) return message.reply('Still starting up — try again in a few seconds.').catch(() => {});
 
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: message.guild.id,
-      adapterCreator: message.guild.voiceAdapterCreator,
+  const channel = message.member?.voice?.channel;
+  if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
+
+  // Returns the guild's existing connection if there is one, moving it to
+  // `channel` when that differs.
+  const connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId: message.guild.id,
+    adapterCreator: message.guild.voiceAdapterCreator,
+  });
+
+  if (connection === activeConnection) {
+    if (activeVoiceChannel?.id === channel.id) {
+      message.reply(`Already listening in **${channel.name}**.`).catch(() => {});
+      return;
+    }
+    // !luna from another channel: joinVoiceChannel() just moved Luna there.
+    // Listening carries over (it is per connection, not per channel); only
+    // the channel she announces and counts members in changes.
+    console.log(`[voice] moved to ${channel.name} by !luna`);
+    activeVoiceChannel = channel;
+    message.reply(`Moved to **${channel.name}**!`).catch(() => {});
+    introduceSelf(connection);
+    return;
+  }
+
+  watchConnection(connection);
+
+  // Once, not on: a connection returns to Ready after every network blip, and
+  // re-running this would re-post the join message and stack another
+  // speaking listener each time.
+  const onReady = () => {
+    message.reply(
+      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
+      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
+      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
+    ).catch(() => {});
+    activeConnection   = connection;
+    activeVoiceChannel = channel;
+    startListening(connection, message.channel);
+
+    // Subscribe to users already in the channel at join time
+    channel.members.forEach(member => {
+      if (member.user.bot)               return;
+      if (IGNORED_USERS.has(member.id))  return;
+      if (listeningUsers.has(member.id)) return;
+      listeningUsers.add(member.id);
+      continuousCapture(connection, member.id, message.channel);
     });
 
-    // Once, not on: a connection returns to Ready after every network blip, and
-    // re-running this would re-post the join message and stack another
-    // speaking listener each time. If joinVoiceChannel() handed back an
-    // already-Ready connection (a second !luna), Ready never fires again, so
-    // run immediately instead of leaving the command unanswered.
-    const onReady = () => {
-      message.reply(
-        `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
-        `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
-        `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
-      ).catch(() => {});
-      activeConnection   = connection;
-      activeVoiceChannel = channel;
-      startListening(connection, message.channel);
+    introduceSelf(connection);
+  };
 
-      // Subscribe to users already in the channel at join time
-      channel.members.forEach(member => {
-        if (member.user.bot)               return;
-        if (IGNORED_USERS.has(member.id))  return;
-        if (listeningUsers.has(member.id)) return;
-        listeningUsers.add(member.id);
-        continuousCapture(connection, member.id, message.channel);
-      });
-
-      introduceSelf(connection);
-    };
-
-    if (connection.state.status === VoiceConnectionStatus.Ready && activeConnection === connection) {
-      message.reply(`Already listening in **${channel.name}**.`).catch(() => {});
-    } else if (connection.state.status === VoiceConnectionStatus.Ready) {
-      onReady();
-    } else {
-      connection.once(VoiceConnectionStatus.Ready, onReady);
-    }
+  if (connection.state.status === VoiceConnectionStatus.Ready) {
+    onReady();
+  } else {
+    connection.once(VoiceConnectionStatus.Ready, onReady);
   }
 });
+
+// ─── Voice connection lifecycle ───────────────────────────────────────────────
+
+const watchedConnections = new WeakSet();
+
+function watchConnection(connection) {
+  if (watchedConnections.has(connection)) return;
+  watchedConnections.add(connection);
+
+  // Kicked, moved, or a network drop. A move or a blip starts reconnecting
+  // within seconds; anything else is gone for good, and without this Luna
+  // kept believing she was connected — queueing speech into a dead connection
+  // and announcing joins for a channel she had left.
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+      ]);
+    } catch {
+      console.warn('[voice] connection lost and did not recover — leaving');
+      try { connection.destroy(); } catch (_) {}
+    }
+  });
+
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    if (activeConnection === connection) resetVoiceState();
+  });
+}
+
+// Forgets everything tied to the current voice session.
+function resetVoiceState() {
+  activeConnection   = null;
+  activeVoiceChannel = null;
+  listeningUsers.clear();
+  captureStates.clear();
+  for (const response of spokenResponses.values()) response.cancel();
+  spokenResponses.clear();
+  userGeneration.clear();
+  playbackQueue      = Promise.resolve();
+  currentPlayer      = null;
+  currentPlayerUser  = null;
+  conversations.clear();
+}
+
+function leaveVoice(reason) {
+  const connection = activeConnection;
+  if (!connection) return;
+  console.log(`[voice] ${reason} — disconnecting.`);
+  resetVoiceState();
+  // Throws if the connection was already destroyed (e.g. Luna was kicked
+  // from the channel), and an exception here escapes into discord.js.
+  try { connection.destroy(); } catch (_) {}
+}
 
 // ─── Core listening loop ──────────────────────────────────────────────────────
 
@@ -754,7 +867,64 @@ const userGeneration  = new Map();         // userId -> that user's latest gener
 function nextGeneration(userId) {
   const g = (userGeneration.get(userId) || 0) + 1;
   userGeneration.set(userId, g);
+  // Superseded: stop synthesising sentences of their answer that will now
+  // never play.
+  const superseded = spokenResponses.get(userId);
+  if (superseded) {
+    superseded.cancel();
+    spokenResponses.delete(userId);
+  }
   return g;
+}
+
+// ─── Spoken responses ─────────────────────────────────────────────────────────
+//
+// One answer being spoken. Sentences arrive from the LLM; TTS is requested for
+// the sentence about to play plus TTS_LOOKAHEAD after it — enough for gapless
+// playback, without synthesising a whole long answer up front. cancel() aborts
+// requests in flight and discards audio that was fetched but not played: on a
+// barge-in, that work used to run to completion (and, on ElevenLabs, be billed)
+// for sentences nobody would hear.
+const spokenResponses = new Map(); // userId -> their in-progress SpokenResponse
+
+class SpokenResponse {
+  constructor() {
+    this.sentences  = [];
+    this.fetches    = [];   // Promise<stream|null>, by sentence index
+    this.next       = 0;    // index of the next sentence to play
+    this.controller = new AbortController();
+  }
+
+  get size() { return this.sentences.length; }
+
+  add(sentence) {
+    this.sentences.push(sentence);
+    this._fill();
+  }
+
+  // Resolves to the audio stream for sentence `i` (or null if TTS failed) and
+  // moves the lookahead window along.
+  async take(i) {
+    this.next = i + 1;
+    this._fill();
+    return this.fetches[i];
+  }
+
+  _fill() {
+    if (this.controller.signal.aborted) return;
+    const limit = Math.min(this.sentences.length, this.next + 1 + TTS_LOOKAHEAD);
+    for (let i = this.fetches.length; i < limit; i++) {
+      this.fetches.push(fetchTTS(this.sentences[i], { signal: this.controller.signal }));
+    }
+  }
+
+  cancel() {
+    if (this.controller.signal.aborted) return;
+    this.controller.abort();
+    for (let i = this.next; i < this.fetches.length; i++) {
+      this.fetches[i].then(stream => stream?.destroy()).catch(() => {});
+    }
+  }
 }
 
 function queuePlayback(fn, userId, generation) {
@@ -1079,18 +1249,46 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // exactly one subscription — so an unconditional chime silently detached
   // whichever sentence was mid-playback. With several people in a channel that
   // presented as Luna's answers being randomly truncated.
-  if (!currentPlayer) {
-    playSound(CHIME_PATH, connection).catch(() => {});
-  }
   // Same decision the LLM call will use — computed here so the status message
   // can say which mode Luna is in, then passed down so the two cannot drift.
   const useSearch = needsWebSearch(query);
+  const announceSearch = useSearch && ANNOUNCE_SEARCH;
 
-  const statusMsg = await channel.send(
+  // The search phrase replaces the chime as the "I heard you" cue; playing
+  // both would have the phrase cut the chime off.
+  if (!currentPlayer && !announceSearch) {
+    playSound(CHIME_PATH, connection).catch(() => {});
+  }
+
+  // Not awaited: posting (and later deleting) this message are Discord round
+  // trips of 100-300 ms each, and both used to sit directly in front of the
+  // LLM request and the first sentence's TTS.
+  const statusMsg = channel.send(
     useSearch
       ? '🔍 *Luna is searching the web...*'
       : '🤔 *Luna is thinking...*'
   ).catch(() => null);
+  let statusCleared = false;
+  const clearStatus = () => {
+    if (statusCleared) return;
+    statusCleared = true;
+    statusMsg.then(m => m && m.delete()).catch(() => {});
+  };
+
+  // Its own queue entry, ahead of the answer's. Making it the answer's first
+  // sentence would enqueue the answer immediately, and that entry would then
+  // hold the shared queue for the whole search, blocking other speakers.
+  // Same generation as the answer, so a barge-in skips it too.
+  if (announceSearch) {
+    const phrase = fillPhrase(SEARCH_PHRASES, {});
+    console.log(`[${userId}] [search] "${phrase}"`);
+    queuePlayback(async () => {
+      const pt = await fetchTTS(phrase);
+      if (!pt) return;
+      if (userGeneration.get(userId) !== myGeneration) { pt.destroy(); return; }
+      await playTTS(pt, connection);
+    }, userId, myGeneration);
+  }
 
   // ── Per-response playback ───────────────────────────────────────────────
   //
@@ -1098,10 +1296,11 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // sentence. With per-sentence entries two speakers' answers braid together
   // — A1, B1, A2, B2 — which is worse than the bug this design replaced.
   //
-  // Prefetch is preserved: fetchTTS still fires the instant the LLM yields a
-  // sentence, so Kokoro renders sentence N+1 while N plays. Only playback
-  // order is serialised.
-  const pending  = [];      // Promise<PassThrough>[], in speech order
+  // TTS for each sentence is requested as soon as it is within TTS_LOOKAHEAD
+  // of playback (see SpokenResponse), so synthesis still overlaps playback.
+  // Only playback order is serialised.
+  const response = new SpokenResponse();
+  spokenResponses.set(userId, response);
   let streamDone = false;
   let wake       = null;    // resolver signalling "more sentences available"
 
@@ -1111,7 +1310,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   //
   // The entry parks at the head of the shared chain while it waits for more
   // sentences. Enqueuing it up front would therefore hold that head for the
-  // entire LLM generation (up to LM_TIMEOUT_MS = 2 minutes) while producing no
+  // entire LLM generation (up to LM_TIMEOUT_MS) while producing no
   // audio at all, blocking every other speaker. Ordering is unaffected: the
   // chain still serialises whole responses, just from first audio rather than
   // from first keystroke.
@@ -1124,35 +1323,42 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       let i = 0;
       let firstAudio = true;
 
-      while (true) {
-        if (i < pending.length) {
-          if (userGeneration.get(userId) !== myGeneration) return;
+      try {
+        while (true) {
+          if (i < response.size) {
+            if (userGeneration.get(userId) !== myGeneration) return;
 
-          const passThrough = await pending[i++];
+            const passThrough = await response.take(i++);
 
-          // Re-check AFTER the await: a barge-in can land while Kokoro is still
-          // rendering, and without this the superseded sentence plays anyway.
-          if (userGeneration.get(userId) !== myGeneration) return;
-
-          if (passThrough) {
-            if (firstAudio) {
-              firstAudio = false;
-              console.log(`[${userId}] [timing] First audio start: ${Date.now() - t0}ms`);
+            // Re-check AFTER the await: a barge-in can land while TTS is still
+            // rendering, and without this the superseded sentence plays anyway.
+            if (userGeneration.get(userId) !== myGeneration) {
+              passThrough?.destroy();
+              return;
             }
-            await playTTS(passThrough, connection);
+
+            if (passThrough) {
+              if (firstAudio) {
+                firstAudio = false;
+                console.log(`[${userId}] [timing] First audio start: ${Date.now() - t0}ms`);
+              }
+              await playTTS(passThrough, connection);
+            }
+          } else if (streamDone) {
+            return;
+          } else {
+            await new Promise(r => { wake = r; });
           }
-        } else if (streamDone) {
-          return;
-        } else {
-          await new Promise(r => { wake = r; });
         }
+      } finally {
+        if (spokenResponses.get(userId) === response) spokenResponses.delete(userId);
       }
     }, userId, myGeneration);
   };
 
   try {
     let firstSentence = true;
-   for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch)) {
+    for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch)) {
       if (!sentence.trim()) continue;
       // Abort only if THIS speaker asked something newer mid-stream.
       if (userGeneration.get(userId) !== myGeneration) break;
@@ -1161,30 +1367,34 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       if (firstSentence) {
         firstSentence = false;
         console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
-        try { if (statusMsg) await statusMsg.delete(); } catch (_) {}
+        clearStatus();
       }
 
       ensureQueued();
-      pending.push(fetchTTS(sentence));  // fire immediately, await later
+      response.add(sentence);
       signal();
-    }
-
-    // Clean up status message if LLM returned nothing
-    if (firstSentence) {
-      try { if (statusMsg) await statusMsg.delete(); } catch (_) {}
     }
   } catch (err) {
     console.error('handleQuery error:', err.message);
-    try { if (statusMsg) await statusMsg.delete(); } catch (_) {}
-    ensureQueued();
-    pending.push(fetchTTS('I had trouble processing that.'));
-    signal();
+    // Only when nothing has been said yet. After part of an answer has played,
+    // a tacked-on "I had trouble processing that." makes a merely truncated
+    // answer sound like a failure.
+    if (response.size === 0 && userGeneration.get(userId) === myGeneration) {
+      ensureQueued();
+      response.add(err.name === 'TimeoutError'
+        ? 'Sorry, that took too long to work out.'
+        : 'I had trouble processing that.');
+      signal();
+    }
   } finally {
+    clearStatus();
     // MUST run on every path. The queue entry above parks on `wake`, and if
     // it is never released it blocks the global playback chain for every
     // speaker, forever.
     streamDone = true;
     signal();
+    // Never queued (no sentence, or superseded first): nothing will consume it.
+    if (!queued && spokenResponses.get(userId) === response) spokenResponses.delete(userId);
   }
 }
 
@@ -1239,128 +1449,160 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
 
-  console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch}`);
+  // Idle timeout: aborts only when LM Studio has sent nothing at all for
+  // LM_IDLE_TIMEOUT_MS. Every chunk received — reasoning, tool calls, tokens —
+  // pushes it back. LM_TIMEOUT_MS remains as an overall backstop.
+  const idle = new AbortController();
+  let idleTimer = null;
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => idle.abort(new DOMException(
+      `LM Studio sent nothing for ${LM_IDLE_TIMEOUT_MS / 1000}s`, 'TimeoutError')), LM_IDLE_TIMEOUT_MS);
+  };
+  const requestSignal = AbortSignal.any([idle.signal, AbortSignal.timeout(LM_TIMEOUT_MS)]);
 
-  const res = await fetch(LM_STUDIO_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.LM_STUDIO_MCP_BEARER_TOKEN}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(LM_TIMEOUT_MS),
-  });
+  try {
+    let res;
+    for (let attempt = 0; ; attempt++) {
+      body.model = lmStudioModel;
+      console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch}`);
+      resetIdle();
+      res = await fetch(LM_STUDIO_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.LM_STUDIO_MCP_BEARER_TOKEN}`,
+        },
+        body: JSON.stringify(body),
+        signal: requestSignal,
+      });
+      if (res.ok) break;
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`LM Studio ${res.status}: ${errText}`);
-  }
-
-  const contentType = res.headers.get('content-type') || '';
-
-  // ── Path A: SSE streaming ─────────────────────────────────────────────────
-  if (contentType.includes('text/event-stream')) {
-    let buffer     = '';
-    let sseBuffer  = '';
-    let responseId = null;
-    const reader   = res.body.getReader();
-    const decoder  = new TextDecoder();
-
-    // Terminal-event handling is load-bearing, not cosmetic.
-    //
-    // This loop previously ran `while (true)` and treated `data: [DONE]` as a
-    // line to skip. If LM Studio finishes the response but does NOT close the
-    // HTTP stream, `reader.read()` blocks forever: this generator never
-    // returns, so handleQuery never returns, so processUtterance never
-    // resolves, so `flushing` stays true — and that speaker is permanently
-    // deaf with nothing logged. It presents exactly as "she answers once, then
-    // stops responding".
-    //
-    // So: exit on the terminal markers rather than waiting for the socket.
-    let finished = false;
-
-    try {
-      while (!finished) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop();
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-
-          if (trimmed === 'data: [DONE]') { finished = true; break; }
-          if (!trimmed.startsWith('data: ')) continue;
-
-          let parsed;
-          try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
-
-          // response_id lives inside chat.end result
-          if (parsed.type === 'chat.end') {
-            if (parsed.result?.output) {
-              const msg = parsed.result.output.filter(o => o.type === 'message').pop();
-              if (msg?.content) responseId = parsed.result?.response_id ?? null;
-            }
-            finished = true;
-            break;
-          }
-
-          // LM Studio SSE format: {type:'message.delta', content:'token'}
-          const delta = parsed.type === 'message.delta' ? (parsed.content ?? '') : '';
-
-          if (!delta) continue;
-          buffer += delta;
-
-          let match;
-          while ((match = SENTENCE_END.exec(buffer)) !== null) {
-            const endIdx   = match.index + match[0].length;
-            const sentence = buffer.slice(0, endIdx).trim();
-            buffer = buffer.slice(endIdx);
-            if (sentence) yield sentence;
-          }
+      const errText = await res.text();
+      // A 4xx is most often a model that was switched or unloaded in LM Studio
+      // since startup. Look it up again and retry once.
+      if (attempt === 0 && res.status >= 400 && res.status < 500) {
+        const previous = lmStudioModel;
+        if (await resolveModel({ fatal: false }) && lmStudioModel !== previous) {
+          console.warn(`[LLM] ${res.status} from LM Studio — model changed, retrying with ${lmStudioModel}`);
+          continue;
         }
       }
-    } finally {
-      // Cancel rather than only releasing the lock: if we exited on a terminal
-      // marker the socket is still open, and without this it leaks until the
-      // AbortSignal fires two minutes later.
-      try { await reader.cancel(); } catch (_) {}
-      try { reader.releaseLock(); } catch (_) {}
+      throw new Error(`LM Studio ${res.status}: ${errText}`);
     }
 
-    const remainder = buffer.trim();
-    if (remainder) yield remainder;
-    rememberConversation(userId, responseId);
+    const contentType = res.headers.get('content-type') || '';
 
-  // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
-  } else {
-    console.log('[LLM] Non-streaming JSON mode (unexpected — LM Studio ignored stream:true)');
-    const data = await res.json();
+    // ── Path A: SSE streaming ─────────────────────────────────────────────────
+    if (contentType.includes('text/event-stream')) {
+      let buffer     = '';
+      let sseBuffer  = '';
+      let responseId = null;
+      const reader   = res.body.getReader();
+      const decoder  = new TextDecoder();
 
-    rememberConversation(userId, data.response_id);
+      // Terminal-event handling is load-bearing, not cosmetic.
+      //
+      // This loop previously ran `while (true)` and treated `data: [DONE]` as a
+      // line to skip. If LM Studio finishes the response but does NOT close the
+      // HTTP stream, `reader.read()` blocks forever: this generator never
+      // returns, so handleQuery never returns, so processUtterance never
+      // resolves, so `flushing` stays true — and that speaker is permanently
+      // deaf with nothing logged. It presents exactly as "she answers once, then
+      // stops responding".
+      //
+      // So: exit on the terminal markers rather than waiting for the socket.
+      let finished = false;
 
-    // Extract full reply text from responses API format
-    const messageItem = data.output?.filter(o => o.type === 'message').pop();
-    const fullText    = messageItem?.content?.trim();
+      try {
+        while (!finished) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resetIdle();
 
-    if (!fullText) {
-      console.error('[LLM] No content found in response:', JSON.stringify(data).slice(0, 300));
-      throw new Error('No message content in LLM response');
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop();
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            if (trimmed === 'data: [DONE]') { finished = true; break; }
+            if (!trimmed.startsWith('data: ')) continue;
+
+            let parsed;
+            try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+
+            // response_id lives inside chat.end result
+            if (parsed.type === 'chat.end') {
+              if (parsed.result?.output) {
+                const msg = parsed.result.output.filter(o => o.type === 'message').pop();
+                if (msg?.content) responseId = parsed.result?.response_id ?? null;
+              }
+              finished = true;
+              break;
+            }
+
+            // LM Studio SSE format: {type:'message.delta', content:'token'}
+            const delta = parsed.type === 'message.delta' ? (parsed.content ?? '') : '';
+
+            if (!delta) continue;
+            buffer += delta;
+
+            let match;
+            while ((match = SENTENCE_END.exec(buffer)) !== null) {
+              const endIdx   = match.index + match[0].length;
+              const sentence = buffer.slice(0, endIdx).trim();
+              buffer = buffer.slice(endIdx);
+              if (sentence) yield sentence;
+            }
+          }
+        }
+      } finally {
+        // Cancel rather than only releasing the lock: if we exited on a terminal
+        // marker the socket is still open, and without this it leaks until the
+        // AbortSignal fires two minutes later.
+        try { await reader.cancel(); } catch (_) {}
+        try { reader.releaseLock(); } catch (_) {}
+      }
+
+      const remainder = buffer.trim();
+      if (remainder) yield remainder;
+      rememberConversation(userId, responseId);
+
+    // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
+    } else {
+      console.log('[LLM] Non-streaming JSON mode (unexpected — LM Studio ignored stream:true)');
+      // No progress to observe while the whole body arrives; rely on the
+      // overall LM_TIMEOUT_MS alone.
+      clearTimeout(idleTimer);
+      const data = await res.json();
+
+      rememberConversation(userId, data.response_id);
+
+      // Extract full reply text from responses API format
+      const messageItem = data.output?.filter(o => o.type === 'message').pop();
+      const fullText    = messageItem?.content?.trim();
+
+      if (!fullText) {
+        console.error('[LLM] No content found in response:', JSON.stringify(data).slice(0, 300));
+        throw new Error('No message content in LLM response');
+      }
+
+      // Split into sentences and yield each one so TTS starts immediately
+      let remaining = fullText;
+      let match;
+      while ((match = SENTENCE_END.exec(remaining)) !== null) {
+        const endIdx   = match.index + match[0].length;
+        const sentence = remaining.slice(0, endIdx).trim();
+        remaining = remaining.slice(endIdx);
+        if (sentence) yield sentence;
+      }
+      if (remaining.trim()) yield remaining.trim();
     }
-
-    // Split into sentences and yield each one so TTS starts immediately
-    let remaining = fullText;
-    let match;
-    while ((match = SENTENCE_END.exec(remaining)) !== null) {
-      const endIdx   = match.index + match[0].length;
-      const sentence = remaining.slice(0, endIdx).trim();
-      remaining = remaining.slice(endIdx);
-      if (sentence) yield sentence;
-    }
-    if (remaining.trim()) yield remaining.trim();
+  } finally {
+    clearTimeout(idleTimer);
   }
 }
 
@@ -1565,27 +1807,25 @@ function onVoiceJoin(oldState, newState) {
   }, GREET_DELAY_MS);
 }
 
-// Disconnect when the last real user (non-bot, non-ignored) leaves
+// Tracks Luna being moved, announces joins and leaves, and disconnects when the
+// last real user (non-bot, non-ignored) leaves.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  // Luna herself was dragged to another channel by someone. (A kick or a lost
+  // connection is handled by watchConnection; !luna updates this itself.)
+  if (newState.id === client.user.id) {
+    if (activeConnection && newState.channelId && newState.channelId !== activeVoiceChannel?.id) {
+      activeVoiceChannel = newState.channel;
+      console.log(`[voice] moved to ${activeVoiceChannel.name}`);
+      if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Moved into an empty channel');
+    }
+    return;
+  }
+
   onVoiceJoin(oldState, newState);
   onVoiceLeave(oldState, newState);
 
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
-  if (getRealMemberCount(activeVoiceChannel) === 0) {
-    console.log('[voice] Last real user left — disconnecting.');
-    // Throws if the connection was already destroyed (e.g. Luna was kicked
-    // from the channel), and an exception here escapes into discord.js.
-    try { activeConnection.destroy(); } catch (_) {}
-    activeConnection   = null;
-    activeVoiceChannel = null;
-    listeningUsers.clear();
-    captureStates.clear();
-    userGeneration.clear();
-    playbackQueue      = Promise.resolve();
-    currentPlayer      = null;
-    currentPlayerUser  = null;
-    conversations.clear();
-  }
+  if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Last real user left');
 });
 
 void client.login(process.env.DISCORD_TOKEN);

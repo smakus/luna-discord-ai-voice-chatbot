@@ -16,6 +16,10 @@
 //
 // Fallback can only happen before audio starts. A stream that dies mid-sentence
 // truncates that sentence, as it always has.
+//
+// fetchTTS(text, { signal }) — aborting the signal cancels the request (no
+// fallback, resolves null), and destroying a returned stream cancels its
+// download. Used to drop sentences that will never be played.
 
 const { PassThrough } = require('stream');
 
@@ -80,6 +84,9 @@ function pipeBody(res, label) {
   // response, or may never happen at all if the sentence is superseded.
   passThrough.on('error', () => {});
   const reader = res.body.getReader();
+  // Destroying the stream (a superseded sentence) stops the download instead
+  // of reading the rest of the body into a stream nobody will play.
+  passThrough.once('close', () => { reader.cancel().catch(() => {}); });
   (async () => {
     try {
       while (true) {
@@ -90,18 +97,23 @@ function pipeBody(res, label) {
     } catch (err) {
       // Without this the sentence truncates mid-word with nothing logged,
       // since the 'error' listener above is intentionally a no-op.
-      console.error(`${label} stream aborted:`, err.message);
-      passThrough.destroy(err);
+      if (!passThrough.destroyed) {
+        console.error(`${label} stream aborted:`, err.message);
+        passThrough.destroy(err);
+      }
     }
   })();
   return passThrough;
 }
 
-// fetch() with a timeout, mapping network failures to transient errors.
-async function request(label, url, init, timeoutMs) {
+// fetch() with a timeout, mapping network failures to transient errors and a
+// caller cancellation to 'cancelled'.
+async function request(label, url, init, timeoutMs, cancel) {
+  const timeout = AbortSignal.timeout(timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return await fetch(url, { ...init, signal: cancel ? AbortSignal.any([timeout, cancel]) : timeout });
   } catch (err) {
+    if (cancel && cancel.aborted) throw new TTSError(`${label} request cancelled`, 'cancelled');
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       throw new TTSError(`${label} timed out after ${timeoutMs}ms`, 'transient');
     }
@@ -113,12 +125,12 @@ const kokoro = {
   name: 'Kokoro',
   supportsTags: false,
   configured: () => Boolean(KOKORO_URL),
-  async synthesize(text) {
+  async synthesize(text, signal) {
     const res = await request('Kokoro', KOKORO_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: text, voice: KOKORO_VOICE, stream: true }),
-    }, KOKORO_TIMEOUT_MS);
+    }, KOKORO_TIMEOUT_MS, signal);
     if (!res.ok) {
       throw new TTSError(`Kokoro error ${res.status}: ${await res.text()}`, 'transient');
     }
@@ -148,14 +160,14 @@ const elevenlabs = {
   name: 'ElevenLabs',
   supportsTags: TAG_MODELS.has(ELEVENLABS_MODEL),
   configured: () => Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
-  async synthesize(text) {
+  async synthesize(text, signal) {
     const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}` +
       `/stream?output_format=${encodeURIComponent(ELEVENLABS_FORMAT)}`;
     const res = await request('ElevenLabs', url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'xi-api-key': ELEVENLABS_API_KEY },
       body: JSON.stringify({ text, model_id: ELEVENLABS_MODEL }),
-    }, ELEVENLABS_TIMEOUT_MS);
+    }, ELEVENLABS_TIMEOUT_MS, signal);
     if (!res.ok) {
       const body = await res.text();
       let detail = null;
@@ -212,8 +224,9 @@ function expressivePrompt() {
   return TTS_EXPRESSIVE && p && p.supportsTags ? EXPRESSIVE_PROMPT : '';
 }
 
-async function fetchTTS(text) {
+async function fetchTTS(text, { signal } = {}) {
   for (let i = 0; i < chain.length; i++) {
+    if (signal && signal.aborted) return null;
     const provider = chain[i];
     const isLast = i === chain.length - 1;
 
@@ -226,13 +239,14 @@ async function fetchTTS(text) {
     if (!spoken) return null;
 
     try {
-      const stream = await provider.synthesize(spoken);
+      const stream = await provider.synthesize(spoken, signal);
       if (benchedUntil.has(provider)) {
         benchedUntil.delete(provider);
         console.log(`[tts] ${provider.name} is working again`);
       }
       return stream;
     } catch (err) {
+      if (err instanceof TTSError && err.kind === 'cancelled') return null;
       const next = chain[i + 1];
       if (err instanceof TTSError && err.kind === 'disable' && !isLast) {
         const alreadyBenched = isBenched(provider);
