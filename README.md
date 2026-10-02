@@ -114,6 +114,8 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
 
+When a question is going to search the web, Luna first says a short heads-up such as *"Hmm, let me take a look."* so the wait isn't silent.
+
 Web search triggers on current-information terms ("price", "weather", "score", "the latest", "any news"). A time word only counts next to one of those, so "weather today" searches but "how are you today" doesn't.
 
 Luna leaves the voice channel automatically when the last person does.
@@ -168,6 +170,8 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+| `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase before a web search |
+| `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
 
 ### Wake word
 

@@ -109,6 +109,21 @@ const FAREWELL_PHRASES = parsePhrases(process.env.FAREWELL_PHRASES);
 const ANNOUNCE_SELF = (process.env.ANNOUNCE_SELF || 'true').toLowerCase() !== 'false';
 const INTRO_PHRASES = parsePhrases(process.env.INTRO_PHRASES);
 
+// Spoken heads-up when a question is going to a web search — the slowest kind
+// of answer, where silence most reads as Luna not having heard. Audio tags are
+// performed by ElevenLabs v3/v4 and stripped for Kokoro.
+const ANNOUNCE_SEARCH = (process.env.ANNOUNCE_SEARCH || 'true').toLowerCase() !== 'false';
+const SEARCH_PHRASES  = (() => {
+  const custom = parsePhrases(process.env.SEARCH_PHRASES);
+  return custom.length ? custom : [
+    'Let me search for that.',
+    '[curious] Hmm, let me take a look.',
+    "One sec, I'll check the web.",
+    '[thoughtful] Good question. Let me look that up.',
+    'Hang on, let me find out.',
+  ];
+})();
+
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 let whisperRR = 0;
@@ -1234,12 +1249,16 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // exactly one subscription — so an unconditional chime silently detached
   // whichever sentence was mid-playback. With several people in a channel that
   // presented as Luna's answers being randomly truncated.
-  if (!currentPlayer) {
-    playSound(CHIME_PATH, connection).catch(() => {});
-  }
   // Same decision the LLM call will use — computed here so the status message
   // can say which mode Luna is in, then passed down so the two cannot drift.
   const useSearch = needsWebSearch(query);
+  const announceSearch = useSearch && ANNOUNCE_SEARCH;
+
+  // The search phrase replaces the chime as the "I heard you" cue; playing
+  // both would have the phrase cut the chime off.
+  if (!currentPlayer && !announceSearch) {
+    playSound(CHIME_PATH, connection).catch(() => {});
+  }
 
   // Not awaited: posting (and later deleting) this message are Discord round
   // trips of 100-300 ms each, and both used to sit directly in front of the
@@ -1255,6 +1274,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     statusCleared = true;
     statusMsg.then(m => m && m.delete()).catch(() => {});
   };
+
+  // Its own queue entry, ahead of the answer's. Making it the answer's first
+  // sentence would enqueue the answer immediately, and that entry would then
+  // hold the shared queue for the whole search, blocking other speakers.
+  // Same generation as the answer, so a barge-in skips it too.
+  if (announceSearch) {
+    const phrase = fillPhrase(SEARCH_PHRASES, {});
+    console.log(`[${userId}] [search] "${phrase}"`);
+    queuePlayback(async () => {
+      const pt = await fetchTTS(phrase);
+      if (!pt) return;
+      if (userGeneration.get(userId) !== myGeneration) { pt.destroy(); return; }
+      await playTTS(pt, connection);
+    }, userId, myGeneration);
+  }
 
   // ── Per-response playback ───────────────────────────────────────────────
   //
