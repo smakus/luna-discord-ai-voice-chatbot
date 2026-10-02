@@ -265,6 +265,16 @@ Luna logs timings for every exchange; whichever is largest is your bottleneck:
 [timing] First audio start: 2560ms
 ```
 
+When the LLM is the slow part, the `[LLM] stats` line that follows each answer shows why:
+
+```
+[LLM] stats: memory turn 4, prompt 3,812 tokens, reasoning 412, output 96, first token 41.2s, 6.9 tok/s
+```
+
+- **Lots of reasoning tokens** means the model is thinking before it speaks.
+- **A large prompt that grows with the memory turn** means conversation memory, including stored web-search results, is getting expensive. Lower `LM_MEMORY_MAX_TURNS`.
+- **Low tok/s** means the model is too big for your machine.
+
 She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck at `true`, or `buffered` climbing into the hundreds, means that speaker's audio is stuck.
 
 | Symptom | Fix |

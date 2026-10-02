@@ -1445,6 +1445,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
+// One line per answer from LM Studio's own accounting: what is needed to tell
+// whether a slow answer was spent reasoning, prefilling a long prompt
+// (conversation memory, stored web-search results) or just generating slowly.
+function logLLMStats(userId, stats) {
+  if (!stats) return;
+  const n = v => (typeof v === 'number' ? v.toLocaleString('en-US') : '?');
+  const f = v => (typeof v === 'number' ? v.toFixed(1) : '?');
+  const turn = (conversations.get(userId)?.turns || 0) + 1;
+  console.log(
+    `[${userId}] [LLM] stats: memory turn ${turn}, prompt ${n(stats.input_tokens)} tokens, ` +
+    `reasoning ${n(stats.reasoning_output_tokens)}, output ${n(stats.total_output_tokens)}, ` +
+    `first token ${f(stats.time_to_first_token_seconds)}s, ${f(stats.tokens_per_second)} tok/s`
+  );
+}
+
 // ─── LLM streaming ───────────────────────────────────────────────────────────
 //
 // Yields complete sentences as the LLM generates them.
@@ -1510,7 +1525,9 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
 
   try {
     let res;
-    for (let attempt = 0; ; attempt++) {
+    let retriedModel = false;
+    let retriedConversation = false;
+    for (;;) {
       body.model = lmStudioModel;
       console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch}`);
       resetIdle();
@@ -1526,9 +1543,23 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
       if (res.ok) break;
 
       const errText = await res.text();
-      // A 4xx is most often a model that was switched or unloaded in LM Studio
-      // since startup. Look it up again and retry once.
-      if (attempt === 0 && res.status >= 400 && res.status < 500) {
+
+      // This speaker's conversation memory no longer exists in LM Studio (it
+      // was reset, its data cleared, or the stored response expired). Without
+      // this the same dead id was resent on every question, and every answer
+      // failed until LM_MEMORY_TTL_MS expired. Start a fresh conversation.
+      if (!retriedConversation && body.previous_response_id && /previous_response_id/i.test(errText)) {
+        retriedConversation = true;
+        console.warn(`[${userId}] [LLM] conversation memory not found in LM Studio — starting a fresh one`);
+        conversations.delete(userId);
+        delete body.previous_response_id;
+        continue;
+      }
+
+      // Otherwise a 4xx is most often a model that was switched or unloaded in
+      // LM Studio since startup. Look it up again and retry once.
+      if (!retriedModel && res.status >= 400 && res.status < 500) {
+        retriedModel = true;
         const previous = lmStudioModel;
         if (await resolveModel({ fatal: false }) && lmStudioModel !== previous) {
           console.warn(`[LLM] ${res.status} from LM Studio — model changed, retrying with ${lmStudioModel}`);
@@ -1583,6 +1614,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
 
             // response_id lives inside chat.end result
             if (parsed.type === 'chat.end') {
+              logLLMStats(userId, parsed.result?.stats);
               if (parsed.result?.output) {
                 const msg = parsed.result.output.filter(o => o.type === 'message').pop();
                 if (msg?.content) responseId = parsed.result?.response_id ?? null;
@@ -1626,6 +1658,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
       clearTimeout(idleTimer);
       const data = await res.json();
 
+      logLLMStats(userId, data.stats);
       rememberConversation(userId, data.response_id);
 
       // Extract full reply text from responses API format
