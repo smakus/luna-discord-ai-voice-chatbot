@@ -211,7 +211,10 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
 | `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
-| `WHISPER_TIMEOUT_MS` / `LM_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `120000` / `30000` | Request timeouts |
+| `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
+| `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
+| `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
+| `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `30000` | Request timeouts |
 
 The Whisper model is `ggml-small.en-q5_1.bin` by default. On Apple Silicon you can afford a more accurate one: `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh` (or `ggml-large-v3-turbo-q5_0.bin`). On the Docker path it's a build arg in `docker-compose.yml`.
 
