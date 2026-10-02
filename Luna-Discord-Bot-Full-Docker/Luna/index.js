@@ -124,14 +124,21 @@ const SEARCH_PHRASES  = (() => {
   ];
 })();
 
-// "Still thinking" fillers: when no answer has started THINKING_DELAY_MS after
-// the question, Luna says one, then another every THINKING_INTERVAL_MS, at most
-// THINKING_MAX times. They stop the moment the answer's first sentence is
-// ready. Big models that reason (and search) before answering can be silent
-// for a minute or more, which otherwise sounds exactly like being ignored.
+// "Still thinking" fillers: while no answer has started, Luna says one after a
+// random wait between THINKING_WAIT_MIN_MS and THINKING_WAIT_MAX_MS, then
+// another after a fresh random wait, at most THINKING_MAX times. A varied gap
+// sounds less mechanical than a fixed beat. They stop the moment the answer's
+// first sentence is ready. Big models that reason (and search) before
+// answering can be silent for a minute or more, which otherwise sounds exactly
+// like being ignored.
+//
+// A phrase containing {name} is spoken with the asker's name, so mixing a few
+// of those into the list makes some fillers personal. They are skipped when
+// the name has nothing pronounceable in it.
 const ANNOUNCE_THINKING    = (process.env.ANNOUNCE_THINKING || 'true').toLowerCase() !== 'false';
-const THINKING_DELAY_MS    = parseInt(process.env.THINKING_DELAY_MS    || '10000', 10);
-const THINKING_INTERVAL_MS = parseInt(process.env.THINKING_INTERVAL_MS || '20000', 10);
+const THINKING_WAIT_MIN_MS = parseInt(process.env.THINKING_WAIT_MIN_MS || '10000', 10);
+const THINKING_WAIT_MAX_MS = Math.max(THINKING_WAIT_MIN_MS,
+  parseInt(process.env.THINKING_WAIT_MAX_MS || '20000', 10));
 const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '3', 10);
 const THINKING_PHRASES     = (() => {
   const custom = parsePhrases(process.env.THINKING_PHRASES);
@@ -141,6 +148,8 @@ const THINKING_PHRASES     = (() => {
     'Almost there, bear with me.',
     "This one's taking a bit. Hang tight.",
     'Just a little longer.',
+    "Hey {name}, I'm still working on that. I didn't forget about you.",
+    'Still on it, {name}. Thanks for your patience.',
   ];
 })();
 
@@ -1319,20 +1328,23 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   let answerStarted = false;
   let fillerTimer   = null;
   let fillersSaid   = 0;
-  const fillers = [...THINKING_PHRASES].sort(() => Math.random() - 0.5);
+  const askerName = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
+  const fillers = shuffle(THINKING_PHRASES.filter(p => askerName || !p.includes('{name}')));
   const stopFillers = () => {
     answerStarted = true;
     clearTimeout(fillerTimer);
   };
-  const scheduleFiller = delay => {
-    if (!ANNOUNCE_THINKING || fillersSaid >= THINKING_MAX) return;
+  const scheduleFiller = () => {
+    if (!ANNOUNCE_THINKING || !fillers.length || fillersSaid >= THINKING_MAX) return;
+    const wait = THINKING_WAIT_MIN_MS + Math.random() * (THINKING_WAIT_MAX_MS - THINKING_WAIT_MIN_MS);
     fillerTimer = setTimeout(() => {
       if (answerStarted || userGeneration.get(userId) !== myGeneration) return;
-      sayAside('thinking', fillers[fillersSaid++ % fillers.length], () => !answerStarted);
-      scheduleFiller(THINKING_INTERVAL_MS);
-    }, delay);
+      const phrase = fillers[fillersSaid++ % fillers.length].replaceAll('{name}', askerName);
+      sayAside('thinking', phrase, () => !answerStarted);
+      scheduleFiller();
+    }, wait);
   };
-  scheduleFiller(THINKING_DELAY_MS);
+  scheduleFiller();
 
   // ── Per-response playback ───────────────────────────────────────────────
   //
@@ -1745,6 +1757,16 @@ const GREETINGS = GREET_PHRASES.length ? GREET_PHRASES : [
   '{name} has joined the channel. Hello, {name}!',
   'Heads up, {name} is here. Welcome in, {name}!',
 ];
+
+// A shuffled copy (Fisher–Yates; sorting on a random comparator is biased).
+function shuffle(items) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
 // A random phrase from `phrases` with every {key} in `vars` replaced.
 function fillPhrase(phrases, vars) {
