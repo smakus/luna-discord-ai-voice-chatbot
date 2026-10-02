@@ -126,8 +126,9 @@ const SEARCH_PHRASES  = (() => {
 
 // "Still thinking" fillers: while no answer has started, Luna says one after a
 // random wait between THINKING_WAIT_MIN_MS and THINKING_WAIT_MAX_MS, then
-// another after a fresh random wait, at most THINKING_MAX times. A varied gap
-// sounds less mechanical than a fixed beat. They stop the moment the answer's
+// another after a fresh random wait, for as long as the wait lasts (the LLM
+// timeouts bound it); THINKING_MAX > 0 caps the count. A varied gap sounds
+// less mechanical than a fixed beat. They stop the moment the answer's
 // first sentence is ready. Big models that reason (and search) before
 // answering can be silent for a minute or more, which otherwise sounds exactly
 // like being ignored.
@@ -136,10 +137,10 @@ const SEARCH_PHRASES  = (() => {
 // of those into the list makes some fillers personal. They are skipped when
 // the name has nothing pronounceable in it.
 const ANNOUNCE_THINKING    = (process.env.ANNOUNCE_THINKING || 'true').toLowerCase() !== 'false';
-const THINKING_WAIT_MIN_MS = parseInt(process.env.THINKING_WAIT_MIN_MS || '10000', 10);
+const THINKING_WAIT_MIN_MS = parseInt(process.env.THINKING_WAIT_MIN_MS || '15000', 10);
 const THINKING_WAIT_MAX_MS = Math.max(THINKING_WAIT_MIN_MS,
-  parseInt(process.env.THINKING_WAIT_MAX_MS || '20000', 10));
-const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '3', 10);
+  parseInt(process.env.THINKING_WAIT_MAX_MS || '22000', 10));
+const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '0', 10); // 0 = no limit
 const THINKING_PHRASES     = (() => {
   const custom = parsePhrases(process.env.THINKING_PHRASES);
   return custom.length ? custom : [
@@ -1323,24 +1324,38 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
   if (announceSearch) sayAside('search', fillPhrase(SEARCH_PHRASES, {}));
 
-  // "Still thinking" fillers while no answer has started. Shuffled per
-  // question so the same line is never said twice in one wait.
+  // "Still thinking" fillers while no answer has started. Each pass through
+  // the phrases is freshly shuffled, so nothing repeats until every phrase
+  // has been used, and never twice in a row across passes.
   let answerStarted = false;
   let fillerTimer   = null;
   let fillersSaid   = 0;
   const askerName = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
-  const fillers = shuffle(THINKING_PHRASES.filter(p => askerName || !p.includes('{name}')));
+  const usable = THINKING_PHRASES.filter(p => askerName || !p.includes('{name}'));
+  let deck = [];
+  let lastFiller = null;
+  const nextFiller = () => {
+    if (!deck.length) {
+      deck = shuffle(usable);
+      if (deck.length > 1 && deck[0] === lastFiller) deck.push(deck.shift());
+    }
+    return (lastFiller = deck.shift());
+  };
   const stopFillers = () => {
     answerStarted = true;
     clearTimeout(fillerTimer);
   };
   const scheduleFiller = () => {
-    if (!ANNOUNCE_THINKING || !fillers.length || fillersSaid >= THINKING_MAX) return;
+    if (!ANNOUNCE_THINKING || !usable.length) return;
+    if (THINKING_MAX > 0 && fillersSaid >= THINKING_MAX) return;
     const wait = THINKING_WAIT_MIN_MS + Math.random() * (THINKING_WAIT_MAX_MS - THINKING_WAIT_MIN_MS);
     fillerTimer = setTimeout(() => {
       if (answerStarted || userGeneration.get(userId) !== myGeneration) return;
-      const phrase = fillers[fillersSaid++ % fillers.length].replaceAll('{name}', askerName);
-      sayAside('thinking', phrase, () => !answerStarted);
+      fillersSaid++;
+      // The wait is in the log tag ("[thinking +17.3s]"), so the spacing can
+      // be checked from the logs.
+      sayAside(`thinking +${(wait / 1000).toFixed(1)}s`,
+        nextFiller().replaceAll('{name}', askerName), () => !answerStarted);
       scheduleFiller();
     }, wait);
   };
