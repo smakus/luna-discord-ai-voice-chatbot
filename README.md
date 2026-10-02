@@ -114,7 +114,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
 
-When a question is going to search the web, Luna first says a short heads-up such as *"Hmm, let me take a look."* so the wait isn't silent.
+When a question is going to search the web, Luna first says a short heads-up such as *"Hmm, let me take a look."* so the wait isn't silent. If an answer still hasn't started after 10 seconds, she adds a filler like *"Still thinking."*, repeated every 20 seconds, up to three times.
 
 Web search triggers on current-information terms ("price", "weather", "score", "the latest", "any news"). A time word only counts next to one of those, so "weather today" searches but "how are you today" doesn't.
 
@@ -172,6 +172,9 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase before a web search |
 | `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
+| `ANNOUNCE_THINKING` | `true` | Say "still thinking" fillers while an answer is slow to start |
+| `THINKING_DELAY_MS` / `THINKING_INTERVAL_MS` / `THINKING_MAX` | `10000` / `20000` / `3` | First filler after, repeat every, and at most this many |
+| `THINKING_PHRASES` | built-in | Custom filler phrases, separated by a pipe character |
 
 ### Wake word
 

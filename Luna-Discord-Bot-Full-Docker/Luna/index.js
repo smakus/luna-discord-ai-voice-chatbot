@@ -124,6 +124,26 @@ const SEARCH_PHRASES  = (() => {
   ];
 })();
 
+// "Still thinking" fillers: when no answer has started THINKING_DELAY_MS after
+// the question, Luna says one, then another every THINKING_INTERVAL_MS, at most
+// THINKING_MAX times. They stop the moment the answer's first sentence is
+// ready. Big models that reason (and search) before answering can be silent
+// for a minute or more, which otherwise sounds exactly like being ignored.
+const ANNOUNCE_THINKING    = (process.env.ANNOUNCE_THINKING || 'true').toLowerCase() !== 'false';
+const THINKING_DELAY_MS    = parseInt(process.env.THINKING_DELAY_MS    || '10000', 10);
+const THINKING_INTERVAL_MS = parseInt(process.env.THINKING_INTERVAL_MS || '20000', 10);
+const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '3', 10);
+const THINKING_PHRASES     = (() => {
+  const custom = parsePhrases(process.env.THINKING_PHRASES);
+  return custom.length ? custom : [
+    'Still thinking.',
+    '[thoughtful] Hmm, give me a moment.',
+    'Almost there, bear with me.',
+    "This one's taking a bit. Hang tight.",
+    'Just a little longer.',
+  ];
+})();
+
 const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 let whisperRR = 0;
@@ -1275,20 +1295,44 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     statusMsg.then(m => m && m.delete()).catch(() => {});
   };
 
-  // Its own queue entry, ahead of the answer's. Making it the answer's first
-  // sentence would enqueue the answer immediately, and that entry would then
-  // hold the shared queue for the whole search, blocking other speakers.
-  // Same generation as the answer, so a barge-in skips it too.
-  if (announceSearch) {
-    const phrase = fillPhrase(SEARCH_PHRASES, {});
-    console.log(`[${userId}] [search] "${phrase}"`);
+  // A one-off line tied to this question — the search heads-up and the
+  // "still thinking" fillers. Each is its own queue entry, ahead of the
+  // answer's: making it the answer's first sentence would enqueue the answer
+  // immediately, and that entry would then hold the shared queue for the whole
+  // wait, blocking other speakers. Same generation as the answer, so a barge-in
+  // skips it too, as does `wanted()` turning false while it waits.
+  const sayAside = (tag, phrase, wanted = () => true) => {
+    console.log(`[${userId}] [${tag}] "${phrase}"`);
     queuePlayback(async () => {
+      if (!wanted()) return;
       const pt = await fetchTTS(phrase);
       if (!pt) return;
-      if (userGeneration.get(userId) !== myGeneration) { pt.destroy(); return; }
+      if (!wanted() || userGeneration.get(userId) !== myGeneration) { pt.destroy(); return; }
       await playTTS(pt, connection);
     }, userId, myGeneration);
-  }
+  };
+
+  if (announceSearch) sayAside('search', fillPhrase(SEARCH_PHRASES, {}));
+
+  // "Still thinking" fillers while no answer has started. Shuffled per
+  // question so the same line is never said twice in one wait.
+  let answerStarted = false;
+  let fillerTimer   = null;
+  let fillersSaid   = 0;
+  const fillers = [...THINKING_PHRASES].sort(() => Math.random() - 0.5);
+  const stopFillers = () => {
+    answerStarted = true;
+    clearTimeout(fillerTimer);
+  };
+  const scheduleFiller = delay => {
+    if (!ANNOUNCE_THINKING || fillersSaid >= THINKING_MAX) return;
+    fillerTimer = setTimeout(() => {
+      if (answerStarted || userGeneration.get(userId) !== myGeneration) return;
+      sayAside('thinking', fillers[fillersSaid++ % fillers.length], () => !answerStarted);
+      scheduleFiller(THINKING_INTERVAL_MS);
+    }, delay);
+  };
+  scheduleFiller(THINKING_DELAY_MS);
 
   // ── Per-response playback ───────────────────────────────────────────────
   //
@@ -1368,6 +1412,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         firstSentence = false;
         console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
         clearStatus();
+        stopFillers();
       }
 
       ensureQueued();
@@ -1375,6 +1420,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       signal();
     }
   } catch (err) {
+    stopFillers();
     console.error('handleQuery error:', err.message);
     // Only when nothing has been said yet. After part of an answer has played,
     // a tacked-on "I had trouble processing that." makes a merely truncated
@@ -1388,6 +1434,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }
   } finally {
     clearStatus();
+    stopFillers();
     // MUST run on every path. The queue entry above parks on `wake`, and if
     // it is never released it blocks the global playback chain for every
     // speaker, forever.
