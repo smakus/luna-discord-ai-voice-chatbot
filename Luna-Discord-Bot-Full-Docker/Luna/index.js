@@ -125,10 +125,12 @@ const SEARCH_PHRASES  = (() => {
 })();
 
 // "Still thinking" fillers: while no answer has started, Luna says one after a
-// random wait between THINKING_WAIT_MIN_MS and THINKING_WAIT_MAX_MS, then
-// another after a fresh random wait, for as long as the wait lasts (the LLM
-// timeouts bound it); THINKING_MAX > 0 caps the count. A varied gap sounds
-// less mechanical than a fixed beat. They stop the moment the answer's
+// random wait, then more, backing off: THINKING_WAITS lists the wait window
+// (in seconds) for the 1st, 2nd, ... filler, and the last window repeats.
+// The default "15-22,22-30,30-40" means 15-22 s, then 22-30 s, then every
+// 30-40 s. Random within each window, because a varied gap sounds less
+// mechanical than a fixed beat; backing off, because the longer a wait gets,
+// the less a frequent reminder adds. THINKING_MAX > 0 caps the count. They stop the moment the answer's
 // first sentence is ready. Big models that reason (and search) before
 // answering can be silent for a minute or more, which otherwise sounds exactly
 // like being ignored.
@@ -137,10 +139,19 @@ const SEARCH_PHRASES  = (() => {
 // of those into the list makes some fillers personal. They are skipped when
 // the name has nothing pronounceable in it.
 const ANNOUNCE_THINKING    = (process.env.ANNOUNCE_THINKING || 'true').toLowerCase() !== 'false';
-const THINKING_WAIT_MIN_MS = parseInt(process.env.THINKING_WAIT_MIN_MS || '15000', 10);
-const THINKING_WAIT_MAX_MS = Math.max(THINKING_WAIT_MIN_MS,
-  parseInt(process.env.THINKING_WAIT_MAX_MS || '22000', 10));
+const THINKING_WAITS       = parseWaits(process.env.THINKING_WAITS, '15-22,22-30,30-40');
 const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '0', 10); // 0 = no limit
+
+// "15-22,22-30" -> [[15000, 22000], [22000, 30000]]. Falls back to the default
+// on anything malformed rather than silently disabling fillers.
+function parseWaits(raw, fallback) {
+  const parse = text => text.split(',').map(w => w.trim().split('-').map(Number))
+    .map(([lo, hi = lo]) => [lo * 1000, Math.max(lo, hi) * 1000]);
+  const waits = raw ? parse(raw) : [];
+  const valid = waits.length && waits.every(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi) && lo > 0);
+  if (raw && !valid) console.warn(`THINKING_WAITS="${raw}" is not like "15-22,22-30" — using ${fallback}`);
+  return valid ? waits : parse(fallback);
+}
 const THINKING_PHRASES     = (() => {
   const custom = parsePhrases(process.env.THINKING_PHRASES);
   return custom.length ? custom : [
@@ -278,6 +289,24 @@ const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000', 1
 const LM_IDLE_TIMEOUT_MS = parseInt(process.env.LM_IDLE_TIMEOUT_MS || '90000', 10);
 const LM_TIMEOUT_MS      = parseInt(process.env.LM_TIMEOUT_MS      || '600000', 10);
 // TTS timeouts live in tts.js with the providers.
+
+// Reasoning level sent to LM Studio ("off", "low", ... as the model allows;
+// empty = the model's own default, which for some models is the maximum).
+const LLM_REASONING = (process.env.LLM_REASONING || '').trim().toLowerCase();
+
+// Thinking limit. Neither timeout above can catch a model that keeps reasoning:
+// reasoning streams, so the request is never idle. One question spent over
+// seven minutes (3,210 reasoning tokens) before its first word. If no answer
+// has started after LLM_THINK_LIMIT_MS, the request is cancelled and asked
+// again with reasoning off, which answers in seconds. 0 disables.
+const LLM_THINK_LIMIT_MS = parseInt(process.env.LLM_THINK_LIMIT_MS || '60000', 10);
+const QUICK_ANSWER_PHRASES = (() => {
+  const custom = parsePhrases(process.env.QUICK_ANSWER_PHRASES);
+  return custom.length ? custom : [
+    "Sorry, I was overthinking that one. Here's the quick answer.",
+    'Okay, let me give you the short version.',
+  ];
+})();
 
 // How many sentences beyond the one playing are synthesised in advance. Enough
 // to keep playback gapless; more only burns TTS work (and ElevenLabs credits)
@@ -500,6 +529,8 @@ function resetVoiceState() {
   captureStates.clear();
   for (const response of spokenResponses.values()) response.cancel();
   spokenResponses.clear();
+  for (const request of llmRequests.values()) request.abort();
+  llmRequests.clear();
   userGeneration.clear();
   playbackQueue      = Promise.resolve();
   currentPlayer      = null;
@@ -616,6 +647,25 @@ function continuousCapture(connection, userId, channel) {
         onDetect: (score, at) => {
           lastWakeAt = at;
           console.log(`[${userId}] [oww] wake word detected (score=${score.toFixed(3)})`);
+
+          // Barge-in while this speaker's previous question is still with the
+          // LLM. Before, `flushing` held the new request back until the old
+          // one finished: during a long think the speaker could not get
+          // through at all, and by the time the old answer arrived their
+          // buffered "hey Luna" was too old and got discarded. Now the old
+          // question is cancelled at once, which releases `flushing` in a
+          // moment, and the buffer is cut down to the audio around the wake
+          // phrase so the new question is not prefixed by whatever was said
+          // during the wait.
+          if (flushing) {
+            console.log(`[${userId}] barge-in — cancelling the previous question`);
+            interruptOwnPlayback(userId);
+            const keep = Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS);
+            if (speechChunks.length > keep) {
+              speechChunks = speechChunks.slice(-keep);
+              prerollMs = 0;
+            }
+          }
         },
       })
     : null;
@@ -904,8 +954,17 @@ function nextGeneration(userId) {
     superseded.cancel();
     spokenResponses.delete(userId);
   }
+  // ...and stop the LLM working on a question nobody is waiting for.
+  const request = llmRequests.get(userId);
+  if (request) {
+    request.abort();
+    llmRequests.delete(userId);
+  }
   return g;
 }
+
+// userId -> AbortController for that speaker's LLM request in flight.
+const llmRequests = new Map();
 
 // ─── Spoken responses ─────────────────────────────────────────────────────────
 //
@@ -1348,7 +1407,8 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   const scheduleFiller = () => {
     if (!ANNOUNCE_THINKING || !usable.length) return;
     if (THINKING_MAX > 0 && fillersSaid >= THINKING_MAX) return;
-    const wait = THINKING_WAIT_MIN_MS + Math.random() * (THINKING_WAIT_MAX_MS - THINKING_WAIT_MIN_MS);
+    const [lo, hi] = THINKING_WAITS[Math.min(fillersSaid, THINKING_WAITS.length - 1)];
+    const wait = lo + Math.random() * (hi - lo);
     fillerTimer = setTimeout(() => {
       if (answerStarted || userGeneration.get(userId) !== myGeneration) return;
       fillersSaid++;
@@ -1427,37 +1487,89 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }, userId, myGeneration);
   };
 
-  try {
-    let firstSentence = true;
-    for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch)) {
-      if (!sentence.trim()) continue;
-      // Abort only if THIS speaker asked something newer mid-stream.
-      if (userGeneration.get(userId) !== myGeneration) break;
-      console.log('Luna sentence:', sentence);
+  // One LLM request per pass. A second pass, with reasoning off (it answers
+  // in seconds), happens when the model thinks past LLM_THINK_LIMIT_MS
+  // without starting an answer, or finishes with no words at all (it has
+  // answered "." after 50 s of reasoning). Never more than two passes.
+  const superseded = () => userGeneration.get(userId) !== myGeneration;
+  const hasWords   = text => /[\p{L}\p{N}]/u.test(text);
+  let reasoning     = LLM_REASONING;
+  let firstSentence = true;
 
-      if (firstSentence) {
-        firstSentence = false;
-        console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
-        clearStatus();
-        stopFillers();
+  try {
+    for (let pass = 1; ; pass++) {
+      const cancel = new AbortController();
+      llmRequests.set(userId, cancel);
+      let thinkLimitHit = false;
+      const thinkTimer = LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off'
+        ? setTimeout(() => {
+            thinkLimitHit = true;
+            cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s`, 'AbortError'));
+          }, LLM_THINK_LIMIT_MS)
+        : null;
+
+      try {
+        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal })) {
+          // Abort only if THIS speaker asked something newer mid-stream.
+          if (superseded()) break;
+          // A lone "." or similar: nothing to say, and nothing for TTS.
+          if (!hasWords(sentence)) continue;
+          console.log('Luna sentence:', sentence);
+
+          if (firstSentence) {
+            firstSentence = false;
+            clearTimeout(thinkTimer);
+            console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
+            clearStatus();
+            stopFillers();
+          }
+
+          ensureQueued();
+          response.add(sentence);
+          signal();
+        }
+      } catch (err) {
+        // The thinking limit is a planned cancel; anything else (including a
+        // supersede) is handled below.
+        if (!thinkLimitHit || superseded()) throw err;
+      } finally {
+        clearTimeout(thinkTimer);
+        if (llmRequests.get(userId) === cancel) llmRequests.delete(userId);
       }
 
+      if (superseded() || !firstSentence || pass > 1 || reasoning === 'off') break;
+      if (thinkLimitHit) {
+        console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of thinking — asking again with reasoning off`);
+        sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
+      } else {
+        console.warn(`[${userId}] [LLM] answer had no words — asking again with reasoning off`);
+      }
+      reasoning = 'off';
+    }
+
+    if (firstSentence && !superseded()) {
+      stopFillers();
       ensureQueued();
-      response.add(sentence);
+      response.add('Sorry, I lost my train of thought.');
       signal();
     }
   } catch (err) {
     stopFillers();
-    console.error('handleQuery error:', err.message);
-    // Only when nothing has been said yet. After part of an answer has played,
-    // a tacked-on "I had trouble processing that." makes a merely truncated
-    // answer sound like a failure.
-    if (response.size === 0 && userGeneration.get(userId) === myGeneration) {
-      ensureQueued();
-      response.add(err.name === 'TimeoutError'
-        ? 'Sorry, that took too long to work out.'
-        : 'I had trouble processing that.');
-      signal();
+    if (superseded()) {
+      // Barge-in or a newer question: the cancel is the point, not an error.
+      console.log(`[${userId}] previous question cancelled`);
+    } else {
+      console.error('handleQuery error:', err.message);
+      // Only when nothing has been said yet. After part of an answer has
+      // played, a tacked-on "I had trouble processing that." makes a merely
+      // truncated answer sound like a failure.
+      if (response.size === 0) {
+        ensureQueued();
+        response.add(err.name === 'TimeoutError'
+          ? 'Sorry, that took too long to work out.'
+          : 'I had trouble processing that.');
+        signal();
+      }
     }
   } finally {
     clearStatus();
@@ -1498,7 +1610,10 @@ function logLLMStats(userId, stats) {
 //      fall back to parsing it as a normal response and chunking into
 //      sentences ourselves — still faster than the old single speakResponse call.
 
-async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text)) {
+// `reasoning` overrides LLM_REASONING for this request; aborting `signal`
+// cancels it (thinking limit, barge-in, supersede).
+async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text),
+                                             { reasoning = LLM_REASONING, signal = null } = {}) {
   const body = {
     model: lmStudioModel,
     input: text,
@@ -1548,7 +1663,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
     idleTimer = setTimeout(() => idle.abort(new DOMException(
       `LM Studio sent nothing for ${LM_IDLE_TIMEOUT_MS / 1000}s`, 'TimeoutError')), LM_IDLE_TIMEOUT_MS);
   };
-  const requestSignal = AbortSignal.any([idle.signal, AbortSignal.timeout(LM_TIMEOUT_MS)]);
+  const requestSignal = AbortSignal.any([idle.signal, AbortSignal.timeout(LM_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+  if (reasoning) body.reasoning = reasoning;
 
   try {
     let res;
@@ -1556,7 +1672,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
     let retriedConversation = false;
     for (;;) {
       body.model = lmStudioModel;
-      console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch}`);
+      console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch} reasoning=${reasoning || 'default'}`);
       resetIdle();
       res = await fetch(LM_STUDIO_URL, {
         method: 'POST',
