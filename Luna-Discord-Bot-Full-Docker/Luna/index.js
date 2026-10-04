@@ -185,6 +185,25 @@ const LM_SYSTEM_PROMPT =
   'access to the internet via a web search tool and should use it whenever asked ' +
   'about current events, prices, weather, news, scores, or anything time-sensitive.';
 
+// Today's date, for the system prompt. The model otherwise guesses: it has
+// searched for "today" as June 2026 in October, and called October "a December
+// day". Date only, not the time, on purpose: LM Studio reuses its cached copy
+// of an identical prompt prefix, and a clock in the prompt would change it on
+// every request. LUNA_TIMEZONE (an IANA name) decides what "today" is;
+// containers run in UTC, which turns evenings in the Americas into tomorrow.
+const LUNA_TIMEZONE = (() => {
+  const tz = process.env.LUNA_TIMEZONE || process.env.TZ || 'UTC';
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; }
+  catch { console.warn(`LUNA_TIMEZONE="${tz}" is not a valid time zone — using UTC`); return 'UTC'; }
+})();
+
+function todayLine() {
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone: LUNA_TIMEZONE, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  }).format(new Date());
+  return `Today is ${date} (${LUNA_TIMEZONE} time).`;
+}
+
   // Optional personality line, injected on a fraction of requests. Keep the base
 // prompt above free of "sometimes"/"occasionally" instructions — see below.
 const LM_FLAVOR_PROMPT = process.env.LM_FLAVOR_PROMPT || '';
@@ -1344,25 +1363,19 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // exactly one subscription — so an unconditional chime silently detached
   // whichever sentence was mid-playback. With several people in a channel that
   // presented as Luna's answers being randomly truncated.
-  // Same decision the LLM call will use — computed here so the status message
-  // can say which mode Luna is in, then passed down so the two cannot drift.
-  const useSearch = needsWebSearch(query);
-  const announceSearch = useSearch && ANNOUNCE_SEARCH;
+  // Whether the model is offered the web search tool. It decides itself
+  // whether to use it; `let`, because a question it tried to search without
+  // the tool is asked again with it (see the pass loop).
+  let useSearch = needsWebSearch(query);
 
-  // The search phrase replaces the chime as the "I heard you" cue; playing
-  // both would have the phrase cut the chime off.
-  if (!currentPlayer && !announceSearch) {
+  if (!currentPlayer) {
     playSound(CHIME_PATH, connection).catch(() => {});
   }
 
   // Not awaited: posting (and later deleting) this message are Discord round
   // trips of 100-300 ms each, and both used to sit directly in front of the
   // LLM request and the first sentence's TTS.
-  const statusMsg = channel.send(
-    useSearch
-      ? '🔍 *Luna is searching the web...*'
-      : '🤔 *Luna is thinking...*'
-  ).catch(() => null);
+  const statusMsg = channel.send('🤔 *Luna is thinking...*').catch(() => null);
   let statusCleared = false;
   const clearStatus = () => {
     if (statusCleared) return;
@@ -1387,7 +1400,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }, userId, myGeneration);
   };
 
-  if (announceSearch) sayAside('search', fillPhrase(SEARCH_PHRASES, {}));
+  // Search heads-up, said when the model actually starts a web search (its
+  // first tool call), once per question. Predicting it from keywords before
+  // the request announced searches that never happened and missed ones that
+  // did; this way it is heard if and only if Luna really is searching.
+  let searchAnnounced = false;
+  const announceSearchNow = () => {
+    if (searchAnnounced) return;
+    searchAnnounced = true;
+    if (!statusCleared) {
+      statusMsg.then(m => m && !statusCleared && m.edit('🔍 *Luna is searching the web...*')).catch(() => {});
+    }
+    // Skipped if the answer has already started: queued behind it, it would
+    // only play once the answer had finished.
+    if (ANNOUNCE_SEARCH) sayAside('search', fillPhrase(SEARCH_PHRASES, {}), () => firstSentence);
+  };
 
   // "Still thinking" fillers while no answer has started. Each pass through
   // the phrases is freshly shuffled, so nothing repeats until every phrase
@@ -1493,17 +1520,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }, userId, myGeneration);
   };
 
-  // One LLM request per pass. A second pass, with reasoning off (it answers
-  // in seconds), happens when the model thinks past LLM_THINK_LIMIT_MS
-  // without starting an answer, or finishes with no words at all (it has
-  // answered "." after 50 s of reasoning). Never more than two passes.
+  // One LLM request per pass, and at most one retry for each reason:
+  //   - the model wrote a tool call as text because it was not offered the
+  //     search tool -> ask again with search on (same reasoning);
+  //   - it thought past LLM_THINK_LIMIT_MS without starting an answer, or
+  //     finished with no words at all (it has answered "." after 50 s of
+  //     reasoning) -> ask again with reasoning off, which answers in seconds.
   const superseded = () => userGeneration.get(userId) !== myGeneration;
   const hasWords   = text => /[\p{L}\p{N}]/u.test(text);
   let reasoning     = LLM_REASONING;
   let firstSentence = true;
+  let reasoningRetried = false;
 
   try {
-    for (let pass = 1; ; pass++) {
+    for (;;) {
+      let fakeToolCall = false;
       const cancel = new AbortController();
       llmRequests.set(userId, cancel);
       // Reasoning clock: runs only between reasoning.start and reasoning.end,
@@ -1526,6 +1557,8 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           reasonedMs += Date.now() - reasoningAt;
           reasoningAt = 0;
           clearTimeout(thinkTimer);
+        } else if (e.type === 'tool_call.start') {
+          announceSearchNow();
         }
       };
 
@@ -1535,6 +1568,14 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           if (superseded()) break;
           // A lone "." or similar: nothing to say, and nothing for TTS.
           if (!hasWords(sentence)) continue;
+          // A tool call written out as text — the model wanted to search but
+          // had no search tool. Never speak it (it went straight to TTS);
+          // stop this pass and ask again with search on.
+          if (FAKE_TOOL_CALL.test(sentence)) {
+            fakeToolCall = true;
+            console.warn(`[${userId}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
+            break;
+          }
           console.log('Luna sentence:', sentence);
 
           if (firstSentence) {
@@ -1558,14 +1599,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         if (llmRequests.get(userId) === cancel) llmRequests.delete(userId);
       }
 
-      if (superseded() || !firstSentence || pass > 1 || reasoning === 'off') break;
+      if (superseded()) break;
+      if (fakeToolCall && !useSearch) {
+        console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
+        useSearch = true;
+        continue;
+      }
+      if (!firstSentence || reasoning === 'off' || reasoningRetried) break;
       if (thinkLimitHit) {
         console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
         sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
       } else {
-        console.warn(`[${userId}] [LLM] answer had no words — asking again with reasoning off`);
+        console.warn(`[${userId}] [LLM] answer had ${fakeToolCall ? 'only a tool call written as text' : 'no words'} — asking again with reasoning off`);
       }
       reasoning = 'off';
+      reasoningRetried = true;
     }
 
     if (firstSentence && !superseded()) {
@@ -1605,13 +1653,18 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
-// Searched questions get this added to the system prompt. Luna already says a
-// heads-up ("Hmm, let me take a look."); the model's own "I need to look that
-// up for you" duplicated it, and — counting as the answer starting — it also
-// silenced the "still thinking" fillers for the whole search that followed.
+// Added to the system prompt whenever the search tool is offered and Luna's
+// own heads-up is on. Luna announces the search the moment it starts; the
+// model's own "I need to look that up for you" duplicated it, and — counting
+// as the answer starting — silenced the "still thinking" fillers for the whole
+// search that followed.
 const SEARCH_PROMPT =
-  "You have already told the user you are looking this up, so do not say that " +
+  "When you search the web, the user is told automatically, so never say that " +
   "you will search or look anything up; once you have the information, just answer.";
+
+// A tool call the model wrote out as text (Qwen's <tool_call> / <function=...>
+// format), which happens when it wants a tool it was not offered.
+const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
 
 // Where a searched answer's time goes: one line per tool call, and per long
 // read of a prompt or of tool results (~90 tokens/s on this hardware).
@@ -1691,8 +1744,11 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = expressivePrompt();
-  body.system_prompt = LM_SYSTEM_PROMPT + flavor + (expressive ? ' ' + expressive : '') +
-    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '');
+  // Stable parts first and the occasional flavor line last, so the cached
+  // prefix LM Studio can reuse stays as long as possible.
+  body.system_prompt = LM_SYSTEM_PROMPT + ' ' + todayLine() +
+    (expressive ? ' ' + expressive : '') +
+    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '') + flavor;
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
