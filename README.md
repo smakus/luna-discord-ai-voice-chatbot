@@ -118,7 +118,9 @@ When Luna starts searching the web, she says a short heads-up such as *"Hmm, let
 
 If the model spends more than a minute thinking (searching and reading results don't count), Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
 
-Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it.
+Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes.
+
+If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`. LM Studio then keeps that connection open instead of Luna connecting on every question.
 
 Luna leaves the voice channel automatically when the last person does.
 
@@ -172,7 +174,10 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
-| `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when there's no `TAVILY_API_KEY`) |
+| `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
+| `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
+| `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
+| `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
 | `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
 | `ANNOUNCE_THINKING` | `true` | Say "still thinking" fillers while an answer is slow to start |
