@@ -441,8 +441,7 @@ client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
-  console.log(`[search] web search: ${WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : WEB_SEARCH}` +
-    (process.env.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY)'));
+  console.log(`[search] web search: ${describeSearch()}`);
   ready = true;
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
@@ -1343,19 +1342,68 @@ const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
 //              missed real searches ("did UCLA play football today?" — the
 //              model then wrote a tool call as text) and searched for no
 //              reason ("is there a way to say this nicer?"). Offering the
-//              tool costs ~0.5-1 s per question: LM Studio caches the tool
-//              definitions with the rest of the prompt.
+//              tool costs ~1-4 s per question (see searchIntegration).
 //   keywords — only when needsWebSearch() matches (the old behaviour).
-//   off      — never. Also forced when TAVILY_API_KEY is not set.
+//   off      — never. Also forced when no search server is configured.
+//
+// Where the tool comes from:
+//   SEARCH_MCP_PLUGIN set (e.g. "mcp/tavily") — an MCP server configured in
+//     LM Studio's own mcp.json, which LM Studio keeps connected (~1 s faster
+//     per question than connecting per request).
+//   otherwise — Tavily's hosted MCP server with TAVILY_API_KEY, connected by
+//     LM Studio on every request (an "ephemeral" integration).
+// Either way the model is shown only SEARCH_TOOLS (default "tavily_search";
+// "all" for every tool the server has). Tavily also offers research, crawl,
+// map and extract — slower, credit-hungry, and the model chained them (search,
+// extract, search again) on a simple weather question; showing one tool also
+// cuts the tool definitions the model must read from ~2,300 to ~970 tokens.
+const SEARCH_MCP_PLUGIN = (process.env.SEARCH_MCP_PLUGIN || '').trim();
+const SEARCH_TOOLS = (() => {
+  const raw = (process.env.SEARCH_TOOLS || 'tavily_search').trim();
+  return raw.toLowerCase() === 'all' ? null : raw.split(',').map(t => t.trim()).filter(Boolean);
+})();
+
 const WEB_SEARCH = (() => {
   const mode = (process.env.WEB_SEARCH || 'always').trim().toLowerCase();
-  if (!process.env.TAVILY_API_KEY) return 'off';
+  if (!SEARCH_MCP_PLUGIN && !process.env.TAVILY_API_KEY) return 'off';
   if (['always', 'keywords', 'off'].includes(mode)) return mode;
   console.warn(`WEB_SEARCH="${mode}" is not always/keywords/off — using always`);
   return 'always';
 })();
 
+function searchIntegration() {
+  const allowed = SEARCH_TOOLS ? { allowed_tools: SEARCH_TOOLS } : {};
+  return SEARCH_MCP_PLUGIN
+    ? { type: 'plugin', id: SEARCH_MCP_PLUGIN, ...allowed }
+    : { type: 'ephemeral_mcp', server_label: 'tavily',
+        server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${process.env.TAVILY_API_KEY}`, ...allowed };
+}
+
+function describeSearch() {
+  if (WEB_SEARCH === 'off') {
+    return 'off' + (SEARCH_MCP_PLUGIN || process.env.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY or SEARCH_MCP_PLUGIN)');
+  }
+  return (WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : 'keywords') +
+    ` via ${SEARCH_MCP_PLUGIN ? `LM Studio plugin ${SEARCH_MCP_PLUGIN}` : 'Tavily (connected per request)'}` +
+    `, tools: ${SEARCH_TOOLS ? SEARCH_TOOLS.join(', ') : 'all'}`;
+}
+
+// Search outage fallback. LM Studio connects to the search server before
+// answering, and if it can't (server down, or slow: it gives up after ~20 s)
+// it rejects the whole request, so with search offered on every question one
+// outage would fail every question. Instead the question is answered without
+// search, and search is paused for SEARCH_PAUSE_MS so the following questions
+// don't each pay the failed connection attempt.
+const SEARCH_PAUSE_MS = parseInt(process.env.SEARCH_PAUSE_MS || '300000', 10);
+let searchPausedUntil = 0;
+
+function pauseSearch(reason) {
+  searchPausedUntil = Date.now() + SEARCH_PAUSE_MS;
+  console.warn(`[search] ${reason} — answering without search; search paused for ${Math.round(SEARCH_PAUSE_MS / 60000)} min`);
+}
+
 function offerSearch(query) {
+  if (Date.now() < searchPausedUntil) return false;
   return WEB_SEARCH === 'always' || (WEB_SEARCH === 'keywords' && needsWebSearch(query));
 }
 
@@ -1667,6 +1715,8 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   try {
     for (;;) {
       let fakeToolCall = false;
+      // Search may have been paused by an earlier pass of this question.
+      if (useSearch && Date.now() < searchPausedUntil) useSearch = false;
       const cancel = new AbortController();
       llmRequests.set(userId, cancel);
       // Reasoning clock: runs only between reasoning.start and reasoning.end,
@@ -1732,7 +1782,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       }
 
       if (superseded()) break;
-      if (fakeToolCall && !useSearch && WEB_SEARCH !== 'off') {
+      if (fakeToolCall && !useSearch && WEB_SEARCH !== 'off' && Date.now() >= searchPausedUntil) {
         console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
         useSearch = true;
         continue;
@@ -1846,13 +1896,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
     model: lmStudioModel,
     input: text,
     stream: true,
-    ...(useSearch && {
-      integrations: [{
-        type: 'ephemeral_mcp',
-        server_label: 'tavily',
-        server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${process.env.TAVILY_API_KEY}`,
-      }],
-    }),
+    ...(useSearch && { integrations: [searchIntegration()] }),
   };
 
   // Sent on EVERY request, not only the first of a chain.
@@ -1902,6 +1946,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
     let res;
     let retriedModel = false;
     let retriedConversation = false;
+    let retriedWithoutSearch = false;
     for (;;) {
       body.model = lmStudioModel;
       console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch} reasoning=${reasoning || 'default'}`);
@@ -1918,6 +1963,17 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       if (res.ok) break;
 
       const errText = await res.text();
+
+      // The search server is unreachable (LM Studio rejects the whole request,
+      // not just the search). Answer without it and pause search.
+      if (!retriedWithoutSearch && body.integrations && /MCP server|plugin|integration/i.test(errText)) {
+        retriedWithoutSearch = true;
+        pauseSearch(`search server unavailable (${errText.replace(/\s+/g, ' ').slice(0, 120)})`);
+        delete body.integrations;
+        body.system_prompt = body.system_prompt.replace(' ' + SEARCH_PROMPT, '');
+        useSearch = false;
+        continue;
+      }
 
       // This speaker's conversation memory no longer exists in LM Studio (it
       // was reset, its data cleared, or the stored response expired). Without
