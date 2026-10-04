@@ -451,6 +451,8 @@ client.on(Events.ClientReady, async () => {
 
 let activeConnection   = null;
 let activeVoiceChannel = null;
+let activeTextChannel  = null;   // where !luna was typed; music commands go here
+let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
@@ -462,13 +464,10 @@ client.on(Events.MessageCreate, async message => {
   const channel = message.member?.voice?.channel;
   if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
 
+  const guild = { id: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator };
   // Returns the guild's existing connection if there is one, moving it to
   // `channel` when that differs.
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: message.guild.id,
-    adapterCreator: message.guild.voiceAdapterCreator,
-  });
+  const connection = joinVoice(channel, guild);
 
   if (connection === activeConnection) {
     if (activeVoiceChannel?.id === channel.id) {
@@ -485,20 +484,41 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  attachVoice(connection, channel, message.channel, guild, () => {
+    message.reply(
+      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
+      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
+      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
+    ).catch(() => {});
+    introduceSelf(connection);
+  });
+});
+
+// debug: true so the voice library's encryption (DAVE) messages reach
+// logVoiceDebug; everything else it says is filtered out there.
+function joinVoice(channel, guild) {
+  return joinVoiceChannel({
+    channelId: channel.id,
+    guildId: guild.id,
+    adapterCreator: guild.adapterCreator,
+    debug: true,
+  });
+}
+
+// Starts listening on a new connection once it is Ready. Shared by !luna and
+// the encrypted-session reconnect; `onJoined` runs after setup (reply, intro).
+function attachVoice(connection, channel, textChannel, guild, onJoined = null) {
   watchConnection(connection);
 
   // Once, not on: a connection returns to Ready after every network blip, and
   // re-running this would re-post the join message and stack another
   // speaking listener each time.
   const onReady = () => {
-    message.reply(
-      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
-      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
-      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
-    ).catch(() => {});
     activeConnection   = connection;
     activeVoiceChannel = channel;
-    startListening(connection, message.channel);
+    activeTextChannel  = textChannel;
+    activeGuild        = guild;
+    startListening(connection, textChannel);
 
     // Subscribe to users already in the channel at join time
     channel.members.forEach(member => {
@@ -506,10 +526,10 @@ client.on(Events.MessageCreate, async message => {
       if (IGNORED_USERS.has(member.id))  return;
       if (listeningUsers.has(member.id)) return;
       listeningUsers.add(member.id);
-      continuousCapture(connection, member.id, message.channel);
+      continuousCapture(connection, member.id, textChannel);
     });
 
-    introduceSelf(connection);
+    if (onJoined) onJoined();
   };
 
   if (connection.state.status === VoiceConnectionStatus.Ready) {
@@ -517,7 +537,7 @@ client.on(Events.MessageCreate, async message => {
   } else {
     connection.once(VoiceConnectionStatus.Ready, onReady);
   }
-});
+}
 
 // ─── Voice connection lifecycle ───────────────────────────────────────────────
 
@@ -546,12 +566,92 @@ function watchConnection(connection) {
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     if (activeConnection === connection) resetVoiceState();
   });
+
+  connection.on('debug', logVoiceDebug);
+}
+
+// ─── Encrypted voice (DAVE): logging and self-heal ────────────────────────────
+//
+// Discord voice is end-to-end encrypted. Occasionally the bot's session loses
+// one speaker's keys: Discord keeps reporting them speaking (the voice library
+// records that before decrypting), but every packet fails to decrypt and is
+// dropped with only a debug message. To Luna that speaker is simply silent —
+// it looks exactly like her ignoring the wake word — while everyone else in
+// the channel hears them fine. Them rejoining does not fix it; a fresh voice
+// session for Luna does. Hence:
+//   - logVoiceDebug: the library's [DAVE] messages, decrypt failures counted
+//     and summarised at most every 10 s;
+//   - a speaker reported speaking for VOICE_RECOVER_MS with no audio arriving
+//     makes Luna reconnect (at most once per 5 minutes). 0 disables.
+const VOICE_RECOVER_MS     = parseInt(process.env.VOICE_RECOVER_MS || '20000', 10);
+const VOICE_RECOVER_GAP_MS = 5 * 60000;
+const silentSpeakers = new Map();   // userId -> when Discord first said they spoke, with no audio since
+let lastVoiceRecoveryAt = 0;
+let decryptFailures = 0;
+let decryptLoggedAt = 0;
+
+function logVoiceDebug(message) {
+  if (!message.includes('[DAVE]')) return;
+  const text = message.replace(/^.*?\[DAVE\]\s*/, '');
+  if (/failed to decrypt/i.test(text)) {
+    decryptFailures++;
+    const now = Date.now();
+    if (now - decryptLoggedAt >= 10000) {
+      console.warn(`[voice] encrypted audio: ${decryptFailures} packet(s) failed to decrypt (latest: ${text})`);
+      decryptFailures = 0;
+      decryptLoggedAt = now;
+    }
+    return;
+  }
+  console.log(`[voice] encryption: ${text}`);
+}
+
+// Discord reported `userId` speaking (receiver 'start').
+function noteSpeaking(userId) {
+  if (!VOICE_RECOVER_MS || silentSpeakers.has(userId)) return;
+  silentSpeakers.set(userId, Date.now());
+  setTimeout(() => checkSilentSpeaker(userId), VOICE_RECOVER_MS);
+}
+
+// Decoded audio arrived from `userId`: their audio is fine.
+function noteAudio(userId) {
+  silentSpeakers.delete(userId);
+}
+
+function checkSilentSpeaker(userId) {
+  const since = silentSpeakers.get(userId);
+  if (!since || Date.now() - since < VOICE_RECOVER_MS || !activeConnection) return;
+  silentSpeakers.delete(userId);
+  const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
+  if (Date.now() - lastVoiceRecoveryAt < VOICE_RECOVER_GAP_MS) {
+    console.warn(`[voice] still no decryptable audio from ${name}; already reconnected recently, not retrying yet`);
+    return;
+  }
+  lastVoiceRecoveryAt = Date.now();
+  console.warn(`[voice] Discord reports ${name} speaking, but none of their audio has decrypted in ` +
+    `${Math.round(VOICE_RECOVER_MS / 1000)}s — reconnecting for a fresh encrypted session`);
+  reconnectVoice();
+}
+
+// Leave and rejoin the same channel, quietly (no reply, no intro).
+function reconnectVoice() {
+  const channel = activeVoiceChannel, textChannel = activeTextChannel, guild = activeGuild;
+  if (!channel || !guild) return;
+  leaveVoice('reconnecting');
+  setTimeout(() => {
+    if (activeConnection) return;   // someone ran !luna in the meantime
+    const connection = joinVoice(channel, guild);
+    attachVoice(connection, channel, textChannel, guild, () => console.log(`[voice] reconnected to ${channel.name}`));
+  }, 1500);
 }
 
 // Forgets everything tied to the current voice session.
 function resetVoiceState() {
   activeConnection   = null;
   activeVoiceChannel = null;
+  activeTextChannel  = null;
+  activeGuild        = null;
+  silentSpeakers.clear();
   listeningUsers.clear();
   captureStates.clear();
   for (const response of spokenResponses.values()) response.cancel();
@@ -583,6 +683,13 @@ function getRealMemberCount(voiceChannel) {
 }
 
 function startListening(connection, channel) {
+  // Self-heal input (see noteSpeaking); separate from the capture start below,
+  // which returns early for speakers that already have a capture.
+  connection.receiver.speaking.on('start', userId => {
+    if (userId === client.user.id || IGNORED_USERS.has(userId)) return;
+    noteSpeaking(userId);
+  });
+
   connection.receiver.speaking.on('start', userId => {
     if (listeningUsers.has(userId))   return;
     if (userId === client.user.id)    return; // ignore bot's own audio
@@ -816,6 +923,7 @@ function continuousCapture(connection, userId, channel) {
   decoder.on('data', chunk => {
     const chunkAt = Date.now();
     lastDataTime = chunkAt;
+    noteAudio(userId);
 
     // Feed the detector every frame we receive, including low-energy ones.
     if (wakeStream) {

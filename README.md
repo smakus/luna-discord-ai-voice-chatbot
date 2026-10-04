@@ -224,6 +224,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
+| `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
 | `LUNA_TIMEZONE` | `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
 | `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
 | `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
@@ -290,6 +291,7 @@ She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck a
 | Replies take 20+ seconds | The model is too big for your RAM; see [Hardware sizing](#hardware-sizing) |
 | Doesn't respond to "hey Luna" | Check the peak score; see [Tuning the wake word](#tuning-the-wake-word) |
 | Answers once, then stops responding | Luna is probably hearing herself through your speakers. Use headphones, or raise `ENERGY_THRESHOLD` |
+| Luna ignores one person while everyone else hears them | Her encrypted voice session lost that person's keys. She reconnects by herself after ~20 s of it (look for `[voice]` lines); restarting her fixes it too |
 | Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
 | LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
 | No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
