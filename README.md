@@ -116,7 +116,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 
 When a question is going to search the web, Luna first says a short heads-up such as *"Hmm, let me take a look."* so the wait isn't silent. If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
 
-If the model is still thinking after a minute, Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
+If the model spends more than a minute thinking (searching and reading results don't count), Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
 
 Web search triggers on current-information terms ("price", "weather", "score", "the latest", "any news"). A time word only counts next to one of those, so "weather today" searches but "how are you today" doesn't.
 
@@ -224,7 +224,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 | `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
-| `LLM_THINK_LIMIT_MS` | `60000` | If no answer has started after this, ask again with reasoning off. `0` disables |
+| `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
 | `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
 | `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `30000` | Request timeouts |

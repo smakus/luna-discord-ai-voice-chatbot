@@ -296,9 +296,15 @@ const LLM_REASONING = (process.env.LLM_REASONING || '').trim().toLowerCase();
 
 // Thinking limit. Neither timeout above can catch a model that keeps reasoning:
 // reasoning streams, so the request is never idle. One question spent over
-// seven minutes (3,210 reasoning tokens) before its first word. If no answer
-// has started after LLM_THINK_LIMIT_MS, the request is cancelled and asked
-// again with reasoning off, which answers in seconds. 0 disables.
+// seven minutes (3,210 reasoning tokens) before its first word. If, before the
+// answer starts, the model has spent LLM_THINK_LIMIT_MS actually *reasoning*,
+// the request is cancelled and asked again with reasoning off, which answers
+// in seconds. 0 disables.
+//
+// Only reasoning counts — LM Studio marks it with reasoning.start/.end events.
+// Searching and reading the results do not: a searched question can spend a
+// minute on those alone (results are read at ~90 tokens/s on this hardware),
+// and counting them cancelled healthy searches and redid them from scratch.
 const LLM_THINK_LIMIT_MS = parseInt(process.env.LLM_THINK_LIMIT_MS || '60000', 10);
 const QUICK_ANSWER_PHRASES = (() => {
   const custom = parsePhrases(process.env.QUICK_ANSWER_PHRASES);
@@ -1500,16 +1506,31 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     for (let pass = 1; ; pass++) {
       const cancel = new AbortController();
       llmRequests.set(userId, cancel);
+      // Reasoning clock: runs only between reasoning.start and reasoning.end,
+      // so time spent searching and reading results is not counted.
       let thinkLimitHit = false;
-      const thinkTimer = LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off'
-        ? setTimeout(() => {
-            thinkLimitHit = true;
-            cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s`, 'AbortError'));
-          }, LLM_THINK_LIMIT_MS)
-        : null;
+      let thinkTimer    = null;
+      let reasonedMs    = 0;
+      let reasoningAt   = 0;
+      const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
+      const onEvent = e => {
+        if (e.type === 'reasoning.start' && !reasoningAt) {
+          reasoningAt = Date.now();
+          if (limitActive()) {
+            thinkTimer = setTimeout(() => {
+              thinkLimitHit = true;
+              cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning`, 'AbortError'));
+            }, Math.max(0, LLM_THINK_LIMIT_MS - reasonedMs));
+          }
+        } else if (e.type === 'reasoning.end' && reasoningAt) {
+          reasonedMs += Date.now() - reasoningAt;
+          reasoningAt = 0;
+          clearTimeout(thinkTimer);
+        }
+      };
 
       try {
-        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal })) {
+        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
           // A lone "." or similar: nothing to say, and nothing for TTS.
@@ -1539,7 +1560,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
       if (superseded() || !firstSentence || pass > 1 || reasoning === 'off') break;
       if (thinkLimitHit) {
-        console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of thinking — asking again with reasoning off`);
+        console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
         sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
       } else {
         console.warn(`[${userId}] [LLM] answer had no words — asking again with reasoning off`);
@@ -1584,6 +1605,28 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
+// Searched questions get this added to the system prompt. Luna already says a
+// heads-up ("Hmm, let me take a look."); the model's own "I need to look that
+// up for you" duplicated it, and — counting as the answer starting — it also
+// silenced the "still thinking" fillers for the whole search that followed.
+const SEARCH_PROMPT =
+  "You have already told the user you are looking this up, so do not say that " +
+  "you will search or look anything up; once you have the information, just answer.";
+
+// Where a searched answer's time goes: one line per tool call, and per long
+// read of a prompt or of tool results (~90 tokens/s on this hardware).
+function logLLMPhase(userId, e, phase) {
+  if (e.type === 'tool_call.arguments') {
+    console.log(`[${userId}] [LLM] tool: ${e.tool} ${JSON.stringify(e.arguments || {}).slice(0, 160)}`);
+  } else if (e.type === 'prompt_processing.start') {
+    phase.readingAt = Date.now();
+  } else if (e.type === 'prompt_processing.end' && phase.readingAt) {
+    const ms = Date.now() - phase.readingAt;
+    phase.readingAt = 0;
+    if (ms >= 2000) console.log(`[${userId}] [LLM] read prompt/results in ${(ms / 1000).toFixed(1)}s`);
+  }
+}
+
 // One line per answer from LM Studio's own accounting: what is needed to tell
 // whether a slow answer was spent reasoning, prefilling a long prompt
 // (conversation memory, stored web-search results) or just generating slowly.
@@ -1613,7 +1656,7 @@ function logLLMStats(userId, stats) {
 // `reasoning` overrides LLM_REASONING for this request; aborting `signal`
 // cancels it (thinking limit, barge-in, supersede).
 async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text),
-                                             { reasoning = LLM_REASONING, signal = null } = {}) {
+                                             { reasoning = LLM_REASONING, signal = null, onEvent = null } = {}) {
   const body = {
     model: lmStudioModel,
     input: text,
@@ -1648,7 +1691,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = expressivePrompt();
-  body.system_prompt = LM_SYSTEM_PROMPT + flavor + (expressive ? ' ' + expressive : '');
+  body.system_prompt = LM_SYSTEM_PROMPT + flavor + (expressive ? ' ' + expressive : '') +
+    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '');
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
@@ -1734,6 +1778,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
       //
       // So: exit on the terminal markers rather than waiting for the socket.
       let finished = false;
+    const phase = { readingAt: 0 };
 
       try {
         while (!finished) {
@@ -1754,6 +1799,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
 
             let parsed;
             try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+            if (onEvent) onEvent(parsed);
+            logLLMPhase(userId, parsed, phase);
 
             // response_id lives inside chat.end result
             if (parsed.type === 'chat.end') {
