@@ -185,6 +185,25 @@ const LM_SYSTEM_PROMPT =
   'access to the internet via a web search tool and should use it whenever asked ' +
   'about current events, prices, weather, news, scores, or anything time-sensitive.';
 
+// Today's date, for the system prompt. The model otherwise guesses: it has
+// searched for "today" as June 2026 in October, and called October "a December
+// day". Date only, not the time, on purpose: LM Studio reuses its cached copy
+// of an identical prompt prefix, and a clock in the prompt would change it on
+// every request. LUNA_TIMEZONE (an IANA name) decides what "today" is;
+// containers run in UTC, which turns evenings in the Americas into tomorrow.
+const LUNA_TIMEZONE = (() => {
+  const tz = process.env.LUNA_TIMEZONE || process.env.TZ || 'UTC';
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; }
+  catch { console.warn(`LUNA_TIMEZONE="${tz}" is not a valid time zone — using UTC`); return 'UTC'; }
+})();
+
+function todayLine() {
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone: LUNA_TIMEZONE, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  }).format(new Date());
+  return `Today is ${date} (${LUNA_TIMEZONE} time).`;
+}
+
   // Optional personality line, injected on a fraction of requests. Keep the base
 // prompt above free of "sometimes"/"occasionally" instructions — see below.
 const LM_FLAVOR_PROMPT = process.env.LM_FLAVOR_PROMPT || '';
@@ -296,9 +315,15 @@ const LLM_REASONING = (process.env.LLM_REASONING || '').trim().toLowerCase();
 
 // Thinking limit. Neither timeout above can catch a model that keeps reasoning:
 // reasoning streams, so the request is never idle. One question spent over
-// seven minutes (3,210 reasoning tokens) before its first word. If no answer
-// has started after LLM_THINK_LIMIT_MS, the request is cancelled and asked
-// again with reasoning off, which answers in seconds. 0 disables.
+// seven minutes (3,210 reasoning tokens) before its first word. If, before the
+// answer starts, the model has spent LLM_THINK_LIMIT_MS actually *reasoning*,
+// the request is cancelled and asked again with reasoning off, which answers
+// in seconds. 0 disables.
+//
+// Only reasoning counts — LM Studio marks it with reasoning.start/.end events.
+// Searching and reading the results do not: a searched question can spend a
+// minute on those alone (results are read at ~90 tokens/s on this hardware),
+// and counting them cancelled healthy searches and redid them from scratch.
 const LLM_THINK_LIMIT_MS = parseInt(process.env.LLM_THINK_LIMIT_MS || '60000', 10);
 const QUICK_ANSWER_PHRASES = (() => {
   const custom = parsePhrases(process.env.QUICK_ANSWER_PHRASES);
@@ -416,6 +441,8 @@ client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
+  console.log(`[search] web search: ${WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : WEB_SEARCH}` +
+    (process.env.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY)'));
   ready = true;
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
@@ -424,6 +451,8 @@ client.on(Events.ClientReady, async () => {
 
 let activeConnection   = null;
 let activeVoiceChannel = null;
+let activeTextChannel  = null;   // where !luna was typed; music commands go here
+let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
@@ -435,13 +464,10 @@ client.on(Events.MessageCreate, async message => {
   const channel = message.member?.voice?.channel;
   if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
 
+  const guild = { id: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator };
   // Returns the guild's existing connection if there is one, moving it to
   // `channel` when that differs.
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: message.guild.id,
-    adapterCreator: message.guild.voiceAdapterCreator,
-  });
+  const connection = joinVoice(channel, guild);
 
   if (connection === activeConnection) {
     if (activeVoiceChannel?.id === channel.id) {
@@ -458,20 +484,41 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  attachVoice(connection, channel, message.channel, guild, () => {
+    message.reply(
+      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
+      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
+      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
+    ).catch(() => {});
+    introduceSelf(connection);
+  });
+});
+
+// debug: true so the voice library's encryption (DAVE) messages reach
+// logVoiceDebug; everything else it says is filtered out there.
+function joinVoice(channel, guild) {
+  return joinVoiceChannel({
+    channelId: channel.id,
+    guildId: guild.id,
+    adapterCreator: guild.adapterCreator,
+    debug: true,
+  });
+}
+
+// Starts listening on a new connection once it is Ready. Shared by !luna and
+// the encrypted-session reconnect; `onJoined` runs after setup (reply, intro).
+function attachVoice(connection, channel, textChannel, guild, onJoined = null) {
   watchConnection(connection);
 
   // Once, not on: a connection returns to Ready after every network blip, and
   // re-running this would re-post the join message and stack another
   // speaking listener each time.
   const onReady = () => {
-    message.reply(
-      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
-      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
-      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
-    ).catch(() => {});
     activeConnection   = connection;
     activeVoiceChannel = channel;
-    startListening(connection, message.channel);
+    activeTextChannel  = textChannel;
+    activeGuild        = guild;
+    startListening(connection, textChannel);
 
     // Subscribe to users already in the channel at join time
     channel.members.forEach(member => {
@@ -479,10 +526,10 @@ client.on(Events.MessageCreate, async message => {
       if (IGNORED_USERS.has(member.id))  return;
       if (listeningUsers.has(member.id)) return;
       listeningUsers.add(member.id);
-      continuousCapture(connection, member.id, message.channel);
+      continuousCapture(connection, member.id, textChannel);
     });
 
-    introduceSelf(connection);
+    if (onJoined) onJoined();
   };
 
   if (connection.state.status === VoiceConnectionStatus.Ready) {
@@ -490,7 +537,7 @@ client.on(Events.MessageCreate, async message => {
   } else {
     connection.once(VoiceConnectionStatus.Ready, onReady);
   }
-});
+}
 
 // ─── Voice connection lifecycle ───────────────────────────────────────────────
 
@@ -519,12 +566,92 @@ function watchConnection(connection) {
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     if (activeConnection === connection) resetVoiceState();
   });
+
+  connection.on('debug', logVoiceDebug);
+}
+
+// ─── Encrypted voice (DAVE): logging and self-heal ────────────────────────────
+//
+// Discord voice is end-to-end encrypted. Occasionally the bot's session loses
+// one speaker's keys: Discord keeps reporting them speaking (the voice library
+// records that before decrypting), but every packet fails to decrypt and is
+// dropped with only a debug message. To Luna that speaker is simply silent —
+// it looks exactly like her ignoring the wake word — while everyone else in
+// the channel hears them fine. Them rejoining does not fix it; a fresh voice
+// session for Luna does. Hence:
+//   - logVoiceDebug: the library's [DAVE] messages, decrypt failures counted
+//     and summarised at most every 10 s;
+//   - a speaker reported speaking for VOICE_RECOVER_MS with no audio arriving
+//     makes Luna reconnect (at most once per 5 minutes). 0 disables.
+const VOICE_RECOVER_MS     = parseInt(process.env.VOICE_RECOVER_MS || '20000', 10);
+const VOICE_RECOVER_GAP_MS = 5 * 60000;
+const silentSpeakers = new Map();   // userId -> when Discord first said they spoke, with no audio since
+let lastVoiceRecoveryAt = 0;
+let decryptFailures = 0;
+let decryptLoggedAt = 0;
+
+function logVoiceDebug(message) {
+  if (!message.includes('[DAVE]')) return;
+  const text = message.replace(/^.*?\[DAVE\]\s*/, '');
+  if (/failed to decrypt/i.test(text)) {
+    decryptFailures++;
+    const now = Date.now();
+    if (now - decryptLoggedAt >= 10000) {
+      console.warn(`[voice] encrypted audio: ${decryptFailures} packet(s) failed to decrypt (latest: ${text})`);
+      decryptFailures = 0;
+      decryptLoggedAt = now;
+    }
+    return;
+  }
+  console.log(`[voice] encryption: ${text}`);
+}
+
+// Discord reported `userId` speaking (receiver 'start').
+function noteSpeaking(userId) {
+  if (!VOICE_RECOVER_MS || silentSpeakers.has(userId)) return;
+  silentSpeakers.set(userId, Date.now());
+  setTimeout(() => checkSilentSpeaker(userId), VOICE_RECOVER_MS);
+}
+
+// Decoded audio arrived from `userId`: their audio is fine.
+function noteAudio(userId) {
+  silentSpeakers.delete(userId);
+}
+
+function checkSilentSpeaker(userId) {
+  const since = silentSpeakers.get(userId);
+  if (!since || Date.now() - since < VOICE_RECOVER_MS || !activeConnection) return;
+  silentSpeakers.delete(userId);
+  const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
+  if (Date.now() - lastVoiceRecoveryAt < VOICE_RECOVER_GAP_MS) {
+    console.warn(`[voice] still no decryptable audio from ${name}; already reconnected recently, not retrying yet`);
+    return;
+  }
+  lastVoiceRecoveryAt = Date.now();
+  console.warn(`[voice] Discord reports ${name} speaking, but none of their audio has decrypted in ` +
+    `${Math.round(VOICE_RECOVER_MS / 1000)}s — reconnecting for a fresh encrypted session`);
+  reconnectVoice();
+}
+
+// Leave and rejoin the same channel, quietly (no reply, no intro).
+function reconnectVoice() {
+  const channel = activeVoiceChannel, textChannel = activeTextChannel, guild = activeGuild;
+  if (!channel || !guild) return;
+  leaveVoice('reconnecting');
+  setTimeout(() => {
+    if (activeConnection) return;   // someone ran !luna in the meantime
+    const connection = joinVoice(channel, guild);
+    attachVoice(connection, channel, textChannel, guild, () => console.log(`[voice] reconnected to ${channel.name}`));
+  }, 1500);
 }
 
 // Forgets everything tied to the current voice session.
 function resetVoiceState() {
   activeConnection   = null;
   activeVoiceChannel = null;
+  activeTextChannel  = null;
+  activeGuild        = null;
+  silentSpeakers.clear();
   listeningUsers.clear();
   captureStates.clear();
   for (const response of spokenResponses.values()) response.cancel();
@@ -556,6 +683,13 @@ function getRealMemberCount(voiceChannel) {
 }
 
 function startListening(connection, channel) {
+  // Self-heal input (see noteSpeaking); separate from the capture start below,
+  // which returns early for speakers that already have a capture.
+  connection.receiver.speaking.on('start', userId => {
+    if (userId === client.user.id || IGNORED_USERS.has(userId)) return;
+    noteSpeaking(userId);
+  });
+
   connection.receiver.speaking.on('start', userId => {
     if (listeningUsers.has(userId))   return;
     if (userId === client.user.id)    return; // ignore bot's own audio
@@ -789,6 +923,7 @@ function continuousCapture(connection, userId, channel) {
   decoder.on('data', chunk => {
     const chunkAt = Date.now();
     lastDataTime = chunkAt;
+    noteAudio(userId);
 
     // Feed the detector every frame we receive, including low-energy ones.
     if (wakeStream) {
@@ -1202,6 +1337,28 @@ const TOPICAL = [
 // cannot be expressed as a substring match.
 const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
 
+// When the model is offered the web search tool:
+//   always   — on every question (default). The model decides for itself
+//              whether it needs the internet; the keyword rules below both
+//              missed real searches ("did UCLA play football today?" — the
+//              model then wrote a tool call as text) and searched for no
+//              reason ("is there a way to say this nicer?"). Offering the
+//              tool costs ~0.5-1 s per question: LM Studio caches the tool
+//              definitions with the rest of the prompt.
+//   keywords — only when needsWebSearch() matches (the old behaviour).
+//   off      — never. Also forced when TAVILY_API_KEY is not set.
+const WEB_SEARCH = (() => {
+  const mode = (process.env.WEB_SEARCH || 'always').trim().toLowerCase();
+  if (!process.env.TAVILY_API_KEY) return 'off';
+  if (['always', 'keywords', 'off'].includes(mode)) return mode;
+  console.warn(`WEB_SEARCH="${mode}" is not always/keywords/off — using always`);
+  return 'always';
+})();
+
+function offerSearch(query) {
+  return WEB_SEARCH === 'always' || (WEB_SEARCH === 'keywords' && needsWebSearch(query));
+}
+
 function needsWebSearch(query) {
   const lower = query.toLowerCase();
   if (SEARCH_YEAR_RE.test(lower)) return true;
@@ -1338,25 +1495,19 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // exactly one subscription — so an unconditional chime silently detached
   // whichever sentence was mid-playback. With several people in a channel that
   // presented as Luna's answers being randomly truncated.
-  // Same decision the LLM call will use — computed here so the status message
-  // can say which mode Luna is in, then passed down so the two cannot drift.
-  const useSearch = needsWebSearch(query);
-  const announceSearch = useSearch && ANNOUNCE_SEARCH;
+  // Whether the model is offered the web search tool. It decides itself
+  // whether to use it; `let`, because a question it tried to search without
+  // the tool is asked again with it (see the pass loop).
+  let useSearch = offerSearch(query);
 
-  // The search phrase replaces the chime as the "I heard you" cue; playing
-  // both would have the phrase cut the chime off.
-  if (!currentPlayer && !announceSearch) {
+  if (!currentPlayer) {
     playSound(CHIME_PATH, connection).catch(() => {});
   }
 
   // Not awaited: posting (and later deleting) this message are Discord round
   // trips of 100-300 ms each, and both used to sit directly in front of the
   // LLM request and the first sentence's TTS.
-  const statusMsg = channel.send(
-    useSearch
-      ? '🔍 *Luna is searching the web...*'
-      : '🤔 *Luna is thinking...*'
-  ).catch(() => null);
+  const statusMsg = channel.send('🤔 *Luna is thinking...*').catch(() => null);
   let statusCleared = false;
   const clearStatus = () => {
     if (statusCleared) return;
@@ -1381,7 +1532,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }, userId, myGeneration);
   };
 
-  if (announceSearch) sayAside('search', fillPhrase(SEARCH_PHRASES, {}));
+  // Search heads-up, said when the model actually starts a web search (its
+  // first tool call), once per question. Predicting it from keywords before
+  // the request announced searches that never happened and missed ones that
+  // did; this way it is heard if and only if Luna really is searching.
+  let searchAnnounced = false;
+  const announceSearchNow = () => {
+    if (searchAnnounced) return;
+    searchAnnounced = true;
+    if (!statusCleared) {
+      statusMsg.then(m => m && !statusCleared && m.edit('🔍 *Luna is searching the web...*')).catch(() => {});
+    }
+    // Skipped if the answer has already started: queued behind it, it would
+    // only play once the answer had finished.
+    if (ANNOUNCE_SEARCH) sayAside('search', fillPhrase(SEARCH_PHRASES, {}), () => firstSentence);
+  };
 
   // "Still thinking" fillers while no answer has started. Each pass through
   // the phrases is freshly shuffled, so nothing repeats until every phrase
@@ -1487,33 +1652,62 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     }, userId, myGeneration);
   };
 
-  // One LLM request per pass. A second pass, with reasoning off (it answers
-  // in seconds), happens when the model thinks past LLM_THINK_LIMIT_MS
-  // without starting an answer, or finishes with no words at all (it has
-  // answered "." after 50 s of reasoning). Never more than two passes.
+  // One LLM request per pass, and at most one retry for each reason:
+  //   - the model wrote a tool call as text because it was not offered the
+  //     search tool -> ask again with search on (same reasoning);
+  //   - it thought past LLM_THINK_LIMIT_MS without starting an answer, or
+  //     finished with no words at all (it has answered "." after 50 s of
+  //     reasoning) -> ask again with reasoning off, which answers in seconds.
   const superseded = () => userGeneration.get(userId) !== myGeneration;
   const hasWords   = text => /[\p{L}\p{N}]/u.test(text);
   let reasoning     = LLM_REASONING;
   let firstSentence = true;
+  let reasoningRetried = false;
 
   try {
-    for (let pass = 1; ; pass++) {
+    for (;;) {
+      let fakeToolCall = false;
       const cancel = new AbortController();
       llmRequests.set(userId, cancel);
+      // Reasoning clock: runs only between reasoning.start and reasoning.end,
+      // so time spent searching and reading results is not counted.
       let thinkLimitHit = false;
-      const thinkTimer = LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off'
-        ? setTimeout(() => {
-            thinkLimitHit = true;
-            cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s`, 'AbortError'));
-          }, LLM_THINK_LIMIT_MS)
-        : null;
+      let thinkTimer    = null;
+      let reasonedMs    = 0;
+      let reasoningAt   = 0;
+      const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
+      const onEvent = e => {
+        if (e.type === 'reasoning.start' && !reasoningAt) {
+          reasoningAt = Date.now();
+          if (limitActive()) {
+            thinkTimer = setTimeout(() => {
+              thinkLimitHit = true;
+              cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning`, 'AbortError'));
+            }, Math.max(0, LLM_THINK_LIMIT_MS - reasonedMs));
+          }
+        } else if (e.type === 'reasoning.end' && reasoningAt) {
+          reasonedMs += Date.now() - reasoningAt;
+          reasoningAt = 0;
+          clearTimeout(thinkTimer);
+        } else if (e.type === 'tool_call.start') {
+          announceSearchNow();
+        }
+      };
 
       try {
-        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal })) {
+        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
           // A lone "." or similar: nothing to say, and nothing for TTS.
           if (!hasWords(sentence)) continue;
+          // A tool call written out as text — the model wanted to search but
+          // had no search tool. Never speak it (it went straight to TTS);
+          // stop this pass and ask again with search on.
+          if (FAKE_TOOL_CALL.test(sentence)) {
+            fakeToolCall = true;
+            console.warn(`[${userId}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
+            break;
+          }
           console.log('Luna sentence:', sentence);
 
           if (firstSentence) {
@@ -1537,14 +1731,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         if (llmRequests.get(userId) === cancel) llmRequests.delete(userId);
       }
 
-      if (superseded() || !firstSentence || pass > 1 || reasoning === 'off') break;
+      if (superseded()) break;
+      if (fakeToolCall && !useSearch && WEB_SEARCH !== 'off') {
+        console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
+        useSearch = true;
+        continue;
+      }
+      if (!firstSentence || reasoning === 'off' || reasoningRetried) break;
       if (thinkLimitHit) {
-        console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of thinking — asking again with reasoning off`);
+        console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
         sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
       } else {
-        console.warn(`[${userId}] [LLM] answer had no words — asking again with reasoning off`);
+        console.warn(`[${userId}] [LLM] answer had ${fakeToolCall ? 'only a tool call written as text' : 'no words'} — asking again with reasoning off`);
       }
       reasoning = 'off';
+      reasoningRetried = true;
     }
 
     if (firstSentence && !superseded()) {
@@ -1584,6 +1785,33 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
+// Added to the system prompt whenever the search tool is offered and Luna's
+// own heads-up is on. Luna announces the search the moment it starts; the
+// model's own "I need to look that up for you" duplicated it, and — counting
+// as the answer starting — silenced the "still thinking" fillers for the whole
+// search that followed.
+const SEARCH_PROMPT =
+  "When you search the web, the user is told automatically, so never say that " +
+  "you will search or look anything up; once you have the information, just answer.";
+
+// A tool call the model wrote out as text (Qwen's <tool_call> / <function=...>
+// format), which happens when it wants a tool it was not offered.
+const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
+
+// Where a searched answer's time goes: one line per tool call, and per long
+// read of a prompt or of tool results (~90 tokens/s on this hardware).
+function logLLMPhase(userId, e, phase) {
+  if (e.type === 'tool_call.arguments') {
+    console.log(`[${userId}] [LLM] tool: ${e.tool} ${JSON.stringify(e.arguments || {}).slice(0, 160)}`);
+  } else if (e.type === 'prompt_processing.start') {
+    phase.readingAt = Date.now();
+  } else if (e.type === 'prompt_processing.end' && phase.readingAt) {
+    const ms = Date.now() - phase.readingAt;
+    phase.readingAt = 0;
+    if (ms >= 2000) console.log(`[${userId}] [LLM] read prompt/results in ${(ms / 1000).toFixed(1)}s`);
+  }
+}
+
 // One line per answer from LM Studio's own accounting: what is needed to tell
 // whether a slow answer was spent reasoning, prefilling a long prompt
 // (conversation memory, stored web-search results) or just generating slowly.
@@ -1612,8 +1840,8 @@ function logLLMStats(userId, stats) {
 
 // `reasoning` overrides LLM_REASONING for this request; aborting `signal`
 // cancels it (thinking limit, barge-in, supersede).
-async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text),
-                                             { reasoning = LLM_REASONING, signal = null } = {}) {
+async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
+                                             { reasoning = LLM_REASONING, signal = null, onEvent = null } = {}) {
   const body = {
     model: lmStudioModel,
     input: text,
@@ -1648,7 +1876,11 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = expressivePrompt();
-  body.system_prompt = LM_SYSTEM_PROMPT + flavor + (expressive ? ' ' + expressive : '');
+  // Stable parts first and the occasional flavor line last, so the cached
+  // prefix LM Studio can reuse stays as long as possible.
+  body.system_prompt = LM_SYSTEM_PROMPT + ' ' + todayLine() +
+    (expressive ? ' ' + expressive : '') +
+    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '') + flavor;
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
@@ -1734,6 +1966,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
       //
       // So: exit on the terminal markers rather than waiting for the socket.
       let finished = false;
+    const phase = { readingAt: 0 };
 
       try {
         while (!finished) {
@@ -1754,6 +1987,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebS
 
             let parsed;
             try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+            if (onEvent) onEvent(parsed);
+            logLLMPhase(userId, parsed, phase);
 
             // response_id lives inside chat.end result
             if (parsed.type === 'chat.end') {

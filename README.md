@@ -14,7 +14,7 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer, even while she's still thinking about it.
 - 👋 **Voice-channel announcements.** Luna introduces herself when she joins, greets people who join the channel by name, and announces who left. The wording is customizable.
 - 🎵 **Music control.** "Hey Luna, play…", "skip" and "stop" are relayed to a music bot.
-- 🌐 **Optional web search** via Tavily, for questions about current events.
+- 🌐 **Optional web search** via Tavily. The model decides when it needs current information, and Luna tells you whenever she's searching.
 - 🍎 **Metal acceleration** for Whisper and Kokoro on Apple Silicon.
 
 ## How it works
@@ -114,11 +114,11 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
 
-When a question is going to search the web, Luna first says a short heads-up such as *"Hmm, let me take a look."* so the wait isn't silent. If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
+When Luna starts searching the web, she says a short heads-up such as *"Hmm, let me take a look."* at that moment, so you always know when she's using the internet, and the Discord status changes to "searching the web". If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
 
-If the model is still thinking after a minute, Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
+If the model spends more than a minute thinking (searching and reading results don't count), Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
 
-Web search triggers on current-information terms ("price", "weather", "score", "the latest", "any news"). A time word only counts next to one of those, so "weather today" searches but "how are you today" doesn't.
+Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it.
 
 Luna leaves the voice channel automatically when the last person does.
 
@@ -172,7 +172,8 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
-| `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase before a web search |
+| `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when there's no `TAVILY_API_KEY`) |
+| `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
 | `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
 | `ANNOUNCE_THINKING` | `true` | Say "still thinking" fillers while an answer is slow to start |
 | `THINKING_WAITS` | `15-22,22-30,30-40` | Wait windows in seconds for the 1st, 2nd, … filler; the last window repeats |
@@ -223,8 +224,10 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
+| `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
+| `LUNA_TIMEZONE` | `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
 | `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
-| `LLM_THINK_LIMIT_MS` | `60000` | If no answer has started after this, ask again with reasoning off. `0` disables |
+| `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
 | `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
 | `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `30000` | Request timeouts |
@@ -288,6 +291,7 @@ She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck a
 | Replies take 20+ seconds | The model is too big for your RAM; see [Hardware sizing](#hardware-sizing) |
 | Doesn't respond to "hey Luna" | Check the peak score; see [Tuning the wake word](#tuning-the-wake-word) |
 | Answers once, then stops responding | Luna is probably hearing herself through your speakers. Use headphones, or raise `ENERGY_THRESHOLD` |
+| Luna ignores one person while everyone else hears them | Her encrypted voice session lost that person's keys. She reconnects by herself after ~20 s of it (look for `[voice]` lines); restarting her fixes it too |
 | Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
 | LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
 | No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
