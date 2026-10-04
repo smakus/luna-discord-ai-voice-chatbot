@@ -1,0 +1,6 @@
+# Pinned: the voice-cache format convert_voices.py writes is mlx-audio's.
+mlx-audio==0.5.7
+soundfile
+fastapi
+uvicorn
+numpy

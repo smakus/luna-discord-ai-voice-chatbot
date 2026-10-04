@@ -1917,8 +1917,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE
     ? ' ' + LM_FLAVOR_PROMPT
     : '';
-  // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
-  // the one speaking; empty for Kokoro, so it is never told to use tags.
+  // How to sound expressive with the TTS that is speaking: audio tags for
+  // ElevenLabs v3/v4, wording for VibeVoice; empty for Kokoro.
   const expressive = expressivePrompt();
   // Stable parts first and the occasional flavor line last, so the cached
   // prefix LM Studio can reuse stays as long as possible.

@@ -5,8 +5,10 @@
 // every provider failed. It resolves as soon as the response headers arrive, so
 // the prefetch pipeline in index.js keeps overlapping synthesis with playback.
 //
-// TTS_PROVIDER picks the preferred provider ("kokoro" by default). If it is not
-// Kokoro, Kokoro is the fallback (TTS_FALLBACK=none disables that):
+// TTS_PROVIDER picks the preferred provider: "kokoro" (default), "vibevoice"
+// or "elevenlabs". TTS_FALLBACK (default "kokoro") is tried next, then Kokoro
+// as a last resort — e.g. ElevenLabs → VibeVoice → Kokoro. TTS_FALLBACK=none
+// disables fallback. A provider that fails is handled like this:
 //
 //   - out of credits: the provider is skipped for TTS_CREDITS_RETRY_MS
 //     (12 h). Credits only come back with a top-up or the monthly reset, and
@@ -33,6 +35,12 @@ const KOKORO_VOICE      = process.env.KOKORO_VOICE;
 // speaker — hence a timeout even on the local server.
 const KOKORO_TIMEOUT_MS = parseInt(process.env.KOKORO_TIMEOUT_MS || '30000', 10);
 
+// VibeVoice-Realtime (VibeVoice/vibevoice_server.py, macOS only) speaks the
+// same API as Kokoro. No default URL: it only exists when that server runs.
+const VIBEVOICE_URL        = process.env.VIBEVOICE_URL;
+const VIBEVOICE_VOICE      = process.env.VIBEVOICE_VOICE;
+const VIBEVOICE_TIMEOUT_MS = parseInt(process.env.VIBEVOICE_TIMEOUT_MS || '30000', 10);
+
 const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY || '';
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '';
 // v4 Turbo: real-time latency (~100 ms) and it follows audio tags.
@@ -51,10 +59,14 @@ const CREDITS_RETRY_MS  = parseInt(process.env.TTS_CREDITS_RETRY_MS  || '4320000
 //
 // ElevenLabs' v3/v4 models act on inline audio tags — "[laughs] That's great."
 // While such a model is the provider actually in use, the LLM is told it may
-// use them (expressivePrompt()). Kokoro has no such feature and would read the
-// tag out loud, so it gets no instruction, and any tag that still reaches it —
-// e.g. an answer started on ElevenLabs that falls back mid-way, or a custom
+// use them (expressivePrompt()). Kokoro and VibeVoice have no such feature and
+// would read the tag out loud, so any tag that still reaches them — e.g. an
+// answer started on ElevenLabs that falls back mid-way, or a custom
 // announcement phrase — is stripped first.
+//
+// VibeVoice takes its tone from the words themselves instead: an exclamation
+// sounds excited, "oh" or "hmm" sound like it. While it is speaking, the LLM
+// is told to show feeling that way. Kokoro gets no instruction.
 const TTS_EXPRESSIVE = (process.env.TTS_EXPRESSIVE || 'true').toLowerCase() !== 'false';
 const TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
 const EXPRESSIVE_PROMPT = process.env.TTS_EXPRESSIVE_PROMPT ||
@@ -62,6 +74,12 @@ const EXPRESSIVE_PROMPT = process.env.TTS_EXPRESSIVE_PROMPT ||
   '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Where ' +
   'one genuinely fits the moment, put it right before the words it applies to; ' +
   'use at most one per reply, and none at all for plain factual answers.';
+const WORDING_PROMPT = process.env.TTS_WORDING_PROMPT ||
+  'Your voice takes its tone from your words, so show feeling through them: ' +
+  'a natural interjection like "oh", "wow", "hmm" or "ha" where it genuinely ' +
+  'fits, an exclamation mark for excitement, an ellipsis for a thoughtful ' +
+  'pause. Keep it light, and plain for factual answers. Never write stage ' +
+  'directions, bracketed or starred actions, or emoji.';
 
 const AUDIO_TAG = /\[[^\[\]\n]{1,40}\]/g;
 
@@ -126,22 +144,33 @@ async function request(label, url, init, timeoutMs, cancel) {
   }
 }
 
-const kokoro = {
-  name: 'Kokoro',
-  supportsTags: false,
-  configured: () => Boolean(KOKORO_URL),
-  async synthesize(text, signal) {
-    const res = await request('Kokoro', KOKORO_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, voice: KOKORO_VOICE, stream: true }),
-    }, KOKORO_TIMEOUT_MS, signal);
-    if (!res.ok) {
-      throw new TTSError(`Kokoro error ${res.status}: ${await res.text()}`, 'transient');
-    }
-    return pipeBody(res, 'Kokoro');
-  },
-};
+// A local server with Kokoro's /v1/audio/speech API (streaming WAV).
+function localProvider(name, url, voice, timeoutMs) {
+  return {
+    name,
+    supportsTags: false,
+    configured: () => Boolean(url),
+    async synthesize(text, signal) {
+      const res = await request(name, url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text, voice, stream: true }),
+      }, timeoutMs, signal);
+      if (!res.ok) {
+        const body = await res.text();
+        // A voice that isn't installed fails every sentence until the config
+        // is fixed; anything else (e.g. still loading) is worth retrying.
+        const kind = res.status === 400 && /unknown voice/i.test(body) ? 'disable' : 'transient';
+        throw new TTSError(`${name} error ${res.status}: ${body.slice(0, 200)}`, kind);
+      }
+      return pipeBody(res, name);
+    },
+  };
+}
+
+const kokoro    = localProvider('Kokoro', KOKORO_URL, KOKORO_VOICE, KOKORO_TIMEOUT_MS);
+const vibevoice = localProvider('VibeVoice', VIBEVOICE_URL, VIBEVOICE_VOICE, VIBEVOICE_TIMEOUT_MS);
+vibevoice.expressivePrompt = WORDING_PROMPT;
 
 // Error codes per https://elevenlabs.io/docs/eleven-api/resources/errors.
 // Credits used to be reported as 401 + detail.status "quota_exceeded" and are
@@ -166,6 +195,7 @@ function classifyElevenLabs(status, detail) {
 const elevenlabs = {
   name: 'ElevenLabs',
   supportsTags: TAG_MODELS.has(ELEVENLABS_MODEL),
+  expressivePrompt: TAG_MODELS.has(ELEVENLABS_MODEL) ? EXPRESSIVE_PROMPT : '',
   configured: () => Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
   async synthesize(text, signal) {
     const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}` +
@@ -186,11 +216,14 @@ const elevenlabs = {
   },
 };
 
-const PROVIDERS = { kokoro, elevenlabs };
+const PROVIDERS = { kokoro, vibevoice, elevenlabs };
 
 const preferred = PROVIDERS[(process.env.TTS_PROVIDER || 'kokoro').toLowerCase()];
 const fallbackName = (process.env.TTS_FALLBACK || 'kokoro').toLowerCase();
 const fallback = fallbackName === 'none' ? null : PROVIDERS[fallbackName];
+if (fallbackName !== 'none' && !fallback) {
+  console.warn(`[tts] unknown TTS_FALLBACK "${process.env.TTS_FALLBACK}" — using Kokoro`);
+}
 
 // Providers to try, in order. An unknown or unconfigured preferred provider is
 // dropped with a warning rather than failing every sentence.
@@ -203,7 +236,7 @@ if (!preferred) {
   chain.push(preferred);
 }
 for (const p of [fallback, kokoro]) {
-  if (chain.length < 2 && p && !chain.includes(p) && p.configured()) chain.push(p);
+  if (p && !chain.includes(p) && p.configured()) chain.push(p);
   if (fallback === null && chain.length) break; // TTS_FALLBACK=none
 }
 
@@ -215,7 +248,7 @@ function describeTTS() {
   if (!chain.length) return 'none configured (set KOKORO_URL)';
   const desc = chain.map(p => p.name === 'ElevenLabs' ? `ElevenLabs (${ELEVENLABS_MODEL})` : p.name)
     .join(' → fallback ');
-  return desc + (TTS_EXPRESSIVE && chain[0].supportsTags ? ', expressive' : '');
+  return desc + (TTS_EXPRESSIVE && chain[0].expressivePrompt ? ', expressive' : '');
 }
 
 // The provider the next sentence will most likely go to.
@@ -223,12 +256,12 @@ function activeProvider() {
   return chain.find((p, i) => !isBenched(p) || i === chain.length - 1) || null;
 }
 
-// Extra system-prompt text for the LLM: the audio-tag instruction while an
-// expressive provider is in use, '' otherwise (including while ElevenLabs is
-// benched and Kokoro is speaking).
+// Extra system-prompt text for the LLM, for the provider in use: audio tags
+// for ElevenLabs, expressive wording for VibeVoice, '' for Kokoro (including
+// while ElevenLabs is benched and Kokoro is speaking).
 function expressivePrompt() {
   const p = activeProvider();
-  return TTS_EXPRESSIVE && p && p.supportsTags ? EXPRESSIVE_PROMPT : '';
+  return TTS_EXPRESSIVE && p && p.expressivePrompt || '';
 }
 
 async function fetchTTS(text, { signal } = {}) {
