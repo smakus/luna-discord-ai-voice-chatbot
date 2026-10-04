@@ -151,7 +151,7 @@ ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
 ```
 
 - **Fallback:** keep Kokoro running, because it's the fallback.
-  - When ElevenLabs runs out of credits, or the key, voice or plan is rejected, Luna switches to Kokoro for 30 minutes (`TTS_PROVIDER_RETRY_MS`), then tries ElevenLabs again. Topping up brings it back without a restart.
+  - When ElevenLabs runs out of credits, Luna switches to Kokoro for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
   - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
 - **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro never gets that instruction, and any tag that does reach it is removed, so it never reads "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
@@ -218,7 +218,8 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | -------- | ------- | ----------- |
 | `TTS_PROVIDER` | `kokoro` | `kokoro` or `elevenlabs` |
 | `TTS_FALLBACK` | `kokoro` | `none` disables falling back |
-| `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after running out of credits or a key/voice error |
+| `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
+| `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
 | `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |

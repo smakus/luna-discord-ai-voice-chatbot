@@ -8,9 +8,13 @@
 // TTS_PROVIDER picks the preferred provider ("kokoro" by default). If it is not
 // Kokoro, Kokoro is the fallback (TTS_FALLBACK=none disables that):
 //
-//   - out of credits, bad key/voice/plan: the provider is skipped entirely for
-//     TTS_PROVIDER_RETRY_MS, then tried again, so topping up the account
-//     brings it back without a restart.
+//   - out of credits: the provider is skipped for TTS_CREDITS_RETRY_MS
+//     (12 h). Credits only come back with a top-up or the monthly reset, and
+//     a short pause flip-flopped the voice: each retry could still fit a
+//     short line into the last few credits, then failed on the next one.
+//   - bad key/voice/plan: skipped for TTS_PROVIDER_RETRY_MS (30 min).
+//   Either way it is tried again afterwards, so fixing the account brings it
+//   back without a restart.
 //   - rate limit, overload, server error, timeout: only this sentence falls
 //     back; the next one tries the preferred provider again.
 //
@@ -41,6 +45,7 @@ const ELEVENLABS_BASE_URL = (process.env.ELEVENLABS_BASE_URL || 'https://api.ele
 const ELEVENLABS_TIMEOUT_MS = parseInt(process.env.ELEVENLABS_TIMEOUT_MS || '10000', 10);
 
 const PROVIDER_RETRY_MS = parseInt(process.env.TTS_PROVIDER_RETRY_MS || '1800000', 10);
+const CREDITS_RETRY_MS  = parseInt(process.env.TTS_CREDITS_RETRY_MS  || '43200000', 10);
 
 // ─── Expressiveness ───────────────────────────────────────────────────────────
 //
@@ -141,8 +146,9 @@ const kokoro = {
 // Error codes per https://elevenlabs.io/docs/eleven-api/resources/errors.
 // Credits used to be reported as 401 + detail.status "quota_exceeded" and are
 // now 402 + detail.code "insufficient_credits"; both are handled.
+const ELEVENLABS_CREDIT_CODES = new Set(['insufficient_credits', 'quota_exceeded']);
 const ELEVENLABS_DISABLE_CODES = new Set([
-  'insufficient_credits', 'quota_exceeded', 'payment_required',
+  'payment_required', 'paid_plan_required',
   'invalid_api_key', 'missing_api_key', 'unauthorized',
   'detected_unusual_activity', 'insufficient_permissions',
   'feature_not_available', 'subscription_required',
@@ -151,6 +157,7 @@ const ELEVENLABS_DISABLE_CODES = new Set([
 
 function classifyElevenLabs(status, detail) {
   const code = (detail && (detail.code || detail.status)) || '';
+  if (ELEVENLABS_CREDIT_CODES.has(code) || (detail && ELEVENLABS_CREDIT_CODES.has(detail.status))) return 'credits';
   if (ELEVENLABS_DISABLE_CODES.has(code)) return 'disable';
   if (status === 401 || status === 402 || status === 403 || status === 404) return 'disable';
   return 'transient'; // 400 text issues, 409, 429, 5xx
@@ -248,13 +255,15 @@ async function fetchTTS(text, { signal } = {}) {
     } catch (err) {
       if (err instanceof TTSError && err.kind === 'cancelled') return null;
       const next = chain[i + 1];
-      if (err instanceof TTSError && err.kind === 'disable' && !isLast) {
+      if (err instanceof TTSError && (err.kind === 'disable' || err.kind === 'credits') && !isLast) {
         const alreadyBenched = isBenched(provider);
-        benchedUntil.set(provider, Date.now() + PROVIDER_RETRY_MS);
+        const pauseMs = err.kind === 'credits' ? CREDITS_RETRY_MS : PROVIDER_RETRY_MS;
+        benchedUntil.set(provider, Date.now() + pauseMs);
         // Prefetched sentences hit the same error together; log it once.
         if (!alreadyBenched) {
-          console.error(`[tts] ${err.message} — using ${next.name} for the next ` +
-            `${Math.round(PROVIDER_RETRY_MS / 60000)} min`);
+          const span = pauseMs >= 3600000 ? `${+(pauseMs / 3600000).toFixed(1)} h` : `${Math.round(pauseMs / 60000)} min`;
+          console.error(`[tts] ${err.message} — ${err.kind === 'credits' ? 'out of credits; ' : ''}` +
+            `using ${next.name} for the next ${span}`);
         }
       } else {
         console.error(`[tts] ${err.message}${next ? ` — falling back to ${next.name}` : ''}`);
