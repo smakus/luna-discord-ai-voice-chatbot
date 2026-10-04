@@ -1,12 +1,15 @@
 // ─── Text-to-speech providers ─────────────────────────────────────────────────
 //
 // fetchTTS(text) starts synthesis and resolves to a readable audio stream (any
-// container ffmpeg can probe — Kokoro sends WAV, ElevenLabs MP3), or null if
-// every provider failed. It resolves as soon as the response headers arrive, so
-// the prefetch pipeline in index.js keeps overlapping synthesis with playback.
+// container ffmpeg can probe — Kokoro and Qwen3-TTS send WAV, ElevenLabs MP3),
+// or null if every provider failed. It resolves as soon as the response headers
+// arrive, so the prefetch pipeline in index.js keeps overlapping synthesis with
+// playback.
 //
-// TTS_PROVIDER picks the preferred provider ("kokoro" by default). If it is not
-// Kokoro, Kokoro is the fallback (TTS_FALLBACK=none disables that):
+// TTS_PROVIDER picks the preferred provider: "kokoro" (default), "qwen3" or
+// "elevenlabs". TTS_FALLBACK (default "kokoro") is tried next, then Kokoro as a
+// last resort — e.g. ElevenLabs → Qwen3-TTS → Kokoro. TTS_FALLBACK=none
+// disables fallback. A provider that fails is handled like this:
 //
 //   - out of credits: the provider is skipped for TTS_CREDITS_RETRY_MS
 //     (12 h). Credits only come back with a top-up or the monthly reset, and
@@ -33,6 +36,17 @@ const KOKORO_VOICE      = process.env.KOKORO_VOICE;
 // speaker — hence a timeout even on the local server.
 const KOKORO_TIMEOUT_MS = parseInt(process.env.KOKORO_TIMEOUT_MS || '30000', 10);
 
+// Qwen3-TTS (Qwen3TTS/qwen3_tts_server.py, macOS only) speaks Kokoro's API in a
+// cloned voice. No default URL: it only exists when that server runs.
+const QWEN3_TTS_URL   = process.env.QWEN3_TTS_URL;
+const QWEN3_TTS_VOICE = process.env.QWEN3_TTS_VOICE;
+// Buffered by default: while the LLM generates on the same GPU, Qwen3-TTS
+// renders slower than real time, and a stream that runs dry mid-sentence
+// warbles in Discord. A whole rendered sentence plays cleanly; the cost is a
+// pause before it. (Also why its timeout is longer.)
+const QWEN3_TTS_STREAM     = (process.env.QWEN3_TTS_STREAM || 'false').toLowerCase() === 'true';
+const QWEN3_TTS_TIMEOUT_MS = parseInt(process.env.QWEN3_TTS_TIMEOUT_MS || '60000', 10);
+
 const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY || '';
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '';
 // v4 Turbo: real-time latency (~100 ms) and it follows audio tags.
@@ -51,10 +65,10 @@ const CREDITS_RETRY_MS  = parseInt(process.env.TTS_CREDITS_RETRY_MS  || '4320000
 //
 // ElevenLabs' v3/v4 models act on inline audio tags — "[laughs] That's great."
 // While such a model is the provider actually in use, the LLM is told it may
-// use them (expressivePrompt()). Kokoro has no such feature and would read the
-// tag out loud, so it gets no instruction, and any tag that still reaches it —
-// e.g. an answer started on ElevenLabs that falls back mid-way, or a custom
-// announcement phrase — is stripped first.
+// use them (expressivePrompt()). Kokoro and Qwen3-TTS have no such feature and
+// would read the tag out loud, so they get no instruction, and any tag that
+// still reaches them — e.g. an answer started on ElevenLabs that falls back
+// mid-way, or a custom announcement phrase — is stripped first.
 const TTS_EXPRESSIVE = (process.env.TTS_EXPRESSIVE || 'true').toLowerCase() !== 'false';
 const TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
 const EXPRESSIVE_PROMPT = process.env.TTS_EXPRESSIVE_PROMPT ||
@@ -126,22 +140,32 @@ async function request(label, url, init, timeoutMs, cancel) {
   }
 }
 
-const kokoro = {
-  name: 'Kokoro',
-  supportsTags: false,
-  configured: () => Boolean(KOKORO_URL),
-  async synthesize(text, signal) {
-    const res = await request('Kokoro', KOKORO_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, voice: KOKORO_VOICE, stream: true }),
-    }, KOKORO_TIMEOUT_MS, signal);
-    if (!res.ok) {
-      throw new TTSError(`Kokoro error ${res.status}: ${await res.text()}`, 'transient');
-    }
-    return pipeBody(res, 'Kokoro');
-  },
-};
+// A local server with Kokoro's /v1/audio/speech API (WAV).
+function localProvider(name, url, voice, stream, timeoutMs) {
+  return {
+    name,
+    supportsTags: false,
+    configured: () => Boolean(url),
+    async synthesize(text, signal) {
+      const res = await request(name, url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text, voice, stream }),
+      }, timeoutMs, signal);
+      if (!res.ok) {
+        const body = await res.text();
+        // A voice that isn't installed fails every sentence until the config
+        // is fixed; anything else (e.g. still loading) is worth retrying.
+        const kind = res.status === 400 && /unknown voice/i.test(body) ? 'disable' : 'transient';
+        throw new TTSError(`${name} error ${res.status}: ${body.slice(0, 200)}`, kind);
+      }
+      return pipeBody(res, name);
+    },
+  };
+}
+
+const kokoro = localProvider('Kokoro', KOKORO_URL, KOKORO_VOICE, true, KOKORO_TIMEOUT_MS);
+const qwen3  = localProvider('Qwen3-TTS', QWEN3_TTS_URL, QWEN3_TTS_VOICE, QWEN3_TTS_STREAM, QWEN3_TTS_TIMEOUT_MS);
 
 // Error codes per https://elevenlabs.io/docs/eleven-api/resources/errors.
 // Credits used to be reported as 401 + detail.status "quota_exceeded" and are
@@ -186,11 +210,14 @@ const elevenlabs = {
   },
 };
 
-const PROVIDERS = { kokoro, elevenlabs };
+const PROVIDERS = { kokoro, qwen3, elevenlabs };
 
 const preferred = PROVIDERS[(process.env.TTS_PROVIDER || 'kokoro').toLowerCase()];
 const fallbackName = (process.env.TTS_FALLBACK || 'kokoro').toLowerCase();
 const fallback = fallbackName === 'none' ? null : PROVIDERS[fallbackName];
+if (fallbackName !== 'none' && !fallback) {
+  console.warn(`[tts] unknown TTS_FALLBACK "${process.env.TTS_FALLBACK}" — using Kokoro`);
+}
 
 // Providers to try, in order. An unknown or unconfigured preferred provider is
 // dropped with a warning rather than failing every sentence.
@@ -203,7 +230,7 @@ if (!preferred) {
   chain.push(preferred);
 }
 for (const p of [fallback, kokoro]) {
-  if (chain.length < 2 && p && !chain.includes(p) && p.configured()) chain.push(p);
+  if (p && !chain.includes(p) && p.configured()) chain.push(p);
   if (fallback === null && chain.length) break; // TTS_FALLBACK=none
 }
 
