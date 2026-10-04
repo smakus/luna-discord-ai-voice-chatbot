@@ -162,6 +162,7 @@ TTS_PROVIDER=vibevoice
 ```
 
 - **Voices:** the server's default is `en-Clarissa_woman`. Other English voices are `en-Breeze_woman`, `en-Emma_woman`, `en-Grace_woman`, `en-Snarkling_woman`, `en-Soother_woman`, and men's voices such as `en-Carter_man` and `en-Davis_man`. To change it, set `VIBEVOICE_VOICE` in `.env` (per request) or when starting the script (the server's default). `curl localhost:8890/health` lists every installed voice.
+- **Expressiveness:** VibeVoice doesn't perform audio tags like `[laughs]`; it takes its tone from the words. While it's speaking, the LLM is told to show feeling through wording instead: an occasional "oh", "wow" or "ha", an exclamation mark, or an ellipsis for a pause. `TTS_EXPRESSIVE=false` turns this off, and `TTS_WORDING_PROMPT` replaces the instruction.
 - **Fallback:** Kokoro still covers for it, so keep Kokoro running. If the VibeVoice server isn't running, each sentence goes to Kokoro instead.
 - **Experimental voices:** Microsoft distributes these as PyTorch files. `VibeVoice/convert_voices.py` converts them without PyTorch and refuses to load anything except the plain tensors they're known to contain.
 
@@ -247,7 +248,8 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `TTS_FALLBACK` | `kokoro` | Tried after `TTS_PROVIDER`, before Kokoro. `none` disables falling back |
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
 | `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
-| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
+| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking, or choose expressive wording when VibeVoice is |
+| `TTS_WORDING_PROMPT` | built-in | The instruction used while VibeVoice is speaking |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
