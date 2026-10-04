@@ -10,7 +10,6 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 🧠 **Local LLM** via LM Studio, with separate conversation memory for each speaker.
 - 🔊 **Streaming TTS** via Kokoro. Luna starts speaking her first sentence while the rest is still being generated.
 - 🎭 **Optional ElevenLabs voice** (v4 Turbo), with expressive audio tags like `[laughs]` and `[whispers]`. Luna falls back to Kokoro automatically when credits run out. See [Text-to-speech providers](#text-to-speech-providers).
-- 🗣️ **Optional VibeVoice voice** on Apple Silicon: Microsoft's VibeVoice-Realtime, a more natural local voice (Clarissa by default), running on the Mac's GPU.
 - 👥 **Multi-user.** Every speaker gets their own audio capture and wake word detector, and answers queue so no one's question cancels someone else's.
 - 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer, even while she's still thinking about it.
 - 👋 **Voice-channel announcements.** Luna introduces herself when she joins, greets people who join the channel by name, and announces who left. The wording is customizable.
@@ -84,8 +83,6 @@ docker compose -f docker-compose.metal.yml up --build   # 3. Luna
 
 Luna has no health check to wait on for the native services, so start terminal 3 only after the first two report they're ready. In terminal 2, `[kokoro] warm — device=mps` confirms Kokoro is actually on the GPU.
 
-To use the VibeVoice voice (see [Text-to-speech providers](#text-to-speech-providers)), also run `./scripts/vibevoice-metal.sh` in a fourth terminal and wait for "Starting VibeVoice TTS server".
-
 **Linux or Intel Mac ONLY:** Everything runs in containers:
 
 ```bash
@@ -145,30 +142,7 @@ INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
 
 ### Text-to-speech providers
 
-Kokoro is the default. There are two alternatives: VibeVoice, a more natural-sounding local voice for Apple Silicon Macs, and ElevenLabs, a paid cloud service.
-
-#### VibeVoice (Apple Silicon)
-
-[VibeVoice-Realtime](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B) runs on the Mac's GPU through MLX. It starts speaking about 0.1 s after a request and renders about 5× faster than real time (Kokoro: about 20×), using about 1.6 GB of memory. Start it in its own terminal, like Kokoro:
-
-```bash
-./scripts/vibevoice-metal.sh
-```
-
-The first run creates a venv in `~/.luna/vibevoice-venv`, downloads the model (about 1 GB) to `~/.luna/vibevoice-model`, and installs Microsoft's experimental English voices. Then set this in `.env` and recreate Luna:
-
-```env
-TTS_PROVIDER=vibevoice
-```
-
-- **Voices:** the server's default is `en-Clarissa_woman`. Other English voices are `en-Breeze_woman`, `en-Emma_woman`, `en-Grace_woman`, `en-Snarkling_woman`, `en-Soother_woman`, and men's voices such as `en-Carter_man` and `en-Davis_man`. To change it, set `VIBEVOICE_VOICE` in `.env` (per request) or when starting the script (the server's default). `curl localhost:8890/health` lists every installed voice.
-- **Expressiveness:** VibeVoice doesn't perform audio tags like `[laughs]`; it takes its tone from the words. While it's speaking, the LLM is told to show feeling through wording instead: an occasional "oh", "wow" or "ha", an exclamation mark, or an ellipsis for a pause. `TTS_EXPRESSIVE=false` turns this off, and `TTS_WORDING_PROMPT` replaces the instruction.
-- **Fallback:** Kokoro still covers for it, so keep Kokoro running. If the VibeVoice server isn't running, each sentence goes to Kokoro instead.
-- **Experimental voices:** Microsoft distributes these as PyTorch files. `VibeVoice/convert_voices.py` converts them without PyTorch and refuses to load anything except the plain tensors they're known to contain.
-
-#### ElevenLabs
-
-To use ElevenLabs, set this in `.env`:
+Kokoro is the default. To use ElevenLabs instead, set this in `.env`:
 
 ```env
 TTS_PROVIDER=elevenlabs
@@ -181,8 +155,6 @@ ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
   - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
 - **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro never gets that instruction, and any tag that does reach it is removed, so it never reads "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
-
-To fall back to VibeVoice before Kokoro, add `TTS_FALLBACK=vibevoice`. Luna then tries ElevenLabs, then VibeVoice, then Kokoro.
 
 The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4_turbo) → fallback Kokoro, expressive`.
 
@@ -244,12 +216,11 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `TTS_PROVIDER` | `kokoro` | `kokoro`, `vibevoice` or `elevenlabs` |
-| `TTS_FALLBACK` | `kokoro` | Tried after `TTS_PROVIDER`, before Kokoro. `none` disables falling back |
+| `TTS_PROVIDER` | `kokoro` | `kokoro` or `elevenlabs` |
+| `TTS_FALLBACK` | `kokoro` | `none` disables falling back |
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
 | `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
-| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking, or choose expressive wording when VibeVoice is |
-| `TTS_WORDING_PROMPT` | built-in | The instruction used while VibeVoice is speaking |
+| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
@@ -257,8 +228,6 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
 | `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
-| `VIBEVOICE_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8890/v1/audio/speech` |
-| `VIBEVOICE_VOICE` | server default (`en-Clarissa_woman`) | Any installed voice. The server's own default is set by `VIBEVOICE_VOICE` when running `vibevoice-metal.sh` |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 | `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
@@ -267,7 +236,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
 | `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
-| `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` / `VIBEVOICE_TIMEOUT_MS` | `60000` / `30000` / `30000` | Request timeouts |
+| `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` | `60000` / `30000` | Request timeouts |
 
 The Whisper model is `ggml-small.en-q5_1.bin` by default. On Apple Silicon you can afford a more accurate one: `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh` (or `ggml-large-v3-turbo-q5_0.bin`). On the Docker path it's a build arg in `docker-compose.yml`.
 
@@ -332,7 +301,6 @@ She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck a
 | Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
 | LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
 | No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
-| `vibevoice-metal.sh` reports port 8890 in use | Another copy of the script is running in a different terminal |
 | `kokoro-metal.sh` reports port 8880 in use | Another Kokoro is running: a leftover container (`docker compose down`) or a second copy of the script |
 | `MPS available: False` | Metal needs macOS 12.3+ on Apple Silicon; otherwise Kokoro runs on CPU |
 | Slow Whisper or Kokoro on a Mac | You're on the Docker path. Use the Metal scripts instead |
