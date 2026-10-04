@@ -4,7 +4,6 @@
 #   Terminal 1:  ./scripts/whisper-metal.sh
 #   Terminal 2:  ./scripts/kokoro-metal.sh
 #   Terminal 3:  docker compose -f docker-compose.metal.yml up --build
-#   Optional:    ./scripts/vibevoice-metal.sh   (with TTS_PROVIDER=vibevoice)
 #
 # This is a standalone file rather than a `-f` override because the Whisper
 # and Kokoro services must be absent entirely, and compose merges rather than
@@ -31,7 +30,5 @@ services:
       - LM_STUDIO_URL=http://host.docker.internal:1234/api/v1/chat
       # The host-native Metal Kokoro from scripts/kokoro-metal.sh.
       - KOKORO_URL=http://host.docker.internal:8880/v1/audio/speech
-      # The optional host-native VibeVoice from scripts/vibevoice-metal.sh.
-      - VIBEVOICE_URL=http://host.docker.internal:8890/v1/audio/speech
       # The host-native Metal Whisper from scripts/whisper-metal.sh.
       - WHISPER_SERVER_URLS=http://host.docker.internal:8081/inference
