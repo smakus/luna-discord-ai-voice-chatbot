@@ -5,8 +5,10 @@
 // every provider failed. It resolves as soon as the response headers arrive, so
 // the prefetch pipeline in index.js keeps overlapping synthesis with playback.
 //
-// TTS_PROVIDER picks the preferred provider ("kokoro" by default). If it is not
-// Kokoro, Kokoro is the fallback (TTS_FALLBACK=none disables that):
+// TTS_PROVIDER picks the preferred provider: "kokoro" (default), "vibevoice"
+// or "elevenlabs". TTS_FALLBACK (default "kokoro") is tried next, then Kokoro
+// as a last resort — e.g. ElevenLabs → VibeVoice → Kokoro. TTS_FALLBACK=none
+// disables fallback. A provider that fails is handled like this:
 //
 //   - out of credits: the provider is skipped for TTS_CREDITS_RETRY_MS
 //     (12 h). Credits only come back with a top-up or the monthly reset, and
@@ -32,6 +34,12 @@ const KOKORO_VOICE      = process.env.KOKORO_VOICE;
 // Awaited inside the shared playback chain, so a hang blocks audio for every
 // speaker — hence a timeout even on the local server.
 const KOKORO_TIMEOUT_MS = parseInt(process.env.KOKORO_TIMEOUT_MS || '30000', 10);
+
+// VibeVoice-Realtime (VibeVoice/vibevoice_server.py, macOS only) speaks the
+// same API as Kokoro. No default URL: it only exists when that server runs.
+const VIBEVOICE_URL        = process.env.VIBEVOICE_URL;
+const VIBEVOICE_VOICE      = process.env.VIBEVOICE_VOICE;
+const VIBEVOICE_TIMEOUT_MS = parseInt(process.env.VIBEVOICE_TIMEOUT_MS || '30000', 10);
 
 const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY || '';
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '';
@@ -126,22 +134,32 @@ async function request(label, url, init, timeoutMs, cancel) {
   }
 }
 
-const kokoro = {
-  name: 'Kokoro',
-  supportsTags: false,
-  configured: () => Boolean(KOKORO_URL),
-  async synthesize(text, signal) {
-    const res = await request('Kokoro', KOKORO_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, voice: KOKORO_VOICE, stream: true }),
-    }, KOKORO_TIMEOUT_MS, signal);
-    if (!res.ok) {
-      throw new TTSError(`Kokoro error ${res.status}: ${await res.text()}`, 'transient');
-    }
-    return pipeBody(res, 'Kokoro');
-  },
-};
+// A local server with Kokoro's /v1/audio/speech API (streaming WAV).
+function localProvider(name, url, voice, timeoutMs) {
+  return {
+    name,
+    supportsTags: false,
+    configured: () => Boolean(url),
+    async synthesize(text, signal) {
+      const res = await request(name, url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text, voice, stream: true }),
+      }, timeoutMs, signal);
+      if (!res.ok) {
+        const body = await res.text();
+        // A voice that isn't installed fails every sentence until the config
+        // is fixed; anything else (e.g. still loading) is worth retrying.
+        const kind = res.status === 400 && /unknown voice/i.test(body) ? 'disable' : 'transient';
+        throw new TTSError(`${name} error ${res.status}: ${body.slice(0, 200)}`, kind);
+      }
+      return pipeBody(res, name);
+    },
+  };
+}
+
+const kokoro    = localProvider('Kokoro', KOKORO_URL, KOKORO_VOICE, KOKORO_TIMEOUT_MS);
+const vibevoice = localProvider('VibeVoice', VIBEVOICE_URL, VIBEVOICE_VOICE, VIBEVOICE_TIMEOUT_MS);
 
 // Error codes per https://elevenlabs.io/docs/eleven-api/resources/errors.
 // Credits used to be reported as 401 + detail.status "quota_exceeded" and are
@@ -186,11 +204,14 @@ const elevenlabs = {
   },
 };
 
-const PROVIDERS = { kokoro, elevenlabs };
+const PROVIDERS = { kokoro, vibevoice, elevenlabs };
 
 const preferred = PROVIDERS[(process.env.TTS_PROVIDER || 'kokoro').toLowerCase()];
 const fallbackName = (process.env.TTS_FALLBACK || 'kokoro').toLowerCase();
 const fallback = fallbackName === 'none' ? null : PROVIDERS[fallbackName];
+if (fallbackName !== 'none' && !fallback) {
+  console.warn(`[tts] unknown TTS_FALLBACK "${process.env.TTS_FALLBACK}" — using Kokoro`);
+}
 
 // Providers to try, in order. An unknown or unconfigured preferred provider is
 // dropped with a warning rather than failing every sentence.
@@ -203,7 +224,7 @@ if (!preferred) {
   chain.push(preferred);
 }
 for (const p of [fallback, kokoro]) {
-  if (chain.length < 2 && p && !chain.includes(p) && p.configured()) chain.push(p);
+  if (p && !chain.includes(p) && p.configured()) chain.push(p);
   if (fallback === null && chain.length) break; // TTS_FALLBACK=none
 }
 
