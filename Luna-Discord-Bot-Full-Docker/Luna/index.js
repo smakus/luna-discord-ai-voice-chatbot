@@ -441,6 +441,8 @@ client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
+  console.log(`[search] web search: ${WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : WEB_SEARCH}` +
+    (process.env.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY)'));
   ready = true;
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
@@ -1227,6 +1229,28 @@ const TOPICAL = [
 // cannot be expressed as a substring match.
 const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
 
+// When the model is offered the web search tool:
+//   always   — on every question (default). The model decides for itself
+//              whether it needs the internet; the keyword rules below both
+//              missed real searches ("did UCLA play football today?" — the
+//              model then wrote a tool call as text) and searched for no
+//              reason ("is there a way to say this nicer?"). Offering the
+//              tool costs ~0.5-1 s per question: LM Studio caches the tool
+//              definitions with the rest of the prompt.
+//   keywords — only when needsWebSearch() matches (the old behaviour).
+//   off      — never. Also forced when TAVILY_API_KEY is not set.
+const WEB_SEARCH = (() => {
+  const mode = (process.env.WEB_SEARCH || 'always').trim().toLowerCase();
+  if (!process.env.TAVILY_API_KEY) return 'off';
+  if (['always', 'keywords', 'off'].includes(mode)) return mode;
+  console.warn(`WEB_SEARCH="${mode}" is not always/keywords/off — using always`);
+  return 'always';
+})();
+
+function offerSearch(query) {
+  return WEB_SEARCH === 'always' || (WEB_SEARCH === 'keywords' && needsWebSearch(query));
+}
+
 function needsWebSearch(query) {
   const lower = query.toLowerCase();
   if (SEARCH_YEAR_RE.test(lower)) return true;
@@ -1366,7 +1390,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // Whether the model is offered the web search tool. It decides itself
   // whether to use it; `let`, because a question it tried to search without
   // the tool is asked again with it (see the pass loop).
-  let useSearch = needsWebSearch(query);
+  let useSearch = offerSearch(query);
 
   if (!currentPlayer) {
     playSound(CHIME_PATH, connection).catch(() => {});
@@ -1600,7 +1624,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       }
 
       if (superseded()) break;
-      if (fakeToolCall && !useSearch) {
+      if (fakeToolCall && !useSearch && WEB_SEARCH !== 'off') {
         console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
         useSearch = true;
         continue;
@@ -1708,7 +1732,7 @@ function logLLMStats(userId, stats) {
 
 // `reasoning` overrides LLM_REASONING for this request; aborting `signal`
 // cancels it (thinking limit, barge-in, supersede).
-async function* getLMStudioResponseStreaming(text, userId, useSearch = needsWebSearch(text),
+async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
                                              { reasoning = LLM_REASONING, signal = null, onEvent = null } = {}) {
   const body = {
     model: lmStudioModel,
