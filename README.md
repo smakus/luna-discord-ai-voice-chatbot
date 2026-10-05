@@ -231,6 +231,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `OWW_MODEL_PATH` | `hey_luna.onnx` | Wake word classifier |
 | `OWW_THRESHOLD` | `0.5` | Detection confidence; tune it against real scores |
 | `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
+| `OWW_CANDIDATE_THRESHOLD` | `0.1` | Two-stage detection: an utterance that peaks at or above this but never reaches `OWW_THRESHOLD` is transcribed anyway, and kept only if Whisper hears "Luna" in it. Catches "hey Luna" run straight into the question, which the model scores low. `0` turns it off; it has no effect when it isn't below `OWW_THRESHOLD` |
 | `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
 | `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
 | `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
@@ -292,6 +293,7 @@ utterance discarded — no wake word (2100ms, peak score 0.234, threshold 0.15)
 ```
 
 - **Peak just under the threshold:** lower `OWW_THRESHOLD`.
+- **"Hey Luna" only works with a pause after it:** the model is trained on the phrase said on its own, so run-on "hey Luna what's the weather" scores lower (in testing, 0.28–0.41 typical instead of 0.7). Two-stage detection (`OWW_CANDIDATE_THRESHOLD`, on by default) catches these: look for `wake candidate … confirmed by Whisper` in the logs.
 - **Peak around `0.00x`:** the model didn't react at all. Retrain it rather than tuning.
 - **Triggers on background noise:** raise `OWW_THRESHOLD`. Compare against the baseline score printed at startup.
 

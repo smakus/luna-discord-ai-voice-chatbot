@@ -30,6 +30,9 @@ const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 // The trailing \b is load-bearing: without it "lunar eclipse" matches and gets
 // mangled into "eclipse".
 const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona)\b[\s,.]*/i;
+// The same phrase anywhere in a transcript ("so anyway, hey Luna, what's…"),
+// for confirming a wake candidate (see OWW_CANDIDATE_THRESHOLD).
+const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
 
 // Text command to summon the bot. Deliberately NOT derived from the spoken
 // phrase — "!hey luna" would be an awkward thing to type.
@@ -60,6 +63,15 @@ const OWW_FEATURE_FRAMES = parseInt(process.env.OWW_FEATURE_FRAMES || '0', 10);
 // count for that utterance. Covers the gap between the wake word finishing and
 // the energy gate opening.
 const OWW_GRACE_MS = parseInt(process.env.OWW_GRACE_MS || '2000', 10);
+// Two-stage detection. The model is trained on "hey Luna" said on its own and
+// scores it far lower when the question follows without a pause: in testing
+// with 16 voices, run-on "hey Luna what's the weather" reached the threshold
+// for only 5 (typical peak 0.41 vs 0.66 with a pause), yet 15 of 16 still
+// peaked above 0.1 — while ordinary chat, "lunar" and "tuna" included, peaks
+// around 0.001. So an utterance whose peak is at least this high but that
+// never triggered is a candidate: it is transcribed, and kept only if Whisper
+// heard "Luna" in it. 0 disables (only full detections count).
+const OWW_CANDIDATE_THRESHOLD = parseFloat(process.env.OWW_CANDIDATE_THRESHOLD || '0.1');
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
 const OWW_DEBUG_SCORE = parseFloat(process.env.OWW_DEBUG_SCORE || '0');
 // 'auto' normalises quiet speech up toward a target level before detection,
@@ -425,7 +437,9 @@ async function initWakeWord() {
       embeddingPath: OWW_EMBEDDING,
       featureFrames: OWW_FEATURE_FRAMES || undefined,
     });
-    console.log(`[oww] active — threshold=${OWW_THRESHOLD}, Whisper gated on detection`);
+    console.log(`[oww] active — threshold=${OWW_THRESHOLD}, Whisper gated on detection` +
+      (OWW_CANDIDATE_THRESHOLD > 0 && OWW_CANDIDATE_THRESHOLD < OWW_THRESHOLD
+        ? `; candidates from ${OWW_CANDIDATE_THRESHOLD} confirmed by Whisper` : ''));
   } catch (err) {
     console.warn(`[oww] unavailable (${err.message})`);
     console.warn('[oww] falling back to transcript wake word matching');
@@ -870,6 +884,7 @@ function continuousCapture(connection, userId, channel) {
     // wake word completes, which can precede the energy gate opening — and it
     // must not be stale relative to the audio we are about to send.
     let wakeDetected = false;
+    let wakeCandidate = false;
     if (wakeStream) {
       const now = Date.now();
       // Discord stops sending Opus packets during silence, so buffered
@@ -880,14 +895,20 @@ function continuousCapture(connection, userId, channel) {
         wakeAt > 0 &&
         wakeAt >= speechStartedAt - OWW_GRACE_MS &&
         now - wakeAt <= span + OWW_GRACE_MS;
-      if (!wakeDetected) {
+      const peak = wakeDetected ? 0 : wakeStream.takePeak();
+      if (!wakeDetected && OWW_CANDIDATE_THRESHOLD > 0 && peak >= OWW_CANDIDATE_THRESHOLD) {
+        // Probably "hey Luna" run into the question; Whisper decides.
+        wakeCandidate = true;
+        console.log(`[${userId}] [oww] wake candidate (peak score ${peak.toFixed(3)}, ` +
+          `threshold ${OWW_THRESHOLD}) — transcribing to confirm`);
+      } else if (!wakeDetected) {
         // Report the model's best score across the discarded utterance.
         // If you spoke the wake word and this reads 0.2x, the threshold is
         // too high. If it reads 0.00x, the model did not react to your voice
         // at all and no threshold will help.
         console.log(
           `[${userId}] utterance discarded — no wake word ` +
-          `(${Math.round(durationMs)}ms, peak score ${wakeStream.takePeak().toFixed(3)}, ` +
+          `(${Math.round(durationMs)}ms, peak score ${peak.toFixed(3)}, ` +
           `threshold ${OWW_THRESHOLD})`
         );
 
@@ -909,11 +930,11 @@ function continuousCapture(connection, userId, channel) {
     }
 
     // Consume the peak on success too, so a good score cannot leak forward and
-    // be reported against a later discarded utterance.
-    if (wakeStream) wakeStream.takePeak();
+    // be reported against (or make a candidate of) a later utterance.
+    if (wakeStream && wakeDetected) wakeStream.takePeak();
 
     console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, wakeDetected)
+    processUtterance(pcm, userId, connection, channel, wakeDetected, wakeCandidate)
       .finally(() => { flushing = false; });
   }
 
@@ -1236,7 +1257,7 @@ async function transcribeWithWhisper(wavBuffer) {
 
 // ─── Utterance processing ─────────────────────────────────────────────────────
 
-async function processUtterance(pcm, userId, connection, channel, wakeDetected = false) {
+async function processUtterance(pcm, userId, connection, channel, wakeDetected = false, wakeCandidate = false) {
   if (processingUsers.has(userId)) {
     console.warn(`[${userId}] utterance dropped — previous one still being processed`);
     return;
@@ -1252,15 +1273,29 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
 
     if (!transcript) return;
 
-    // When the ONNX model already confirmed the wake word on the raw audio, do
-    // not re-check the transcript — Whisper frequently mangles or drops a
-    // leading wake word, and rejecting on that would discard valid queries.
-    if (!wakeDetected && !WAKE_RE.test(transcript)) return;
+    let query;
+    if (wakeCandidate) {
+      // The model was unsure, so the transcript decides — anywhere in it, and
+      // the question is what follows the wake phrase.
+      const match = WAKE_ANYWHERE_RE.exec(transcript);
+      if (!match) {
+        console.log(`[${userId}] [oww] wake candidate rejected — no "Luna" in the transcript ` +
+          `(${transcript.split(/\s+/).length} words)`);
+        return;
+      }
+      console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
+      query = transcript.slice(match.index + match[0].length).trim() || transcript;
+    } else {
+      // When the ONNX model already confirmed the wake word on the raw audio,
+      // do not re-check the transcript — Whisper frequently mangles or drops a
+      // leading wake word, and rejecting on that would discard valid queries.
+      if (!wakeDetected && !WAKE_RE.test(transcript)) return;
 
-    // Strip the wake phrase so the LLM gets a clean query. Falls back to the
-    // raw transcript when the phrase was the whole utterance (a bare "hey
-    // Luna"), so that still reaches the LLM as a greeting rather than "".
-    const query = stripWakeWord(transcript) || transcript;
+      // Strip the wake phrase so the LLM gets a clean query. Falls back to the
+      // raw transcript when the phrase was the whole utterance (a bare "hey
+      // Luna"), so that still reaches the LLM as a greeting rather than "".
+      query = stripWakeWord(transcript) || transcript;
+    }
 
     console.log(`[${userId}] Query:`, query);
     await handleQuery(query, connection, channel, t0, userId);
