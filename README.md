@@ -172,6 +172,7 @@ TTS_PROVIDER=qwen3
 - **Pauses:** Qwen3-TTS renders about 3× faster than real time on its own, but slower than real time while a large LLM is generating on the same GPU. So Luna waits for each sentence to finish rendering before playing it. Audio stays clean, but expect short pauses between sentences while Luna is still writing her answer. `QWEN3_TTS_STREAM=true` removes the pauses but stutters whenever rendering falls behind.
 - **Voices:** any `<name>.wav` + `<name>.txt` pair in the voices folder is a voice: about 10 seconds of clear speech and exactly what it says. Pick one with `QWEN3_TTS_VOICE` in `.env`, or set the server's default when starting the script. `curl localhost:8890/health` lists them.
 - **Closer clones:** `QWEN3_TTS_MODEL=mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` when starting the script clones more closely but is slower, so the pauses get longer.
+- **Pitch taming:** a clone copies the voice, not a fixed delivery, so about one sentence in five comes out pitched up and shrill, mostly short upbeat lines like greetings. The server lowers any sentence whose average pitch is above `QWEN3_TTS_PITCH_TARGET` (285 Hz) and softens pitch peaks above `QWEN3_TTS_PITCH_KNEE` (360 Hz). Normal sentences are untouched; it takes about 1 ms to check a sentence and 4 ms to fix one. In testing it cut shrill sentences from 20% to under 3%. Set `QWEN3_TTS_PITCH_TARGET=0` to turn it off, or raise it for a naturally higher voice. It only applies to whole-sentence replies, not with `QWEN3_TTS_STREAM=true`.
 - **No audio tags:** like Kokoro, it doesn't perform `[laughs]`-style tags; they're removed before it speaks.
 - **Fallback:** Kokoro still covers for it, so keep Kokoro running. If the Qwen3-TTS server isn't running, each sentence goes to Kokoro instead.
 
@@ -269,6 +270,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `QWEN3_TTS_VOICE` | server default (`luna`) | Any voice in the voices folder |
 | `QWEN3_TTS_STREAM` | `false` | `true` plays each sentence while it renders: no pauses, but it stutters when rendering falls behind |
 | `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.6` | Set when starting `qwen3-tts-metal.sh`. Lower temperature stays closer to the reference voice |
+| `QWEN3_TTS_PITCH_TARGET` / `QWEN3_TTS_PITCH_KNEE` / `QWEN3_TTS_PITCH_RATIO` | `285` / `360` / `0.4` | Set when starting `qwen3-tts-metal.sh`. Sentences averaging above the target (Hz) are lowered to it; peaks above the knee keep only this share of their excess. Target `0` turns it off |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 | `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
