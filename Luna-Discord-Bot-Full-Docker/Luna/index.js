@@ -1711,6 +1711,23 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   let reasoning     = LLM_REASONING;
   let firstSentence = true;
   let reasoningRetried = false;
+  // Search results seen so far (tool_call.success), so a quick-answer retry
+  // can answer from them instead of searching all over again.
+  const searchCalls = [];
+  let context = '';
+
+  const speak = sentence => {
+    console.log('Luna sentence:', sentence);
+    if (firstSentence) {
+      firstSentence = false;
+      console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
+      clearStatus();
+      stopFillers();
+    }
+    ensureQueued();
+    response.add(sentence);
+    signal();
+  };
 
   try {
     for (;;) {
@@ -1726,6 +1743,14 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       let reasonedMs    = 0;
       let reasoningAt   = 0;
       const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
+      // With reasoning off, the model does its planning in the answer itself:
+      // "I'll search for that.", a search, "The results were irrelevant, let me
+      // try again." ... Every sentence of a quick-answer pass that may search is
+      // therefore held until the pass ends, and text written before a search
+      // is dropped as narration. (Only quick-answer passes: holding every
+      // answer until it is complete would delay all of them.)
+      const hold = reasoningRetried && useSearch;
+      let held = [];
       const onEvent = e => {
         if (e.type === 'reasoning.start' && !reasoningAt) {
           reasoningAt = Date.now();
@@ -1740,12 +1765,19 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           reasoningAt = 0;
           clearTimeout(thinkTimer);
         } else if (e.type === 'tool_call.start') {
+          if (held.length) {
+            console.log(`[${userId}] [LLM] dropped narration before a search (not spoken): ${held.join(' ').slice(0, 160)}`);
+            held = [];
+          }
           announceSearchNow();
+        } else if (e.type === 'tool_call.success' && e.output) {
+          searchCalls.push({ query: e.arguments?.query || '', output: e.output });
         }
       };
 
       try {
-        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent })) {
+        const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
+        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
           // A lone "." or similar: nothing to say, and nothing for TTS.
@@ -1758,20 +1790,12 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
             console.warn(`[${userId}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
             break;
           }
-          console.log('Luna sentence:', sentence);
-
-          if (firstSentence) {
-            firstSentence = false;
-            clearTimeout(thinkTimer);
-            console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
-            clearStatus();
-            stopFillers();
-          }
-
-          ensureQueued();
-          response.add(sentence);
-          signal();
+          clearTimeout(thinkTimer);
+          if (hold) held.push(sentence);
+          else speak(sentence);
         }
+        // Held text before a tool call written as text is narration too.
+        if (!superseded() && !fakeToolCall) held.forEach(speak);
       } catch (err) {
         // The thinking limit is a planned cancel; anything else (including a
         // supersede) is handled below.
@@ -1796,6 +1820,14 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       }
       reasoning = 'off';
       reasoningRetried = true;
+      if (searchCalls.length) {
+        // Answer from what was already found: searching again redid minutes
+        // of work, and a reasoning-off model narrates its way through searches.
+        context = 'Web search results already found for this question (answer from these; do not search again):\n' +
+          condenseSearchResults(searchCalls);
+        useSearch = false;
+        console.log(`[${userId}] [LLM] quick answer reuses ${searchCalls.length} search result set(s); search not offered again`);
+      }
     }
 
     if (firstSentence && !superseded()) {
@@ -1844,6 +1876,49 @@ const SEARCH_PROMPT =
   "When you search the web, the user is told automatically, so never say that " +
   "you will search or look anything up; once you have the information, just answer.";
 
+// Added to the system prompt of a quick-answer (reasoning off) retry. Without
+// reasoning, the model's planning ends up in the answer — "Keep it natural,
+// conversational, no markdown." was read out loud.
+const QUICK_PROMPT =
+  "Reply with only the words you will say out loud: no planning, no notes to " +
+  "yourself, and no drafts in quotation marks.";
+
+// Search results from tool_call.success events, condensed for a quick-answer
+// retry: each result's title and snippet (never raw page content), deduplicated,
+// capped at maxChars (~1,500 tokens, ~20 s to read on this hardware).
+function condenseSearchResults(calls, maxChars = 6000) {
+  const seen = new Set();
+  const lines = [];
+  for (const { query, output } of calls) {
+    let results = null;
+    try {
+      // Tavily via MCP: '[{"type":"text","text":"{\"results\":[...]}"}]'
+      const outer = typeof output === 'string' ? JSON.parse(output) : output;
+      const text = Array.isArray(outer) ? outer.map(o => (o && o.text) || '').join('') : JSON.stringify(outer);
+      const inner = JSON.parse(text);
+      results = Array.isArray(inner.results) ? inner.results : [];
+      if (inner.answer) lines.push(`- ${inner.answer}`);
+    } catch (_) {}
+    if (!results) {
+      lines.push(`- (${query}) ${String(output ?? '').replace(/\s+/g, ' ').slice(0, 800)}`);
+      continue;
+    }
+    for (const r of results) {
+      const key = (r && (r.url || r.title)) || '';
+      if (!r || seen.has(key)) continue;
+      seen.add(key);
+      const snippet = String(r.content || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+      if (snippet) lines.push(`- ${r.title || r.url}: ${snippet}`);
+    }
+  }
+  let out = '';
+  for (const line of lines) {
+    if (out.length + line.length + 1 > maxChars) break;
+    out += line + '\n';
+  }
+  return out.trim();
+}
+
 // A tool call the model wrote out as text (Qwen's <tool_call> / <function=...>
 // format), which happens when it wants a tool it was not offered.
 const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
@@ -1891,10 +1966,11 @@ function logLLMStats(userId, stats) {
 // `reasoning` overrides LLM_REASONING for this request; aborting `signal`
 // cancels it (thinking limit, barge-in, supersede).
 async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
-                                             { reasoning = LLM_REASONING, signal = null, onEvent = null } = {}) {
+                                             { reasoning = LLM_REASONING, signal = null, onEvent = null,
+                                               context = '', extraSystem = '' } = {}) {
   const body = {
     model: lmStudioModel,
-    input: text,
+    input: context ? `${text}\n\n${context}` : text,
     stream: true,
     ...(useSearch && { integrations: [searchIntegration()] }),
   };
@@ -1924,7 +2000,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // prefix LM Studio can reuse stays as long as possible.
   body.system_prompt = LM_SYSTEM_PROMPT + ' ' + todayLine() +
     (expressive ? ' ' + expressive : '') +
-    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '') + flavor;
+    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '') +
+    (extraSystem ? ' ' + extraSystem : '') + flavor;
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
@@ -2055,6 +2132,16 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
               }
               finished = true;
               break;
+            }
+
+            // A message ends at a tool call or at the end of the answer: either
+            // way a sentence boundary, so text before a search is never glued
+            // onto the text after it.
+            if (parsed.type === 'message.end' && buffer.trim()) {
+              const rest = buffer.trim();
+              buffer = '';
+              yield rest;
+              continue;
             }
 
             // LM Studio SSE format: {type:'message.delta', content:'token'}
