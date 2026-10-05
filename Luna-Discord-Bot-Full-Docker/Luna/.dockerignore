@@ -13,3 +13,6 @@ npm-debug.log*
 .git
 Dockerfile
 .dockerignore
+
+# Tests run against the source (npm test), never inside the image.
+test

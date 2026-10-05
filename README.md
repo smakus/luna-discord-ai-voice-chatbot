@@ -369,6 +369,28 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 
 ---
 
+## Development
+
+Luna's tests live in `Luna/test/` and run without Discord, LM Studio, Whisper or a TTS server: every outside service is faked. They need only Node 22. Without Node on your machine, run them in Docker:
+
+```bash
+cd Luna-Discord-Bot-Full-Docker/Luna
+docker run --rm -v "$PWD":/app:ro -w /app node:22-slim npm test
+```
+
+With Node installed, `npm test` in `Luna/` does the same. A full run takes about a minute and a quarter.
+
+| File | Covers |
+| ---- | ------ |
+| `luna.test.js` | Capture, wake word (including two-stage detection), the LLM stream (thinking limit, quick answers, leaked reasoning, search), playback, interruptions, encrypted-voice diagnostics and recovery |
+| `tts.test.js` | TTS providers and the fallback chain |
+| `announce.test.js` | Intro, join greetings, leave farewells, speakable names |
+| `harness.js` | Loads `index.js` with Discord, LM Studio, Whisper, TTS and the wake-word engine faked |
+
+The tests are excluded from the Docker image.
+
+---
+
 ## MusicBot integration
 
 Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`.
