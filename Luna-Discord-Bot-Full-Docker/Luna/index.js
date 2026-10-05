@@ -7,7 +7,7 @@ const {
 } = require('@discordjs/voice');
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
-const prism = require('prism-media');
+const { OpusEncoder } = require('@discordjs/opus');
 const path = require('path');
 const { WakeWordEngine } = require('./wakeword');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
@@ -702,6 +702,16 @@ function checkSilentSpeaker(userId) {
   const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
   const verdict = cryptoVerdict(voiceCryptoState(), userId);
   const why = verdict ? ` (encryption: ${verdict.text})` : '';
+  // Their audio is decrypting, so encryption is fine and a reconnect (which
+  // disrupts everyone) would not help: the audio is being lost after
+  // decryption. Restart just this speaker's capture; Discord's next
+  // "speaking" starts a fresh one.
+  if (verdict && !verdict.problem && verdict.ok > 0) {
+    console.warn(`[voice] Discord reports ${name} speaking and their audio is decrypting${why}, ` +
+      'but none of it reached Luna — restarting their capture (not an encryption problem)');
+    activeConnection.receiver.subscriptions.get(userId)?.destroy();
+    return;
+  }
   if (Date.now() - lastVoiceRecoveryAt < VOICE_RECOVER_GAP_MS) {
     console.warn(`[voice] still no decryptable audio from ${name}${why}; already reconnected recently, not retrying yet`);
     return;
@@ -830,10 +840,35 @@ function continuousCapture(connection, userId, channel) {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 60000 },
   });
 
-  const decoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
+  // Decode packet by packet, dropping only packets that cannot be decoded.
+  // This used to pipe into a prism Decoder with its errors ignored — but a
+  // Transform stream that errors is destroyed, so ONE bad packet silently and
+  // permanently deafened Luna to this speaker: their audio kept arriving and
+  // decrypting (thousands of packets) while nothing was decoded, until 60 s
+  // of total silence ended the capture. Bad packets are routine right after
+  // Luna joins or reconnects, when the encryption session is not ready yet
+  // and packets pass through still encrypted.
+  const opusDecoder = new OpusEncoder(48000, 1);
+  let undecodable = 0;
+  let undecodableLoggedAt = 0;
   audioStream.setMaxListeners(20);
-  audioStream.pipe(decoder);
-  decoder.on('error', () => {}); // ignore corrupted Opus packets
+  audioStream.on('data', packet => {
+    let pcm;
+    try {
+      pcm = opusDecoder.decode(packet);
+    } catch (_) {
+      undecodable++;
+      const now = Date.now();
+      if (now - undecodableLoggedAt >= 10000) {
+        console.warn(`[${userId}] ${undecodable} audio packet(s) could not be decoded — dropped ` +
+          '(normal for a moment while the encryption session is set up)');
+        undecodable = 0;
+        undecodableLoggedAt = now;
+      }
+      return;
+    }
+    onPcm(pcm);
+  });
   
   let speechChunks = [];
   // Ring of sub-threshold frames immediately preceding speech; prepended to the
@@ -1009,7 +1044,7 @@ function continuousCapture(connection, userId, channel) {
 
   let lastChunkAt = 0;
 
-  decoder.on('data', chunk => {
+  function onPcm(chunk) {
     const chunkAt = Date.now();
     lastDataTime = chunkAt;
     noteAudio(userId);
@@ -1069,7 +1104,7 @@ function continuousCapture(connection, userId, channel) {
 
     // Drop the oldest audio rather than growing without bound.
     while (speechChunks.length > MAX_UTTERANCE_CHUNKS) speechChunks.shift();
-  });
+  }
 
   // Discord stops sending Opus packets when truly silent — track real time elapsed
   // and flush if we've been speaking and no data arrives for SILENCE_MS
