@@ -1890,6 +1890,16 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       // answer until it is complete would delay all of them.)
       const hold = reasoningRetried && useSearch;
       let held = [];
+      // Leaked reasoning. After a search the model normally reasons (LM Studio
+      // sends reasoning.start) and then answers. Sometimes it instead does that
+      // thinking in the visible answer and ends it with "</think>", which LM
+      // Studio does not separate: Luna spoke the draft, the tag, then the
+      // answer again. So text that follows a search with no reasoning in
+      // between is held until "</think>" (everything before it is dropped) or
+      // the end of the pass (it was a real answer, spoken then). The normal
+      // order (search → reasoning → answer) is never held.
+      let leakSuspect = false;
+      let thinkHeld = [];
       const onEvent = e => {
         if (e.type === 'reasoning.start' && !reasoningAt) {
           reasoningAt = Date.now();
@@ -1909,14 +1919,20 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
             held = [];
           }
           announceSearchNow();
-        } else if (e.type === 'tool_call.success' && e.output) {
-          searchCalls.push({ query: e.arguments?.query || '', output: e.output });
+        } else if (e.type === 'tool_call.success') {
+          if (e.output) searchCalls.push({ query: e.arguments?.query || '', output: e.output });
+          if (reasoning !== 'off') leakSuspect = true;
+        }
+        if (e.type === 'reasoning.start' && leakSuspect) {
+          // Reasoning parsed normally after all: what was held is an answer.
+          leakSuspect = false;
+          thinkHeld.splice(0).forEach(t => (hold ? held.push(t) : speak(t)));
         }
       };
 
       try {
         const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
-        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
+        for await (let sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
           // A lone "." or similar: nothing to say, and nothing for TTS.
@@ -1930,11 +1946,40 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
             break;
           }
           clearTimeout(thinkTimer);
-          if (hold) held.push(sentence);
+          if (THINK_TAG.test(sentence)) {
+            const closing = sentence.match(/^([\s\S]*)<\/think>([\s\S]*)$/i);
+            if (closing) {
+              const leaked = [...thinkHeld.splice(0), closing[1].replace(THINK_TAG_ALL, '').trim()].filter(hasWords);
+              if (leaked.length) {
+                console.log(`[${userId}] [LLM] dropped reasoning that leaked into the answer (not spoken): ` +
+                  leaked.join(' ').replace(/\s+/g, ' ').slice(0, 160));
+              }
+              leakSuspect = false;
+              sentence = closing[2];
+            } else {
+              const opening = sentence.match(/^([\s\S]*?)<think>([\s\S]*)$/i);
+              if (opening && reasoning !== 'off') {
+                // Reasoning starting in the answer: hold what follows the tag.
+                const before = opening[1].trim();
+                if (hasWords(before)) (hold ? held.push(before) : speak(before));
+                leakSuspect = true;
+                sentence = opening[2];
+              }
+            }
+            // Never read a stray tag aloud.
+            sentence = sentence.replace(THINK_TAG_ALL, ' ').replace(/\s+/g, ' ').trim();
+            if (!hasWords(sentence)) continue;
+          }
+          if (leakSuspect) thinkHeld.push(sentence);
+          else if (hold) held.push(sentence);
           else speak(sentence);
         }
         // Held text before a tool call written as text is narration too.
-        if (!superseded() && !fakeToolCall) held.forEach(speak);
+        if (!superseded() && !fakeToolCall) {
+          held.forEach(speak);
+          // No "</think>" came, so what was held was the answer itself.
+          thinkHeld.forEach(speak);
+        }
       } catch (err) {
         // The thinking limit is a planned cancel; anything else (including a
         // supersede) is handled below.
@@ -2057,6 +2102,10 @@ function condenseSearchResults(calls, maxChars = 6000) {
   }
   return out.trim();
 }
+
+// Reasoning tags that reached the answer text (see leakSuspect in handleQuery).
+const THINK_TAG = /<\/?think>/i;
+const THINK_TAG_ALL = /<\/?think>/gi;
 
 // A tool call the model wrote out as text (Qwen's <tool_call> / <function=...>
 // format), which happens when it wants a tool it was not offered.
