@@ -469,6 +469,7 @@ let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
+  if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
   if (message.content.toLowerCase().trim() !== BOT_COMMAND) return;
   // .catch: a rejected reply (e.g. no send permission) in an async listener is
   // an unhandled rejection, which terminates Node.
@@ -506,6 +507,24 @@ client.on(Events.MessageCreate, async message => {
     introduceSelf(connection);
   });
 });
+
+// `!luna voicecheck`: per-person answer to "can Luna decrypt them?", plus the
+// voice privacy code to compare with the one Discord shows in the call's
+// encryption details — if they differ, Luna's whole session is out of sync.
+function voiceCheck(message) {
+  if (!activeConnection || !activeVoiceChannel) return message.reply("I'm not in a voice channel.").catch(() => {});
+  const crypto = voiceCryptoState();
+  if (!crypto) return message.reply('Encryption details are unavailable (unencrypted call, or the voice library changed).').catch(() => {});
+  const lines = [`**Voice encryption:** ${crypto.status}, epoch ${crypto.epoch ?? '-'}` +
+    (crypto.privacyCode ? ` — privacy code \`${crypto.privacyCode}\` (should match the code Discord shows for this call)` : '')];
+  for (const member of activeVoiceChannel.members.values()) {
+    if (member.user.bot) continue;
+    const v = cryptoVerdict(crypto, member.id);
+    lines.push(`${v.problem ? '⚠️' : '✅'} ${member.displayName}: ${v.text}`);
+  }
+  console.log(`[voice] voicecheck: ${lines.slice(1).join(' | ')}`);
+  return message.reply(lines.join('\n')).catch(() => {});
+}
 
 // debug: true so the voice library's encryption (DAVE) messages reach
 // logVoiceDebug; everything else it says is filtered out there.
@@ -619,6 +638,51 @@ function logVoiceDebug(message) {
   console.log(`[voice] encryption: ${text}`);
 }
 
+// Encryption diagnostics. Whether Luna can decrypt a given speaker, read from
+// the DAVE session itself rather than inferred from silence: is the speaker in
+// her MLS group (no keys otherwise), and how many of their packets decrypted
+// or failed. Discord's "speaking" signal fires when packets arrive, before
+// decryption, so "speaking + failures + 0 decrypted" is a decryption problem,
+// and "speaking + no packets at all" means they never reached decryption.
+// Read through the voice library's internal session object (not public API):
+// if a library update moves it, this returns null and logs once.
+let cryptoDiagWarned = false;
+function voiceCryptoState() {
+  const conn = activeConnection;
+  const dave = conn?.state?.networking?.state?.dave;
+  if (!dave) return null;
+  const session = dave.session;
+  if (!session || typeof session.getUserIds !== 'function' || typeof session.getDecryptionStats !== 'function') {
+    if (!cryptoDiagWarned && dave.protocolVersion > 0) {
+      cryptoDiagWarned = true;
+      console.warn('[voice] encryption diagnostics unavailable — the voice library\'s internals have changed');
+    }
+    return null;
+  }
+  let members = null;
+  try { members = new Set(session.getUserIds()); } catch (_) {}
+  let privacyCode = null;
+  try { privacyCode = conn.voicePrivacyCode || null; } catch (_) {}
+  return {
+    status: ['inactive', 'pending', 'awaiting response', 'active'][session.status] ?? String(session.status),
+    epoch: session.epoch != null ? String(session.epoch) : null,
+    privacyCode,
+    members,
+    stats: userId => { try { return session.getDecryptionStats(userId); } catch (_) { return null; } },
+  };
+}
+
+// One speaker's encryption state: { inGroup, ok, failed, problem, text }.
+function cryptoVerdict(state, userId) {
+  if (!state) return null;
+  const inGroup = state.members ? state.members.has(userId) : null;
+  const st = state.stats(userId);
+  const ok = st ? st.successes : 0, failed = st ? st.failures : 0;
+  const problem = inGroup === false || (failed > 0 && ok === 0);
+  const group = inGroup === null ? 'group unknown' : inGroup ? 'in group' : 'NOT in group';
+  return { inGroup, ok, failed, problem, text: st ? `${group}, ${ok} decrypted/${failed} failed` : `${group}, no packets yet` };
+}
+
 // Discord reported `userId` speaking (receiver 'start').
 function noteSpeaking(userId) {
   if (!VOICE_RECOVER_MS || silentSpeakers.has(userId)) return;
@@ -636,13 +700,15 @@ function checkSilentSpeaker(userId) {
   if (!since || Date.now() - since < VOICE_RECOVER_MS || !activeConnection) return;
   silentSpeakers.delete(userId);
   const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
+  const verdict = cryptoVerdict(voiceCryptoState(), userId);
+  const why = verdict ? ` (encryption: ${verdict.text})` : '';
   if (Date.now() - lastVoiceRecoveryAt < VOICE_RECOVER_GAP_MS) {
-    console.warn(`[voice] still no decryptable audio from ${name}; already reconnected recently, not retrying yet`);
+    console.warn(`[voice] still no decryptable audio from ${name}${why}; already reconnected recently, not retrying yet`);
     return;
   }
   lastVoiceRecoveryAt = Date.now();
   console.warn(`[voice] Discord reports ${name} speaking, but none of their audio has decrypted in ` +
-    `${Math.round(VOICE_RECOVER_MS / 1000)}s — reconnecting for a fresh encrypted session`);
+    `${Math.round(VOICE_RECOVER_MS / 1000)}s${why} — reconnecting for a fresh encrypted session`);
   reconnectVoice();
 }
 
@@ -737,6 +803,8 @@ setInterval(() => {
 
   const now = Date.now();
   const parts = [];
+  const crypto = voiceCryptoState();
+  if (crypto) parts.push(`enc[${crypto.status}, epoch ${crypto.epoch ?? '-'}, ${crypto.members ? crypto.members.size : '?'} in group]`);
     for (const [uid, s] of captureStates) {
     const ws = s.wakeStream;
     // Snapshot here too, not only on close: a crash or an ungraceful stream
@@ -749,7 +817,8 @@ setInterval(() => {
       `peak30s ${ws ? ws.takeHealthPeak().toFixed(3) : 'n/a'}, ` +
       `qdepth ${ws ? ws.queueDepth : 'n/a'}, ` +
       `flushing ${s.flushing}, ` +
-      `buffered ${s.buffered}]`
+      `buffered ${s.buffered}` +
+      (crypto ? `, ${cryptoVerdict(crypto, uid).text}` : '') + ']'
     );
   }
   console.log('[health] ' + parts.join(' '));
