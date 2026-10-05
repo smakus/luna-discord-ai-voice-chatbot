@@ -335,14 +335,27 @@ When the LLM is the slow part, the `[LLM] stats` line that follows each answer s
 - **A large prompt that grows with the memory turn** means conversation memory, including stored web-search results, is getting expensive. Lower `LM_MEMORY_MAX_TURNS`.
 - **Low tok/s** means the model is too big for your machine.
 
-She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck at `true`, or `buffered` climbing into the hundreds, means that speaker's audio is stuck.
+She also logs a `[health]` line per speaker every 30 seconds. `flushing` stuck at `true`, or `buffered` climbing into the hundreds, means that speaker's audio is stuck. Each speaker's entry also shows whether Luna can decrypt them: `in group, 812 decrypted/0 failed` is healthy.
+
+**Checking whether Luna can hear someone.** Discord voice is end-to-end encrypted, and Luna can lose one person's keys while everyone else hears them fine. Type `!luna voicecheck` in the text channel for a definitive answer per person:
+
+```
+Voice encryption: active, epoch 7 — privacy code `12345 67890 …`
+✅ smakus: in group, 812 decrypted/0 failed
+⚠️ appa: NOT in group, 0 decrypted/37 failed
+```
+
+- **NOT in group:** Luna has no keys for that person.
+- **0 decrypted with failures:** their audio arrives but can't be decrypted.
+- **No packets yet:** nothing has arrived from them. That's normal if they haven't spoken.
+- **Privacy code:** compare it with the one Discord shows in the call's encryption details. If they differ, Luna's whole session is out of sync; restarting her fixes it.
 
 | Symptom | Fix |
 | ------- | --- |
 | Replies take 20+ seconds | The model is too big for your RAM; see [Hardware sizing](#hardware-sizing) |
 | Doesn't respond to "hey Luna" | Check the peak score; see [Tuning the wake word](#tuning-the-wake-word) |
 | Answers once, then stops responding | Luna is probably hearing herself through your speakers. Use headphones, or raise `ENERGY_THRESHOLD` |
-| Luna ignores one person while everyone else hears them | Her encrypted voice session lost that person's keys. She reconnects by herself after ~20 s of it (look for `[voice]` lines); restarting her fixes it too |
+| Luna ignores one person while everyone else hears them | Her encrypted voice session lost that person's keys; `!luna voicecheck` confirms it. She reconnects by herself after ~20 s of it (look for `[voice]` lines); restarting her fixes it too |
 | Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
 | LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
 | No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
