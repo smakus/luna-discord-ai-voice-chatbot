@@ -20,6 +20,10 @@ Environment:
   QWEN3_TTS_TEMPERATURE   sampling temperature (0.6; lower stays closer to
                           the reference voice)
   QWEN3_TTS_PORT          port (8890)
+  QWEN3_TTS_PITCH_TARGET  a sentence whose average pitch comes out above this
+                          (Hz) is lowered to it (285; 0 disables pitch taming)
+  QWEN3_TTS_PITCH_KNEE    pitch peaks above this (Hz) are softened (360)
+  QWEN3_TTS_PITCH_RATIO   how much of the excess above the knee is kept (0.4)
 """
 import asyncio
 import io
@@ -30,15 +34,20 @@ import threading
 import time
 
 import numpy as np
+import parselmouth
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from parselmouth.praat import call
 from pydantic import BaseModel
 
 VOICES_DIR = os.environ['QWEN3_TTS_VOICES_DIR']
 DEFAULT_VOICE = os.getenv('QWEN3_TTS_VOICE', 'luna')
 MODEL = os.getenv('QWEN3_TTS_MODEL', 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit')
 TEMPERATURE = float(os.getenv('QWEN3_TTS_TEMPERATURE', '0.6'))
+PITCH_TARGET = float(os.getenv('QWEN3_TTS_PITCH_TARGET', '285'))
+PITCH_KNEE = float(os.getenv('QWEN3_TTS_PITCH_KNEE', '360'))
+PITCH_RATIO = float(os.getenv('QWEN3_TTS_PITCH_RATIO', '0.4'))
 PORT = int(os.getenv('QWEN3_TTS_PORT', '8890'))
 
 SAMPLE_RATE = 24000
@@ -75,6 +84,46 @@ def make_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: in
     fmt = struct.pack('<4sIHHIIHH', b'fmt ', 16, 1, num_channels, sample_rate,
                       byte_rate, block_align, bits_per_sample)
     return header + fmt + struct.pack('<4sI', b'data', 0xFFFFFFFF)
+
+
+# ── Pitch taming ─────────────────────────────────────────────────────────────
+#
+# A clone copies the reference voice, not a fixed delivery: each sentence is a
+# fresh performance, and about one in five comes out pitched up and excited —
+# shrill, mostly on short upbeat lines like greetings. Lower temperature,
+# calmer punctuation and a calmer reference clip did not change that rate (and
+# the Base model takes no style instruction), so it is corrected afterwards:
+# a sentence whose average pitch is above PITCH_TARGET is lowered to it, and
+# peaks above PITCH_KNEE keep only PITCH_RATIO of their excess. Praat's PSOLA
+# changes pitch without changing the voice's timbre. Sentences already in the
+# normal range are returned untouched. ~1 ms to check a sentence, ~4 ms to
+# fix one, against ~1 s to render it.
+#
+# Whole sentences only (buffered replies): a streamed chunk is too short to
+# judge the sentence's pitch, and per-chunk shifts would jump mid-sentence.
+
+def tame_pitch(audio: np.ndarray):
+    """Returns (audio, what was changed for the log, or None if untouched)."""
+    if PITCH_TARGET <= 0:
+        return audio, None
+    snd = parselmouth.Sound(audio.astype(np.float64), sampling_frequency=SAMPLE_RATE)
+    f0 = snd.to_pitch_ac(0.01, 75, 600).selected_array['frequency']
+    f0 = f0[f0 > 0]
+    if f0.size < 5:
+        return audio, None
+    median, p90 = float(np.median(f0)), float(np.percentile(f0, 90))
+    shift = min(1.0, PITCH_TARGET / median)
+    if shift >= 1.0 and p90 <= PITCH_KNEE:
+        return audio, None
+    manip = call(snd, 'To Manipulation', 0.01, 75, 600)
+    tier = call(manip, 'Extract pitch tier')
+    call(tier, 'Formula', f'self * {shift}')
+    call(tier, 'Formula', f'if self > {PITCH_KNEE} then {PITCH_KNEE} + (self - {PITCH_KNEE}) * {PITCH_RATIO} else self fi')
+    call([tier, manip], 'Replace pitch tier')
+    out = call(manip, 'Get resynthesis (overlap-add)')
+    what = (f'lowered from {median:.0f} Hz' if shift < 1.0 else f'average {median:.0f} Hz') + \
+        (f', peaks above {PITCH_KNEE:.0f} Hz softened' if p90 * shift > PITCH_KNEE else '')
+    return out.values[0].astype(np.float32), what
 
 
 def pcm_chunk(audio: np.ndarray) -> bytes:
@@ -152,7 +201,9 @@ def _worker() -> None:
         warm = _Job('Ready.', DEFAULT_VOICE, stream=False)
         _render(model, refs, warm)
         print(f'[qwen3-tts] warm in {time.time() - t0:.1f}s — model={MODEL}, '
-              f'voice={DEFAULT_VOICE}, temperature={TEMPERATURE}, voices: {", ".join(voice_names())}',
+              f'voice={DEFAULT_VOICE}, temperature={TEMPERATURE}, '
+              f'pitch taming={f"above {PITCH_TARGET:.0f} Hz" if PITCH_TARGET > 0 else "off"}, '
+              f'voices: {", ".join(voice_names())}',
               flush=True)
     except Exception as exc:                      # noqa: BLE001 — reported by /health
         _load_error.append(exc)
@@ -230,7 +281,10 @@ async def text_to_speech(req: TTSRequest, request: Request):
     if not parts:
         raise HTTPException(status_code=500, detail='No audio generated')
     buf = io.BytesIO()
-    sf.write(buf, np.concatenate(parts), SAMPLE_RATE, format='WAV', subtype='PCM_16')
+    audio, tamed = await asyncio.to_thread(tame_pitch, np.concatenate(parts))
+    if tamed:
+        print(f'[qwen3-tts] pitch tamed ({tamed}): {job.text[:60]!r}', flush=True)
+    sf.write(buf, audio, SAMPLE_RATE, format='WAV', subtype='PCM_16')
     return Response(content=buf.getvalue(), media_type='audio/wav')
 
 
