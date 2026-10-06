@@ -78,7 +78,7 @@ const MAX_QUEUE_DEPTH = 25;
 // Target is deliberately well above conversational Discord levels (~1500-2500
 // RMS). Synthetic TTS training data is typically normalised loud, so matching
 // that distribution means boosting past "normal speech", not toward it.
-const AGC_TARGET_RMS   = parseInt(process.env.OWW_AGC_TARGET_RMS || '4000', 10);
+const AGC_TARGET_RMS   = require('./config').loadConfig(process.env).OWW_AGC_TARGET_RMS;
 const AGC_MAX_GAIN     = 8;
 const AGC_NOISE_FLOOR  = 60;     // below this, assume silence and don't amplify hiss
 const AGC_SMOOTHING    = 0.1;    // EMA weight; low = slow gain changes, less pumping

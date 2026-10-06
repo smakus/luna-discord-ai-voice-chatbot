@@ -201,6 +201,11 @@ The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4
 
 Everything is set in `Luna/.env`. Most changes only need a container recreate (`docker compose up -d --force-recreate luna`), not a rebuild.
 
+Luna checks her settings at startup, and every setting is listed in [`config.js`](Luna-Discord-Bot-Full-Docker/Luna/config.js) with its type and default:
+- **An invalid value** is reported and the default is used: `[config] OWW_THRESHOLD="abc" is invalid (expected a number) — using the default (0.5)`.
+- **A misspelled name** is reported with the closest real one: `[config] OWW_THRESHHOLD is not one of Luna's settings and is ignored — did you mean OWW_THRESHOLD?`.
+- **On/off settings** accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`.
+
 ### Announcement settings
 
 | Variable | Default | Description |
@@ -235,6 +240,9 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
 | `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
 | `OWW_DEBUG_SCORE` | `0` | Log every score at or above this value |
+| `OWW_MELSPEC_PATH` / `OWW_EMBEDDING_PATH` | bundled files | The two openWakeWord feature models, if you replace them |
+| `OWW_FEATURE_FRAMES` | `0` | How many feature frames the wake-word model reads; `0` takes it from the model |
+| `OWW_AGC_TARGET_RMS` | `4000` | Level the automatic gain boosts quiet speakers towards, for wake-word detection only |
 
 ### Audio and memory
 
@@ -245,6 +253,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `MIN_SPEECH_MS` | `300` | Shorter utterances are ignored |
 | `MAX_SPEECH_MS` | `15000` | Force-end an utterance after this much unbroken speech |
 | `PREROLL_MS` | `320` | Audio kept from just before speech starts, so first syllables aren't clipped |
+| `MAX_SILENCE_FILL_MS` | `2000` | Longest silence re-inserted for the wake-word model when Discord stops sending audio mid-phrase |
 | `LM_MEMORY_TTL_MS` | `600000` | Forget a speaker's conversation after this much silence |
 | `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
 | `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
@@ -259,10 +268,12 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
 | `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
 | `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
+| `TTS_EXPRESSIVE_PROMPT` | built-in | The audio-tag instruction given to the LLM while an expressive ElevenLabs model is speaking |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
 | `ELEVENLABS_TIMEOUT_MS` | `10000` | Falls back to Kokoro after this |
+| `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API address |
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
 | `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
@@ -273,7 +284,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 | `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
-| `LUNA_TIMEZONE` | `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
+| `LUNA_TIMEZONE` | `TZ`, else `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
 | `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
 | `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
@@ -371,9 +382,10 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 
 Luna's tests live in `Luna/test/` and run without Discord, LM Studio, Whisper or a TTS server: every outside service is faked. They need only Node 22. Without Node on your machine, run them in Docker:
 
+From the repository's top folder:
+
 ```bash
-cd Luna-Discord-Bot-Full-Docker/Luna
-docker run --rm -v "$PWD":/app:ro -w /app node:22-slim npm test
+docker run --rm -v "$PWD":/repo:ro -w /repo/Luna-Discord-Bot-Full-Docker/Luna node:22-slim npm test
 ```
 
 With Node installed, `npm test` in `Luna/` does the same. A full run takes about a minute and a quarter.
@@ -386,6 +398,7 @@ With Node installed, `npm test` in `Luna/` does the same. A full run takes about
 | `answer-filter.test.js` | What of the LLM's answer Luna says, holds or drops (`answer-filter.js`): each rule, plus LM Studio streams in `test/fixtures/` replayed through the real pipeline |
 | `voice-input.test.js` | The voice-input stages (`voice-input.js`) one by one: packet decoding, filling silent gaps for the wake-word model, cutting speech into utterances, the wake decision, finding the question in a transcript, and what to do about a speaker who is never heard |
 | `sentences.test.js` | Where the streamed answer is cut into sentences for TTS (`sentences.js`): abbreviations like "St." and "U.S.", decimals and initials are not sentence ends |
+| `config.test.js` | Settings (`config.js`): parsing, invalid values, misspelled names, and that the README and `example.env` match the list of settings |
 | `harness.js` | Loads `index.js` with Discord, LM Studio, Whisper, TTS and the wake-word engine faked |
 
 The tests are excluded from the Docker image.

@@ -12,6 +12,7 @@ const path = require('path');
 const { WakeWordEngine } = require('./wakeword');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
+const { loadConfig, parseWaits } = require('./config');
 const { takeSentences } = require('./sentences');
 const {
   stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
@@ -19,6 +20,9 @@ const {
 } = require('./voice-input');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
+
+// Every setting, parsed and checked in one place (config.js).
+const config = loadConfig(process.env, { warn: message => console.warn(message) });
 
 // ─── Wake phrase ──────────────────────────────────────────────────────────────
 //
@@ -52,18 +56,18 @@ const WAKE_LABEL = 'hey Luna';
 // If the model fails to load for any reason, Luna falls back to the original
 // behaviour — transcribe everything, then match WAKE_RE against the text.
 
-const OWW_ENABLED   = (process.env.OWW_ENABLED ?? 'true').toLowerCase() !== 'false';
-const OWW_MODEL     = process.env.OWW_MODEL_PATH     || path.join(__dirname, 'hey_luna.onnx');
-const OWW_MELSPEC   = process.env.OWW_MELSPEC_PATH   || path.join(__dirname, 'melspectrogram.onnx');
-const OWW_EMBEDDING = process.env.OWW_EMBEDDING_PATH || path.join(__dirname, 'embedding_model.onnx');
-const OWW_THRESHOLD = parseFloat(process.env.OWW_THRESHOLD || '0.5');
-const OWW_TRIGGER_FRAMES = parseInt(process.env.OWW_TRIGGER_FRAMES || '1', 10);
-const OWW_REFRACTORY_MS  = parseInt(process.env.OWW_REFRACTORY_MS  || '1500', 10);
-const OWW_FEATURE_FRAMES = parseInt(process.env.OWW_FEATURE_FRAMES || '0', 10);
+const OWW_ENABLED   = config.OWW_ENABLED;
+const OWW_MODEL     = config.OWW_MODEL_PATH     || path.join(__dirname, 'hey_luna.onnx');
+const OWW_MELSPEC   = config.OWW_MELSPEC_PATH   || path.join(__dirname, 'melspectrogram.onnx');
+const OWW_EMBEDDING = config.OWW_EMBEDDING_PATH || path.join(__dirname, 'embedding_model.onnx');
+const OWW_THRESHOLD = config.OWW_THRESHOLD;
+const OWW_TRIGGER_FRAMES = config.OWW_TRIGGER_FRAMES;
+const OWW_REFRACTORY_MS  = config.OWW_REFRACTORY_MS;
+const OWW_FEATURE_FRAMES = config.OWW_FEATURE_FRAMES;
 // How far before an utterance's first speech a detection may land and still
 // count for that utterance. Covers the gap between the wake word finishing and
 // the energy gate opening.
-const OWW_GRACE_MS = parseInt(process.env.OWW_GRACE_MS || '2000', 10);
+const OWW_GRACE_MS = config.OWW_GRACE_MS;
 // Two-stage detection. The model is trained on "hey Luna" said on its own and
 // scores it far lower when the question follows without a pause: in testing
 // with 16 voices, run-on "hey Luna what's the weather" reached the threshold
@@ -72,19 +76,19 @@ const OWW_GRACE_MS = parseInt(process.env.OWW_GRACE_MS || '2000', 10);
 // around 0.001. So an utterance whose peak is at least this high but that
 // never triggered is a candidate: it is transcribed, and kept only if Whisper
 // heard "Luna" in it. 0 disables (only full detections count).
-const OWW_CANDIDATE_THRESHOLD = parseFloat(process.env.OWW_CANDIDATE_THRESHOLD || '0.1');
+const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
-const OWW_DEBUG_SCORE = parseFloat(process.env.OWW_DEBUG_SCORE || '0');
+const OWW_DEBUG_SCORE = config.OWW_DEBUG_SCORE;
 // 'auto' normalises quiet speech up toward a target level before detection,
 // 'off' disables it, or give a fixed multiplier like '3'. Detection input only —
 // the audio sent to Whisper is untouched. Never attenuates, so it cannot make a
 // already-working setup worse.
-const OWW_GAIN = process.env.OWW_GAIN || 'auto';
+const OWW_GAIN = config.OWW_GAIN;
 
 let wakeEngine = null; // set during ClientReady; null means fall back to transcript matching
 
 const IGNORED_USERS = new Set(
-  (process.env.IGNORED_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
+  config.IGNORED_USER_IDS
 );
 
 // ─── Join greetings ───────────────────────────────────────────────────────────
@@ -92,42 +96,39 @@ const IGNORED_USERS = new Set(
 // When someone joins the voice channel Luna is in, she announces them by name
 // and says hello. The cooldown is per user, so a flaky connection that drops
 // and rejoins every few seconds is greeted once, not on every reconnect.
-const GREET_ON_JOIN     = (process.env.GREET_ON_JOIN || 'true').toLowerCase() !== 'false';
-const GREET_COOLDOWN_MS = parseInt(process.env.GREET_COOLDOWN_MS || '600000', 10);
+const GREET_ON_JOIN     = config.GREET_ON_JOIN;
+const GREET_COOLDOWN_MS = config.GREET_COOLDOWN_MS;
 // A joining client takes a moment to connect its audio, and someone who joins
 // and immediately leaves (or passes through on the way to another channel)
 // should not be greeted at all. The greeting is spoken only if they are still
 // in the channel after this delay.
-const GREET_DELAY_MS    = parseInt(process.env.GREET_DELAY_MS || '1500', 10);
+const GREET_DELAY_MS    = config.GREET_DELAY_MS;
 
 // Leave announcements: the same idea in reverse. The delay is longer than the
 // join one because a dropped connection typically takes a few seconds to come
 // back, and someone who is back by then did not really leave.
-const ANNOUNCE_LEAVE    = (process.env.ANNOUNCE_LEAVE || 'true').toLowerCase() !== 'false';
-const LEAVE_COOLDOWN_MS = parseInt(process.env.LEAVE_COOLDOWN_MS || '600000', 10);
-const LEAVE_DELAY_MS    = parseInt(process.env.LEAVE_DELAY_MS || '3000', 10);
+const ANNOUNCE_LEAVE    = config.ANNOUNCE_LEAVE;
+const LEAVE_COOLDOWN_MS = config.LEAVE_COOLDOWN_MS;
+const LEAVE_DELAY_MS    = config.LEAVE_DELAY_MS;
 
 // Custom wording for both announcements: phrases separated by "|", with
 // {name} where the person's name goes, e.g.
 //   FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
 // One is picked at random each time. Unset or empty keeps the built-in lines.
-function parsePhrases(raw) {
-  return (raw || '').split('|').map(s => s.trim()).filter(Boolean);
-}
-const GREET_PHRASES    = parsePhrases(process.env.GREET_PHRASES);
-const FAREWELL_PHRASES = parsePhrases(process.env.FAREWELL_PHRASES);
+const GREET_PHRASES    = config.GREET_PHRASES;
+const FAREWELL_PHRASES = config.FAREWELL_PHRASES;
 
 // Luna introduces herself when she joins a voice channel. INTRO_PHRASES works
 // like the two above, with {wake} for the wake phrase instead of {name}.
-const ANNOUNCE_SELF = (process.env.ANNOUNCE_SELF || 'true').toLowerCase() !== 'false';
-const INTRO_PHRASES = parsePhrases(process.env.INTRO_PHRASES);
+const ANNOUNCE_SELF = config.ANNOUNCE_SELF;
+const INTRO_PHRASES = config.INTRO_PHRASES;
 
 // Spoken heads-up when a question is going to a web search — the slowest kind
 // of answer, where silence most reads as Luna not having heard. Audio tags are
 // performed by ElevenLabs v3/v4 and stripped for Kokoro.
-const ANNOUNCE_SEARCH = (process.env.ANNOUNCE_SEARCH || 'true').toLowerCase() !== 'false';
+const ANNOUNCE_SEARCH = config.ANNOUNCE_SEARCH;
 const SEARCH_PHRASES  = (() => {
-  const custom = parsePhrases(process.env.SEARCH_PHRASES);
+  const custom = config.SEARCH_PHRASES;
   return custom.length ? custom : [
     'Let me search for that.',
     '[curious] Hmm, let me take a look.',
@@ -151,22 +152,12 @@ const SEARCH_PHRASES  = (() => {
 // A phrase containing {name} is spoken with the asker's name, so mixing a few
 // of those into the list makes some fillers personal. They are skipped when
 // the name has nothing pronounceable in it.
-const ANNOUNCE_THINKING    = (process.env.ANNOUNCE_THINKING || 'true').toLowerCase() !== 'false';
-const THINKING_WAITS       = parseWaits(process.env.THINKING_WAITS, '15-22,22-30,30-40');
-const THINKING_MAX         = parseInt(process.env.THINKING_MAX         || '0', 10); // 0 = no limit
+const ANNOUNCE_THINKING    = config.ANNOUNCE_THINKING;
+const THINKING_WAITS       = parseWaits(config.THINKING_WAITS);
+const THINKING_MAX         = config.THINKING_MAX; // 0 = no limit
 
-// "15-22,22-30" -> [[15000, 22000], [22000, 30000]]. Falls back to the default
-// on anything malformed rather than silently disabling fillers.
-function parseWaits(raw, fallback) {
-  const parse = text => text.split(',').map(w => w.trim().split('-').map(Number))
-    .map(([lo, hi = lo]) => [lo * 1000, Math.max(lo, hi) * 1000]);
-  const waits = raw ? parse(raw) : [];
-  const valid = waits.length && waits.every(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi) && lo > 0);
-  if (raw && !valid) console.warn(`THINKING_WAITS="${raw}" is not like "15-22,22-30" — using ${fallback}`);
-  return valid ? waits : parse(fallback);
-}
 const THINKING_PHRASES     = (() => {
-  const custom = parsePhrases(process.env.THINKING_PHRASES);
+  const custom = config.THINKING_PHRASES;
   return custom.length ? custom : [
     'Still thinking.',
     '[thoughtful] Hmm, give me a moment.',
@@ -178,15 +169,14 @@ const THINKING_PHRASES     = (() => {
   ];
 })();
 
-const WHISPER_SERVER_URLS = (process.env.WHISPER_SERVER_URLS || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
+const WHISPER_SERVER_URLS = config.WHISPER_SERVER_URLS;
 let whisperRR = 0;
 function nextWhisperUrl() {
   const url = WHISPER_SERVER_URLS[whisperRR % WHISPER_SERVER_URLS.length];
   whisperRR++;
   return url;
 }
-const LM_STUDIO_URL = process.env.LM_STUDIO_URL;
+const LM_STUDIO_URL = config.LM_STUDIO_URL;
 const LM_SYSTEM_PROMPT =
   'You are Luna, a helpful voice assistant in a Discord voice channel. ' +
   'The user addresses you by saying "hey Luna" at the start of their message. ' +
@@ -205,7 +195,7 @@ const LM_SYSTEM_PROMPT =
 // every request. LUNA_TIMEZONE (an IANA name) decides what "today" is;
 // containers run in UTC, which turns evenings in the Americas into tomorrow.
 const LUNA_TIMEZONE = (() => {
-  const tz = process.env.LUNA_TIMEZONE || process.env.TZ || 'UTC';
+  const tz = config.LUNA_TIMEZONE;
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; }
   catch { console.warn(`LUNA_TIMEZONE="${tz}" is not a valid time zone — using UTC`); return 'UTC'; }
 })();
@@ -219,8 +209,8 @@ function todayLine() {
 
   // Optional personality line, injected on a fraction of requests. Keep the base
 // prompt above free of "sometimes"/"occasionally" instructions — see below.
-const LM_FLAVOR_PROMPT = process.env.LM_FLAVOR_PROMPT || '';
-const LM_FLAVOR_CHANCE = parseFloat(process.env.LM_FLAVOR_CHANCE || '0.15');
+const LM_FLAVOR_PROMPT = config.LM_FLAVOR_PROMPT;
+const LM_FLAVOR_CHANCE = config.LM_FLAVOR_CHANCE;
 
 // Resolved against this file, not the working directory, so `node Luna/index.js`
 // from elsewhere still finds it.
@@ -241,8 +231,8 @@ const CHIME_PATH = path.join(__dirname, 'chime.mp3');
 //
 // Now: one chain per speaker, dropped after LM_MEMORY_TTL_MS of silence or
 // LM_MEMORY_MAX_TURNS turns, whichever comes first. Both bound prefill.
-const LM_MEMORY_TTL_MS    = parseInt(process.env.LM_MEMORY_TTL_MS    || '600000', 10);
-const LM_MEMORY_MAX_TURNS = parseInt(process.env.LM_MEMORY_MAX_TURNS || '12',     10);
+const LM_MEMORY_TTL_MS    = config.LM_MEMORY_TTL_MS;
+const LM_MEMORY_MAX_TURNS = config.LM_MEMORY_MAX_TURNS;
 
 const conversations = new Map(); // userId -> { responseId, turns, lastAt }
 
@@ -280,9 +270,9 @@ function rememberConversation(userId, responseId) {
 // model fires but this gate stays shut, the detection is real but there is no
 // utterance to transcribe, which feels exactly like a missed wake word.
 // Lower it (150-200) for quiet speakers or distant mics.
-const SILENCE_MS       = parseInt(process.env.SILENCE_MS       || '1000', 10);
-const ENERGY_THRESHOLD = parseInt(process.env.ENERGY_THRESHOLD || '300',  10);
-const MIN_SPEECH_MS    = parseInt(process.env.MIN_SPEECH_MS    || '300',  10);
+const SILENCE_MS       = config.SILENCE_MS;
+const ENERGY_THRESHOLD = config.ENERGY_THRESHOLD;
+const MIN_SPEECH_MS    = config.MIN_SPEECH_MS;
 
 // Audio kept from BEFORE the energy gate opens, and prepended to the utterance.
 //
@@ -296,7 +286,7 @@ const MIN_SPEECH_MS    = parseInt(process.env.MIN_SPEECH_MS    || '300',  10);
 // The detector is unaffected (it always saw every frame); this only changes
 // what is transcribed. Cost is PREROLL_MS of ring buffer per speaker — 320 ms
 // is ~30 KB.
-const PREROLL_MS     = parseInt(process.env.PREROLL_MS || '320', 10);
+const PREROLL_MS     = config.PREROLL_MS;
 const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 
 // Hard cap on a single buffered utterance. `flushing` stays true for the whole
@@ -307,7 +297,7 @@ const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 // settles, `flushing` stays true forever, and that speaker goes permanently
 // deaf with nothing logged. Generous, because a saturated CPU makes Whisper
 // genuinely slow — these are for hangs, not slowness.
-const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000', 10);
+const WHISPER_TIMEOUT_MS = config.WHISPER_TIMEOUT_MS;
 
 // The LLM gets two limits, because a single overall timeout cannot tell a
 // hung request from a slow one. A large model that reasons and searches before
@@ -318,13 +308,13 @@ const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000', 1
 //                        Studio. Reasoning, tool-call and token events all
 //                        reset it, so a working model never trips it.
 //   LM_TIMEOUT_MS      — overall backstop for a request that keeps trickling.
-const LM_IDLE_TIMEOUT_MS = parseInt(process.env.LM_IDLE_TIMEOUT_MS || '90000', 10);
-const LM_TIMEOUT_MS      = parseInt(process.env.LM_TIMEOUT_MS      || '600000', 10);
+const LM_IDLE_TIMEOUT_MS = config.LM_IDLE_TIMEOUT_MS;
+const LM_TIMEOUT_MS      = config.LM_TIMEOUT_MS;
 // TTS timeouts live in tts.js with the providers.
 
 // Reasoning level sent to LM Studio ("off", "low", ... as the model allows;
 // empty = the model's own default, which for some models is the maximum).
-const LLM_REASONING = (process.env.LLM_REASONING || '').trim().toLowerCase();
+const LLM_REASONING = config.LLM_REASONING.toLowerCase();
 
 // Thinking limit. Neither timeout above can catch a model that keeps reasoning:
 // reasoning streams, so the request is never idle. One question spent over
@@ -337,9 +327,9 @@ const LLM_REASONING = (process.env.LLM_REASONING || '').trim().toLowerCase();
 // Searching and reading the results do not: a searched question can spend a
 // minute on those alone (results are read at ~90 tokens/s on this hardware),
 // and counting them cancelled healthy searches and redid them from scratch.
-const LLM_THINK_LIMIT_MS = parseInt(process.env.LLM_THINK_LIMIT_MS || '60000', 10);
+const LLM_THINK_LIMIT_MS = config.LLM_THINK_LIMIT_MS;
 const QUICK_ANSWER_PHRASES = (() => {
-  const custom = parsePhrases(process.env.QUICK_ANSWER_PHRASES);
+  const custom = config.QUICK_ANSWER_PHRASES;
   return custom.length ? custom : [
     "Sorry, I was overthinking that one. Here's the quick answer.",
     'Okay, let me give you the short version.',
@@ -349,7 +339,7 @@ const QUICK_ANSWER_PHRASES = (() => {
 // How many sentences beyond the one playing are synthesised in advance. Enough
 // to keep playback gapless; more only burns TTS work (and ElevenLabs credits)
 // on sentences that a barge-in may never let play.
-const TTS_LOOKAHEAD = Math.max(1, parseInt(process.env.TTS_LOOKAHEAD || '2', 10));
+const TTS_LOOKAHEAD = config.TTS_LOOKAHEAD;
 
 // Backstop if something still wedges despite the timeouts above. Must exceed
 // the longest legitimate request, or it would release a speaker mid-answer.
@@ -367,7 +357,7 @@ const MAX_UTTERANCE_CHUNKS = MAX_UTTERANCE_MS / DECODER_CHUNK_MS;
 // returns through a speaker into the mic — the energy gate is open on every frame,
 // the silence timer is reset on every frame, and the utterance never ends. That
 // speaker then buffers audio forever and is never heard again.
-const MAX_SPEECH_MS = parseInt(process.env.MAX_SPEECH_MS || '15000', 10);
+const MAX_SPEECH_MS = config.MAX_SPEECH_MS;
 
 // Discord stops transmitting Opus during silence, so two consecutive packets
 // can be seconds apart in wall-clock time while being adjacent in the sample
@@ -378,7 +368,7 @@ const MAX_SPEECH_MS = parseInt(process.env.MAX_SPEECH_MS || '15000', 10);
 //
 // Capped because the classifier window is only 1.28 s; beyond that the window
 // is fully flushed anyway and further silence is wasted inference.
-const MAX_SILENCE_FILL_MS = parseInt(process.env.MAX_SILENCE_FILL_MS || '2000', 10);
+const MAX_SILENCE_FILL_MS = config.MAX_SILENCE_FILL_MS;
 
 // Sentences are split as the answer streams (sentences.js), so TTS starts on
 // the first one while the rest is still being written.
@@ -403,7 +393,7 @@ async function resolveModel({ fatal = true } = {}) {
   try {
     const res = await fetch(
       LM_STUDIO_URL.replace('/api/v1/chat', '/api/v1/models'),
-      { headers: { 'Authorization': `Bearer ${process.env.LM_STUDIO_MCP_BEARER_TOKEN}` } }
+      { headers: { 'Authorization': `Bearer ${config.LM_STUDIO_MCP_BEARER_TOKEN}` } }
     );
     const data = await res.json();
     const loaded = data?.models?.find(m => m.type === 'llm' && m.loaded_instances?.length > 0);
@@ -609,7 +599,7 @@ function watchConnection(connection) {
 //     and summarised at most every 10 s;
 //   - a speaker reported speaking for VOICE_RECOVER_MS with no audio arriving
 //     makes Luna reconnect (at most once per 5 minutes). 0 disables.
-const VOICE_RECOVER_MS     = parseInt(process.env.VOICE_RECOVER_MS || '20000', 10);
+const VOICE_RECOVER_MS     = config.VOICE_RECOVER_MS;
 const VOICE_RECOVER_GAP_MS = 5 * 60000;
 const silentSpeakers = new Map();   // userId -> when Discord first said they spoke, with no audio since
 let lastVoiceRecoveryAt = 0;
@@ -1372,31 +1362,26 @@ const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
 // map and extract — slower, credit-hungry, and the model chained them (search,
 // extract, search again) on a simple weather question; showing one tool also
 // cuts the tool definitions the model must read from ~2,300 to ~970 tokens.
-const SEARCH_MCP_PLUGIN = (process.env.SEARCH_MCP_PLUGIN || '').trim();
+const SEARCH_MCP_PLUGIN = config.SEARCH_MCP_PLUGIN;
 const SEARCH_TOOLS = (() => {
-  const raw = (process.env.SEARCH_TOOLS || 'tavily_search').trim();
+  const raw = config.SEARCH_TOOLS;
   return raw.toLowerCase() === 'all' ? null : raw.split(',').map(t => t.trim()).filter(Boolean);
 })();
 
-const WEB_SEARCH = (() => {
-  const mode = (process.env.WEB_SEARCH || 'always').trim().toLowerCase();
-  if (!SEARCH_MCP_PLUGIN && !process.env.TAVILY_API_KEY) return 'off';
-  if (['always', 'keywords', 'off'].includes(mode)) return mode;
-  console.warn(`WEB_SEARCH="${mode}" is not always/keywords/off — using always`);
-  return 'always';
-})();
+// No search server configured → off, whatever WEB_SEARCH says.
+const WEB_SEARCH = !SEARCH_MCP_PLUGIN && !config.TAVILY_API_KEY ? 'off' : config.WEB_SEARCH;
 
 function searchIntegration() {
   const allowed = SEARCH_TOOLS ? { allowed_tools: SEARCH_TOOLS } : {};
   return SEARCH_MCP_PLUGIN
     ? { type: 'plugin', id: SEARCH_MCP_PLUGIN, ...allowed }
     : { type: 'ephemeral_mcp', server_label: 'tavily',
-        server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${process.env.TAVILY_API_KEY}`, ...allowed };
+        server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${config.TAVILY_API_KEY}`, ...allowed };
 }
 
 function describeSearch() {
   if (WEB_SEARCH === 'off') {
-    return 'off' + (SEARCH_MCP_PLUGIN || process.env.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY or SEARCH_MCP_PLUGIN)');
+    return 'off' + (SEARCH_MCP_PLUGIN || config.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY or SEARCH_MCP_PLUGIN)');
   }
   return (WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : 'keywords') +
     ` via ${SEARCH_MCP_PLUGIN ? `LM Studio plugin ${SEARCH_MCP_PLUGIN}` : 'Tavily (connected per request)'}` +
@@ -1409,7 +1394,7 @@ function describeSearch() {
 // outage would fail every question. Instead the question is answered without
 // search, and search is paused for SEARCH_PAUSE_MS so the following questions
 // don't each pay the failed connection attempt.
-const SEARCH_PAUSE_MS = parseInt(process.env.SEARCH_PAUSE_MS || '300000', 10);
+const SEARCH_PAUSE_MS = config.SEARCH_PAUSE_MS;
 let searchPausedUntil = 0;
 
 function pauseSearch(reason) {
@@ -2036,7 +2021,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.LM_STUDIO_MCP_BEARER_TOKEN}`,
+          'Authorization': `Bearer ${config.LM_STUDIO_MCP_BEARER_TOKEN}`,
         },
         body: JSON.stringify(body),
         signal: requestSignal,
@@ -2433,4 +2418,4 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Last real user left');
 });
 
-void client.login(process.env.DISCORD_TOKEN);
+void client.login(config.DISCORD_TOKEN || undefined);
