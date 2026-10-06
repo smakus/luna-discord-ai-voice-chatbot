@@ -63,7 +63,7 @@ module.exports = function boot(env = {}) {
     './wakeword': { WakeWordEngine: { load: async () => { await new Promise(r => setTimeout(r, S.wakeLoadMs ?? 0));
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
-    './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), path: require('path'),
+    './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), path: require('path'),
   };
 
   // ── fetch: LM Studio ──
