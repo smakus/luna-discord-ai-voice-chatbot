@@ -3,4 +3,3 @@ soundfile
 fastapi
 uvicorn
 numpy
-praat-parselmouth
