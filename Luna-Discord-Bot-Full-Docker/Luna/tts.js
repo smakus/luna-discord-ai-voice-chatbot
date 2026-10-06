@@ -29,37 +29,42 @@
 // download. Used to drop sentences that will never be played.
 
 const { PassThrough } = require('stream');
+const { loadConfig } = require('./config');
 
-const KOKORO_URL        = process.env.KOKORO_URL;
-const KOKORO_VOICE      = process.env.KOKORO_VOICE;
+// Settings come from config.js, like the rest of Luna's.
+const config = loadConfig(process.env);
+
+const KOKORO_URL        = config.KOKORO_URL;
+// Unset → undefined, so the request leaves it out and the server uses its default.
+const KOKORO_VOICE      = config.KOKORO_VOICE || undefined;
 // Awaited inside the shared playback chain, so a hang blocks audio for every
 // speaker — hence a timeout even on the local server.
-const KOKORO_TIMEOUT_MS = parseInt(process.env.KOKORO_TIMEOUT_MS || '30000', 10);
+const KOKORO_TIMEOUT_MS = config.KOKORO_TIMEOUT_MS;
 
 // Qwen3-TTS (Qwen3TTS/qwen3_tts_server.py, macOS only) speaks Kokoro's API in a
 // cloned voice. No default URL: it only exists when that server runs.
-const QWEN3_TTS_URL   = process.env.QWEN3_TTS_URL;
-const QWEN3_TTS_VOICE = process.env.QWEN3_TTS_VOICE;
+const QWEN3_TTS_URL   = config.QWEN3_TTS_URL;
+const QWEN3_TTS_VOICE = config.QWEN3_TTS_VOICE || undefined;
 // Buffered by default: while the LLM generates on the same GPU, Qwen3-TTS
 // renders slower than real time, and a stream that runs dry mid-sentence
 // warbles in Discord. A whole rendered sentence plays cleanly; the cost is a
 // pause before it. (Also why its timeout is longer.)
-const QWEN3_TTS_STREAM     = (process.env.QWEN3_TTS_STREAM || 'false').toLowerCase() === 'true';
-const QWEN3_TTS_TIMEOUT_MS = parseInt(process.env.QWEN3_TTS_TIMEOUT_MS || '60000', 10);
+const QWEN3_TTS_STREAM     = config.QWEN3_TTS_STREAM;
+const QWEN3_TTS_TIMEOUT_MS = config.QWEN3_TTS_TIMEOUT_MS;
 
-const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '';
+const ELEVENLABS_API_KEY  = config.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = config.ELEVENLABS_VOICE_ID;
 // v4 Turbo: real-time latency (~100 ms) and it follows audio tags.
-const ELEVENLABS_MODEL    = process.env.ELEVENLABS_MODEL || 'eleven_v4_turbo';
+const ELEVENLABS_MODEL    = config.ELEVENLABS_MODEL;
 // MP3 works on every plan; PCM formats need Pro or above.
-const ELEVENLABS_FORMAT   = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128';
-const ELEVENLABS_BASE_URL = (process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io').replace(/\/+$/, '');
+const ELEVENLABS_FORMAT   = config.ELEVENLABS_OUTPUT_FORMAT;
+const ELEVENLABS_BASE_URL = config.ELEVENLABS_BASE_URL.replace(/\/+$/, '');
 // Shorter than Kokoro's: a slow cloud response should fall back to Kokoro
 // while there is still time for the sentence to play promptly.
-const ELEVENLABS_TIMEOUT_MS = parseInt(process.env.ELEVENLABS_TIMEOUT_MS || '10000', 10);
+const ELEVENLABS_TIMEOUT_MS = config.ELEVENLABS_TIMEOUT_MS;
 
-const PROVIDER_RETRY_MS = parseInt(process.env.TTS_PROVIDER_RETRY_MS || '1800000', 10);
-const CREDITS_RETRY_MS  = parseInt(process.env.TTS_CREDITS_RETRY_MS  || '43200000', 10);
+const PROVIDER_RETRY_MS = config.TTS_PROVIDER_RETRY_MS;
+const CREDITS_RETRY_MS  = config.TTS_CREDITS_RETRY_MS;
 
 // ─── Expressiveness ───────────────────────────────────────────────────────────
 //
@@ -69,9 +74,9 @@ const CREDITS_RETRY_MS  = parseInt(process.env.TTS_CREDITS_RETRY_MS  || '4320000
 // would read the tag out loud, so they get no instruction, and any tag that
 // still reaches them — e.g. an answer started on ElevenLabs that falls back
 // mid-way, or a custom announcement phrase — is stripped first.
-const TTS_EXPRESSIVE = (process.env.TTS_EXPRESSIVE || 'true').toLowerCase() !== 'false';
+const TTS_EXPRESSIVE = config.TTS_EXPRESSIVE;
 const TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
-const EXPRESSIVE_PROMPT = process.env.TTS_EXPRESSIVE_PROMPT ||
+const EXPRESSIVE_PROMPT = config.TTS_EXPRESSIVE_PROMPT ||
   'Your voice can perform audio tags written in square brackets, such as ' +
   '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Where ' +
   'one genuinely fits the moment, put it right before the words it applies to; ' +
@@ -212,18 +217,18 @@ const elevenlabs = {
 
 const PROVIDERS = { kokoro, qwen3, elevenlabs };
 
-const preferred = PROVIDERS[(process.env.TTS_PROVIDER || 'kokoro').toLowerCase()];
-const fallbackName = (process.env.TTS_FALLBACK || 'kokoro').toLowerCase();
+const preferred = PROVIDERS[config.TTS_PROVIDER.toLowerCase()];
+const fallbackName = config.TTS_FALLBACK.toLowerCase();
 const fallback = fallbackName === 'none' ? null : PROVIDERS[fallbackName];
 if (fallbackName !== 'none' && !fallback) {
-  console.warn(`[tts] unknown TTS_FALLBACK "${process.env.TTS_FALLBACK}" — using Kokoro`);
+  console.warn(`[tts] unknown TTS_FALLBACK "${config.TTS_FALLBACK}" — using Kokoro`);
 }
 
 // Providers to try, in order. An unknown or unconfigured preferred provider is
 // dropped with a warning rather than failing every sentence.
 const chain = [];
 if (!preferred) {
-  console.warn(`[tts] unknown TTS_PROVIDER "${process.env.TTS_PROVIDER}" — using Kokoro`);
+  console.warn(`[tts] unknown TTS_PROVIDER "${config.TTS_PROVIDER}" — using Kokoro`);
 } else if (!preferred.configured()) {
   console.warn(`[tts] ${preferred.name} selected but not configured — using Kokoro`);
 } else {

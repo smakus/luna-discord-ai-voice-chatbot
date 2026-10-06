@@ -427,7 +427,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery("what's the weather today", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(40);
     assert.ok(!H.S.llmRequests[0].tools); assert.ok(H.S.logs.some(l => /web search: off \(no TAVILY_API_KEY or SEARCH_MCP_PLUGIN\)/.test(l)));
     ok('no TAVILY_API_KEY → search off, logged at startup'); }
-  { const H = boot({ WEB_SEARCH: 'sometimes' }); await H.start(); assert.ok(H.S.logs.some(l => /WEB_SEARCH="sometimes" is not always\/keywords\/off/.test(l)));
+  { const H = boot({ WEB_SEARCH: 'sometimes' }); await H.start(); assert.ok(H.S.logs.some(l => /\[config\] WEB_SEARCH="sometimes" is invalid \(expected one of always, keywords, off\) — using the default \("always"\)/.test(l)));
     ok('invalid WEB_SEARCH → warning, always'); }
 
 
