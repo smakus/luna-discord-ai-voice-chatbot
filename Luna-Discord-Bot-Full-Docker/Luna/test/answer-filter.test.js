@@ -10,7 +10,7 @@
 const { describe, it } = require('node:test');
 const assert = require('assert');
 const fs = require('fs'), path = require('path');
-const { createAnswerFilter } = require('../answer-filter');
+const { createAnswerFilter, stripMarkdown } = require('../answer-filter');
 const boot = require('./harness');
 
 // A filter whose speech and drops are recorded.
@@ -106,6 +106,31 @@ describe('answer filter rules', () => {
   });
 });
 
+describe('markdown is not spoken', () => {
+  const cases = [
+    ['So the 2020 Census had it at **85,239**, but it has been ticking down.', 'So the 2020 Census had it at 85,239, but it has been ticking down.'],
+    ['It is *really* good and __very__ fast.', 'It is really good and very fast.'],
+    ['_italic_ and _another one_', 'italic and another one'],
+    ['Check [the city site](https://example.gov) for details.', 'Check the city site for details.'],
+    ['Run `npm test` first.', 'Run npm test first.'],
+    ['- **Census (2024):** about 83,000', 'Census (2024): about 83,000'],
+    ['## Weather today', 'Weather today'], ['1. First item', 'First item'], ['> Quoted line', 'Quoted line'],
+    ['**Hello.', 'Hello.'],                                          // a sentence split inside a bold phrase
+  ];
+  for (const [input, output] of cases) it(`${JSON.stringify(input)} → ${JSON.stringify(output)}`, () => assert.strictEqual(stripMarkdown(input), output));
+
+  it('leaves alone what is not markdown: audio tags, snake_case, arithmetic', () => {
+    for (const text of ['[laughs] That is great.', 'Use the snake_case name.', '5 * 3 = 15']) assert.strictEqual(stripMarkdown(text), text);
+  });
+
+  it('applies to everything the filter speaks, held or not; markers alone are not spoken', () => {
+    const { filter, spoken } = rig();
+    filter.text('**Bold** answer.'); filter.text('**');
+    TOOL.forEach(filter.event); filter.text('- *Held* item.'); filter.end();
+    assert.deepStrictEqual(spoken, ['Bold answer.', 'Held item.']);
+  });
+});
+
 // ── Fixture replay through the real pipeline ─────────────────────────────────
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -137,6 +162,7 @@ describe('recorded and reconstructed LM Studio streams', () => {
       const { said } = await replay(fx);
       assert.deepStrictEqual(words(said.join(' ')), words(answerText(fx)), `said: ${JSON.stringify(said)}`);
       assert.ok(!said.some(s => /<\/?think>|tool_call/i.test(s)), 'no tags spoken');
+      assert.ok(!said.some(s => /\*|`|^#|__/.test(s)), `no markdown spoken: ${JSON.stringify(said)}`);
     });
   }
 });

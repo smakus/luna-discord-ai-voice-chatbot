@@ -34,6 +34,9 @@
 //     a search is narration;
 //   - "</think>" drops whatever is pending and the text before the tag;
 //   - <think>/</think> tags are never spoken;
+//   - markdown is removed (see speakable): the model is told not to use it,
+//     but searched answers still come back with **bold** and lists, and TTS
+//     would read the asterisks or stumble on them;
 //   - text with no letters or digits ("." on its own) is ignored.
 //
 // The normal order — search, reasoning, answer — never holds anything, so
@@ -45,7 +48,27 @@ const THINK_TAG_ALL = /<\/?think>/gi;
 const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
 
 const hasWords = text => /[\p{L}\p{N}]/u.test(text);
-const tidy = text => text.replace(THINK_TAG_ALL, ' ').replace(/\s+/g, ' ').trim();
+
+// Markdown → plain speech. Formatting markers go, their text stays:
+//   **bold** __bold__ *italic* _italic_ `code`  →  bold bold italic italic code
+//   [text](https://…)                           →  text
+//   "# Heading", "- item", "1. item", "> quote" at the start of a line → marker gone
+// plus any leftover ** or __ (a sentence can split inside a bold phrase).
+// Untouched: ElevenLabs audio tags like [laughs] (no "(url)" after them) and
+// underscores inside words (snake_case).
+function stripMarkdown(text) {
+  return text
+    .replace(/\[([^\]\n]+)\]\([^)\s]+\)/g, '$1')
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, '$1$2')
+    .replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, '$1$2')
+    .replace(/`([^`\n]*)`/g, '$1')
+    .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d+[.)][ \t]+)/gm, '')
+    .replace(/\*{2,}|_{2,}|`+/g, '');
+}
+
+// What TTS gets: no reasoning tags, no markdown, single spaces.
+const speakable = text => stripMarkdown(text.replace(THINK_TAG_ALL, ' ')).replace(/\s+/g, ' ').trim();
 
 // options:
 //   reasoning     false when the model answers without reasoning (reasoning
@@ -72,7 +95,8 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
     pending = [];
     if (lost.length) drop(kind, lost.join(' ').replace(/\s+/g, ' '));
   };
-  const say = sentence => {
+  const say = raw => {
+    const sentence = speakable(raw);
     if (!hasWords(sentence)) return;
     if (state === 'speaking') speak(sentence);
     else pending.push(sentence);
@@ -100,19 +124,19 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
       if (THINK_TAG.test(sentence)) {
         const closing = sentence.match(/^([\s\S]*)<\/think>([\s\S]*)$/i);
         if (closing) {
-          discard('leaked reasoning', [tidy(closing[1])]);
+          discard('leaked reasoning', [speakable(closing[1])]);
           state = resting;
-          say(tidy(closing[2]));
+          say(closing[2]);
           return 'ok';
         }
         const opening = sentence.match(/^([\s\S]*?)<think>([\s\S]*)$/i);
         if (opening && reasoning) {
-          say(tidy(opening[1]));
+          say(opening[1]);
           state = 'unsure';
-          say(tidy(opening[2]));
+          say(opening[2]);
           return 'ok';
         }
-        say(tidy(sentence));
+        say(sentence);
         return 'ok';
       }
 
@@ -128,4 +152,4 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
   };
 }
 
-module.exports = { createAnswerFilter, FAKE_TOOL_CALL };
+module.exports = { createAnswerFilter, stripMarkdown, FAKE_TOOL_CALL };
