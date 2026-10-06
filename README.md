@@ -383,6 +383,7 @@ With Node installed, `npm test` in `Luna/` does the same. A full run takes about
 | `luna.test.js` | Capture, wake word (including two-stage detection), the LLM stream (thinking limit, quick answers, leaked reasoning, search), playback, interruptions, encrypted-voice diagnostics and recovery |
 | `tts.test.js` | TTS providers and the fallback chain |
 | `announce.test.js` | Intro, join greetings, leave farewells, speakable names |
+| `answer-filter.test.js` | What of the LLM's answer Luna says, holds or drops (`answer-filter.js`): each rule, plus LM Studio streams in `test/fixtures/` replayed through the real pipeline |
 | `harness.js` | Loads `index.js` with Discord, LM Studio, Whisper, TTS and the wake-word engine faked |
 
 The tests are excluded from the Docker image.
