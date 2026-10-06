@@ -1,0 +1,139 @@
+{
+ "recorded": "2026-10-05",
+ "model": "qwen/qwen3.8-27b",
+ "question": "Tell me one fun fact about octopuses.",
+ "reasoning": "default",
+ "search": false,
+ "events": [
+  {
+   "type": "prompt_processing.start"
+  },
+  {
+   "type": "prompt_processing.end"
+  },
+  {
+   "type": "reasoning.start"
+  },
+  {
+   "type": "reasoning.delta",
+   "content": "…"
+  },
+  {
+   "type": "reasoning.end"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "\n\n"
+  },
+  {
+   "type": "message.delta",
+   "content": "Oct"
+  },
+  {
+   "type": "message.delta",
+   "content": "op"
+  },
+  {
+   "type": "message.delta",
+   "content": "uses"
+  },
+  {
+   "type": "message.delta",
+   "content": " have"
+  },
+  {
+   "type": "message.delta",
+   "content": " three"
+  },
+  {
+   "type": "message.delta",
+   "content": " hearts"
+  },
+  {
+   "type": "message.delta",
+   "content": "—"
+  },
+  {
+   "type": "message.delta",
+   "content": "two"
+  },
+  {
+   "type": "message.delta",
+   "content": " pump"
+  },
+  {
+   "type": "message.delta",
+   "content": " blood"
+  },
+  {
+   "type": "message.delta",
+   "content": " to"
+  },
+  {
+   "type": "message.delta",
+   "content": " their"
+  },
+  {
+   "type": "message.delta",
+   "content": " g"
+  },
+  {
+   "type": "message.delta",
+   "content": "ills"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": " and"
+  },
+  {
+   "type": "message.delta",
+   "content": " one"
+  },
+  {
+   "type": "message.delta",
+   "content": " sends"
+  },
+  {
+   "type": "message.delta",
+   "content": " blood"
+  },
+  {
+   "type": "message.delta",
+   "content": " to"
+  },
+  {
+   "type": "message.delta",
+   "content": " the"
+  },
+  {
+   "type": "message.delta",
+   "content": " rest"
+  },
+  {
+   "type": "message.delta",
+   "content": " of"
+  },
+  {
+   "type": "message.delta",
+   "content": " their"
+  },
+  {
+   "type": "message.delta",
+   "content": " body"
+  },
+  {
+   "type": "message.delta",
+   "content": "!"
+  },
+  {
+   "type": "message.end"
+  }
+ ]
+}

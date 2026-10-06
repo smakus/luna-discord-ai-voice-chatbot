@@ -11,6 +11,7 @@ const { OpusEncoder } = require('@discordjs/opus');
 const path = require('path');
 const { WakeWordEngine } = require('./wakeword');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
+const { createAnswerFilter } = require('./answer-filter');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -1846,7 +1847,6 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   //     finished with no words at all (it has answered "." after 50 s of
   //     reasoning) -> ask again with reasoning off, which answers in seconds.
   const superseded = () => userGeneration.get(userId) !== myGeneration;
-  const hasWords   = text => /[\p{L}\p{N}]/u.test(text);
   let reasoning     = LLM_REASONING;
   let firstSentence = true;
   let reasoningRetried = false;
@@ -1882,24 +1882,19 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       let reasonedMs    = 0;
       let reasoningAt   = 0;
       const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
-      // With reasoning off, the model does its planning in the answer itself:
-      // "I'll search for that.", a search, "The results were irrelevant, let me
-      // try again." ... Every sentence of a quick-answer pass that may search is
-      // therefore held until the pass ends, and text written before a search
-      // is dropped as narration. (Only quick-answer passes: holding every
-      // answer until it is complete would delay all of them.)
-      const hold = reasoningRetried && useSearch;
-      let held = [];
-      // Leaked reasoning. After a search the model normally reasons (LM Studio
-      // sends reasoning.start) and then answers. Sometimes it instead does that
-      // thinking in the visible answer and ends it with "</think>", which LM
-      // Studio does not separate: Luna spoke the draft, the tag, then the
-      // answer again. So text that follows a search with no reasoning in
-      // between is held until "</think>" (everything before it is dropped) or
-      // the end of the pass (it was a real answer, spoken then). The normal
-      // order (search → reasoning → answer) is never held.
-      let leakSuspect = false;
-      let thinkHeld = [];
+      // What of the answer gets said is the answer filter's job (see
+      // answer-filter.js). Reasoning-off passes that may search hold
+      // everything until the end: without reasoning the model narrates its
+      // way through searches. (Only those: holding every answer until it is
+      // complete would delay all of them.)
+      const filter = createAnswerFilter({
+        reasoning: reasoning !== 'off',
+        holdUntilEnd: reasoningRetried && useSearch,
+        speak,
+        drop: (kind, text) => console.log(kind === 'narration'
+          ? `[${userId}] [LLM] dropped narration before a search (not spoken): ${text.slice(0, 160)}`
+          : `[${userId}] [LLM] dropped reasoning that leaked into the answer (not spoken): ${text.slice(0, 160)}`),
+      });
       const onEvent = e => {
         if (e.type === 'reasoning.start' && !reasoningAt) {
           reasoningAt = Date.now();
@@ -1914,72 +1909,33 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           reasoningAt = 0;
           clearTimeout(thinkTimer);
         } else if (e.type === 'tool_call.start') {
-          if (held.length) {
-            console.log(`[${userId}] [LLM] dropped narration before a search (not spoken): ${held.join(' ').slice(0, 160)}`);
-            held = [];
-          }
           announceSearchNow();
-        } else if (e.type === 'tool_call.success') {
-          if (e.output) searchCalls.push({ query: e.arguments?.query || '', output: e.output });
-          if (reasoning !== 'off') leakSuspect = true;
+        } else if (e.type === 'tool_call.success' && e.output) {
+          searchCalls.push({ query: e.arguments?.query || '', output: e.output });
         }
-        if (e.type === 'reasoning.start' && leakSuspect) {
-          // Reasoning parsed normally after all: what was held is an answer.
-          leakSuspect = false;
-          thinkHeld.splice(0).forEach(t => (hold ? held.push(t) : speak(t)));
-        }
+        filter.event(e);
       };
 
       try {
         const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
-        for await (let sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
+        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
-          // A lone "." or similar: nothing to say, and nothing for TTS.
-          if (!hasWords(sentence)) continue;
+          const verdict = filter.text(sentence);
           // A tool call written out as text — the model wanted to search but
-          // had no search tool. Never speak it (it went straight to TTS);
-          // stop this pass and ask again with search on.
-          if (FAKE_TOOL_CALL.test(sentence)) {
+          // had no search tool. Never spoken; stop this pass and ask again
+          // with search on.
+          if (verdict === 'tool-call-as-text') {
             fakeToolCall = true;
             console.warn(`[${userId}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
             break;
           }
-          clearTimeout(thinkTimer);
-          if (THINK_TAG.test(sentence)) {
-            const closing = sentence.match(/^([\s\S]*)<\/think>([\s\S]*)$/i);
-            if (closing) {
-              const leaked = [...thinkHeld.splice(0), closing[1].replace(THINK_TAG_ALL, '').trim()].filter(hasWords);
-              if (leaked.length) {
-                console.log(`[${userId}] [LLM] dropped reasoning that leaked into the answer (not spoken): ` +
-                  leaked.join(' ').replace(/\s+/g, ' ').slice(0, 160));
-              }
-              leakSuspect = false;
-              sentence = closing[2];
-            } else {
-              const opening = sentence.match(/^([\s\S]*?)<think>([\s\S]*)$/i);
-              if (opening && reasoning !== 'off') {
-                // Reasoning starting in the answer: hold what follows the tag.
-                const before = opening[1].trim();
-                if (hasWords(before)) (hold ? held.push(before) : speak(before));
-                leakSuspect = true;
-                sentence = opening[2];
-              }
-            }
-            // Never read a stray tag aloud.
-            sentence = sentence.replace(THINK_TAG_ALL, ' ').replace(/\s+/g, ' ').trim();
-            if (!hasWords(sentence)) continue;
-          }
-          if (leakSuspect) thinkHeld.push(sentence);
-          else if (hold) held.push(sentence);
-          else speak(sentence);
+          // The answer has started: the thinking limit no longer applies.
+          if (verdict === 'ok') clearTimeout(thinkTimer);
         }
-        // Held text before a tool call written as text is narration too.
-        if (!superseded() && !fakeToolCall) {
-          held.forEach(speak);
-          // No "</think>" came, so what was held was the answer itself.
-          thinkHeld.forEach(speak);
-        }
+        // Whatever is still held was answer. (Not after a tool call written
+        // as text: what came before it is narration.)
+        if (!superseded() && !fakeToolCall) filter.end();
       } catch (err) {
         // The thinking limit is a planned cancel; anything else (including a
         // supersede) is handled below.
@@ -2102,14 +2058,6 @@ function condenseSearchResults(calls, maxChars = 6000) {
   }
   return out.trim();
 }
-
-// Reasoning tags that reached the answer text (see leakSuspect in handleQuery).
-const THINK_TAG = /<\/?think>/i;
-const THINK_TAG_ALL = /<\/?think>/gi;
-
-// A tool call the model wrote out as text (Qwen's <tool_call> / <function=...>
-// format), which happens when it wants a tool it was not offered.
-const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
 
 // Where a searched answer's time goes: one line per tool call, and per long
 // read of a prompt or of tool results (~90 tokens/s on this hardware).

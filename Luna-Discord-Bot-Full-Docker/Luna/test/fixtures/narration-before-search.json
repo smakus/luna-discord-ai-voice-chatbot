@@ -1,0 +1,57 @@
+{
+ "recorded": null,
+ "model": "qwen/qwen3.8-27b",
+ "reconstructed": "From a live reasoning-off answer recorded 2026-10-05 (the model narrated before searching). Text as the model wrote it; deltas split by sentence.",
+ "question": "What is the current price of gold per ounce? Search the web, then answer in one sentence.",
+ "reasoning": "off",
+ "search": true,
+ "events": [
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "I'll search for the current gold price."
+  },
+  {
+   "type": "message.delta",
+   "content": "\n\n"
+  },
+  {
+   "type": "message.end"
+  },
+  {
+   "type": "tool_call.start"
+  },
+  {
+   "type": "tool_call.name",
+   "tool_name": "tavily_search"
+  },
+  {
+   "type": "tool_call.arguments",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current gold price per ounce today"
+   }
+  },
+  {
+   "type": "tool_call.success",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current gold price per ounce today"
+   },
+   "output": "[search results removed]"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "Gold is trading around $5,085 per ounce today."
+  },
+  {
+   "type": "message.end"
+  }
+ ],
+ "expectSpoken": "Gold is trading around $5,085 per ounce today."
+}

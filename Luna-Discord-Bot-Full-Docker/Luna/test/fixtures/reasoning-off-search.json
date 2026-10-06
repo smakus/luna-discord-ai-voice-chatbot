@@ -1,0 +1,145 @@
+{
+ "recorded": "2026-10-05",
+ "model": "qwen/qwen3.8-27b",
+ "question": "What is the current price of gold per ounce? Search the web, then answer in one sentence.",
+ "reasoning": "off",
+ "search": true,
+ "events": [
+  {
+   "type": "prompt_processing.start"
+  },
+  {
+   "type": "prompt_processing.end"
+  },
+  {
+   "type": "tool_call.start"
+  },
+  {
+   "type": "tool_call.name",
+   "tool_name": "tavily_search"
+  },
+  {
+   "type": "tool_call.arguments",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current price of gold per ounce today",
+    "search_depth": "fast",
+    "max_results": 3
+   }
+  },
+  {
+   "type": "tool_call.success",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current price of gold per ounce today",
+    "search_depth": "fast",
+    "max_results": 3
+   },
+   "output": "[search results removed]"
+  },
+  {
+   "type": "prompt_processing.start"
+  },
+  {
+   "type": "prompt_processing.end"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "Gold"
+  },
+  {
+   "type": "message.delta",
+   "content": " is"
+  },
+  {
+   "type": "message.delta",
+   "content": " currently"
+  },
+  {
+   "type": "message.delta",
+   "content": " trading"
+  },
+  {
+   "type": "message.delta",
+   "content": " around"
+  },
+  {
+   "type": "message.delta",
+   "content": " $"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": " per"
+  },
+  {
+   "type": "message.delta",
+   "content": " ounce"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": " up"
+  },
+  {
+   "type": "message.delta",
+   "content": " about"
+  },
+  {
+   "type": "message.delta",
+   "content": " 1"
+  },
+  {
+   "type": "message.delta",
+   "content": "."
+  },
+  {
+   "type": "message.delta",
+   "content": "1"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": "%"
+  },
+  {
+   "type": "message.delta",
+   "content": " today"
+  },
+  {
+   "type": "message.delta",
+   "content": "."
+  },
+  {
+   "type": "message.end"
+  }
+ ]
+}

@@ -1,0 +1,533 @@
+{
+ "recorded": "2026-10-05",
+ "model": "qwen/qwen3.8-27b",
+ "question": "What is the current population of Newport Beach, California? Search the web.",
+ "reasoning": "default",
+ "search": true,
+ "events": [
+  {
+   "type": "prompt_processing.start"
+  },
+  {
+   "type": "prompt_processing.end"
+  },
+  {
+   "type": "reasoning.start"
+  },
+  {
+   "type": "reasoning.delta",
+   "content": "…"
+  },
+  {
+   "type": "reasoning.end"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "\n\n"
+  },
+  {
+   "type": "message.end"
+  },
+  {
+   "type": "tool_call.start"
+  },
+  {
+   "type": "tool_call.name",
+   "tool_name": "tavily_search"
+  },
+  {
+   "type": "tool_call.arguments",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current population of Newport Beach California 2024",
+    "max_results": 5
+   }
+  },
+  {
+   "type": "tool_call.success",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "current population of Newport Beach California 2024",
+    "max_results": 5
+   },
+   "output": "[search results removed]"
+  },
+  {
+   "type": "prompt_processing.start"
+  },
+  {
+   "type": "prompt_processing.end"
+  },
+  {
+   "type": "reasoning.start"
+  },
+  {
+   "type": "reasoning.delta",
+   "content": "…"
+  },
+  {
+   "type": "reasoning.end"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "\n\n"
+  },
+  {
+   "type": "message.delta",
+   "content": "So"
+  },
+  {
+   "type": "message.delta",
+   "content": " the"
+  },
+  {
+   "type": "message.delta",
+   "content": " 2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": " Census"
+  },
+  {
+   "type": "message.delta",
+   "content": " had"
+  },
+  {
+   "type": "message.delta",
+   "content": " it"
+  },
+  {
+   "type": "message.delta",
+   "content": " at"
+  },
+  {
+   "type": "message.delta",
+   "content": " **"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "3"
+  },
+  {
+   "type": "message.delta",
+   "content": "9"
+  },
+  {
+   "type": "message.delta",
+   "content": "**,"
+  },
+  {
+   "type": "message.delta",
+   "content": " but"
+  },
+  {
+   "type": "message.delta",
+   "content": " it"
+  },
+  {
+   "type": "message.delta",
+   "content": "'s"
+  },
+  {
+   "type": "message.delta",
+   "content": " been"
+  },
+  {
+   "type": "message.delta",
+   "content": " ticking"
+  },
+  {
+   "type": "message.delta",
+   "content": " down"
+  },
+  {
+   "type": "message.delta",
+   "content": " a"
+  },
+  {
+   "type": "message.delta",
+   "content": " bit"
+  },
+  {
+   "type": "message.delta",
+   "content": " since"
+  },
+  {
+   "type": "message.delta",
+   "content": " then"
+  },
+  {
+   "type": "message.delta",
+   "content": "."
+  },
+  {
+   "type": "message.delta",
+   "content": " The"
+  },
+  {
+   "type": "message.delta",
+   "content": " latest"
+  },
+  {
+   "type": "message.delta",
+   "content": " estimates"
+  },
+  {
+   "type": "message.delta",
+   "content": " put"
+  },
+  {
+   "type": "message.delta",
+   "content": " it"
+  },
+  {
+   "type": "message.delta",
+   "content": " around"
+  },
+  {
+   "type": "message.delta",
+   "content": " **"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "–"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "3"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "**"
+  },
+  {
+   "type": "message.delta",
+   "content": " as"
+  },
+  {
+   "type": "message.delta",
+   "content": " of"
+  },
+  {
+   "type": "message.delta",
+   "content": " 2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "4"
+  },
+  {
+   "type": "message.delta",
+   "content": "–"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": "."
+  },
+  {
+   "type": "message.delta",
+   "content": " World"
+  },
+  {
+   "type": "message.delta",
+   "content": " Population"
+  },
+  {
+   "type": "message.delta",
+   "content": " Review"
+  },
+  {
+   "type": "message.delta",
+   "content": " peg"
+  },
+  {
+   "type": "message.delta",
+   "content": "s"
+  },
+  {
+   "type": "message.delta",
+   "content": " 2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "6"
+  },
+  {
+   "type": "message.delta",
+   "content": " at"
+  },
+  {
+   "type": "message.delta",
+   "content": " about"
+  },
+  {
+   "type": "message.delta",
+   "content": " **"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "1"
+  },
+  {
+   "type": "message.delta",
+   "content": ","
+  },
+  {
+   "type": "message.delta",
+   "content": "3"
+  },
+  {
+   "type": "message.delta",
+   "content": "4"
+  },
+  {
+   "type": "message.delta",
+   "content": "8"
+  },
+  {
+   "type": "message.delta",
+   "content": "**,"
+  },
+  {
+   "type": "message.delta",
+   "content": " so"
+  },
+  {
+   "type": "message.delta",
+   "content": " we"
+  },
+  {
+   "type": "message.delta",
+   "content": "'re"
+  },
+  {
+   "type": "message.delta",
+   "content": " looking"
+  },
+  {
+   "type": "message.delta",
+   "content": " at"
+  },
+  {
+   "type": "message.delta",
+   "content": " a"
+  },
+  {
+   "type": "message.delta",
+   "content": " slight"
+  },
+  {
+   "type": "message.delta",
+   "content": " decline"
+  },
+  {
+   "type": "message.delta",
+   "content": " of"
+  },
+  {
+   "type": "message.delta",
+   "content": " roughly"
+  },
+  {
+   "type": "message.delta",
+   "content": " 4"
+  },
+  {
+   "type": "message.delta",
+   "content": "-"
+  },
+  {
+   "type": "message.delta",
+   "content": "5"
+  },
+  {
+   "type": "message.delta",
+   "content": "%"
+  },
+  {
+   "type": "message.delta",
+   "content": " since"
+  },
+  {
+   "type": "message.delta",
+   "content": " 2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "2"
+  },
+  {
+   "type": "message.delta",
+   "content": "0"
+  },
+  {
+   "type": "message.delta",
+   "content": "."
+  },
+  {
+   "type": "message.delta",
+   "content": " Still"
+  },
+  {
+   "type": "message.delta",
+   "content": " a"
+  },
+  {
+   "type": "message.delta",
+   "content": " pretty"
+  },
+  {
+   "type": "message.delta",
+   "content": " size"
+  },
+  {
+   "type": "message.delta",
+   "content": "able"
+  },
+  {
+   "type": "message.delta",
+   "content": " beach"
+  },
+  {
+   "type": "message.delta",
+   "content": " town"
+  },
+  {
+   "type": "message.delta",
+   "content": " though"
+  },
+  {
+   "type": "message.delta",
+   "content": "!"
+  },
+  {
+   "type": "message.delta",
+   "content": " 🏖"
+  },
+  {
+   "type": "message.delta",
+   "content": "️"
+  },
+  {
+   "type": "message.end"
+  }
+ ]
+}

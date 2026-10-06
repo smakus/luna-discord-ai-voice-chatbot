@@ -1,0 +1,65 @@
+{
+ "recorded": null,
+ "model": "qwen/qwen3.8-27b",
+ "reconstructed": "From Luna's log of 2026-10-05 08:13 (\"how long does it take the average human to pee?\"): after the search the model's reasoning came through as answer text ending in </think>, and Luna spoke the draft, the tag, and the answer again.",
+ "question": "How long does it take the average human to pee?",
+ "reasoning": "default",
+ "search": true,
+ "events": [
+  {
+   "type": "reasoning.start"
+  },
+  {
+   "type": "reasoning.delta",
+   "content": "…"
+  },
+  {
+   "type": "reasoning.end"
+  },
+  {
+   "type": "tool_call.start"
+  },
+  {
+   "type": "tool_call.name",
+   "tool_name": "tavily_search"
+  },
+  {
+   "type": "tool_call.arguments",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "average time it takes to pee seconds study"
+   }
+  },
+  {
+   "type": "tool_call.success",
+   "tool": "tavily_search",
+   "arguments": {
+    "query": "average time it takes to pee seconds study"
+   },
+   "output": "[search results removed]"
+  },
+  {
+   "type": "message.start"
+  },
+  {
+   "type": "message.delta",
+   "content": "About 20 to 21 seconds. "
+  },
+  {
+   "type": "message.delta",
+   "content": "It sounds weird, but researchers at Georgia Tech found that any mammal over about six and a half pounds empties a full bladder in roughly 21 seconds. So yeah, you're basically in the same league as a jaguar."
+  },
+  {
+   "type": "message.delta",
+   "content": "\n</think>\n\n"
+  },
+  {
+   "type": "message.delta",
+   "content": "It sounds silly, but researchers at Georgia Tech found that pretty much any mammal over about six and a half pounds empties a full bladder in roughly 21 seconds. So you're basically in the same league as a jaguar."
+  },
+  {
+   "type": "message.end"
+  }
+ ],
+ "expectSpoken": "It sounds silly, but researchers at Georgia Tech found that pretty much any mammal over about six and a half pounds empties a full bladder in roughly 21 seconds. So you're basically in the same league as a jaguar."
+}
