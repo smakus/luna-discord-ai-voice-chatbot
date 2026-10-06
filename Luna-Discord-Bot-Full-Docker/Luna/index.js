@@ -12,6 +12,7 @@ const path = require('path');
 const { WakeWordEngine } = require('./wakeword');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
+const { takeSentences } = require('./sentences');
 const {
   stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, confirmWake, decideSilentSpeaker,
@@ -379,15 +380,8 @@ const MAX_SPEECH_MS = parseInt(process.env.MAX_SPEECH_MS || '15000', 10);
 // is fully flushed anyway and further silence is wasted inference.
 const MAX_SILENCE_FILL_MS = parseInt(process.env.MAX_SILENCE_FILL_MS || '2000', 10);
 
-// Sentence boundary regex — triggers TTS as soon as a sentence is complete
-// rather than waiting for the full LLM response.
-// The lookbehinds suppress false sentence breaks:
-//   (?<!\d)      — decimals, e.g. "$403.80"
-//   (?<!\b[A-Z]) — single-letter initials, e.g. "George W. Bush", which would
-//                  otherwise make TTS pause mid-name
-// Multi-letter abbreviations ("Mr.", "etc.") still split; add them here if they
-// become audible in practice.
-const SENTENCE_END = /(?<!\d)(?<!\b[A-Z])[.!?](?!\d)[\s"')\]]*(?:\s|$)/;
+// Sentences are split as the answer streams (sentences.js), so TTS starts on
+// the first one while the rest is still being written.
 
 // ─── Discord client ───────────────────────────────────────────────────────────
 
@@ -2160,13 +2154,9 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
             if (!delta) continue;
             buffer += delta;
 
-            let match;
-            while ((match = SENTENCE_END.exec(buffer)) !== null) {
-              const endIdx   = match.index + match[0].length;
-              const sentence = buffer.slice(0, endIdx).trim();
-              buffer = buffer.slice(endIdx);
-              if (sentence) yield sentence;
-            }
+            const split = takeSentences(buffer);
+            buffer = split.rest;
+            for (const sentence of split.sentences) yield sentence;
           }
         }
       } finally {
@@ -2202,15 +2192,9 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       }
 
       // Split into sentences and yield each one so TTS starts immediately
-      let remaining = fullText;
-      let match;
-      while ((match = SENTENCE_END.exec(remaining)) !== null) {
-        const endIdx   = match.index + match[0].length;
-        const sentence = remaining.slice(0, endIdx).trim();
-        remaining = remaining.slice(endIdx);
-        if (sentence) yield sentence;
-      }
-      if (remaining.trim()) yield remaining.trim();
+      const split = takeSentences(fullText);
+      for (const sentence of split.sentences) yield sentence;
+      if (split.rest.trim()) yield split.rest.trim();
     }
   } finally {
     clearTimeout(idleTimer);
