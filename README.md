@@ -269,7 +269,7 @@ Everything is set in `Luna/.env`. Most changes only need a container recreate (`
 | `QWEN3_TTS_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8890/v1/audio/speech` |
 | `QWEN3_TTS_VOICE` | server default (`luna`) | Any voice in the voices folder |
 | `QWEN3_TTS_STREAM` | `false` | `true` plays each sentence while it renders: no pauses, but it stutters when rendering falls behind |
-| `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.6` | Set when starting `qwen3-tts-metal.sh`. Lower temperature stays closer to the reference voice |
+| `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.3` | Set when starting `qwen3-tts-metal.sh`. Each sentence is rendered on its own; a lower temperature keeps the delivery steadier from one sentence to the next, a higher one varies it more |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 | `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |

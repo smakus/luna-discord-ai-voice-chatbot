@@ -17,8 +17,9 @@ Environment:
   QWEN3_TTS_VOICE         default voice (luna)
   QWEN3_TTS_MODEL         mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit; the
                           1.7B Base model clones more closely but is slower
-  QWEN3_TTS_TEMPERATURE   sampling temperature (0.6; lower stays closer to
-                          the reference voice)
+  QWEN3_TTS_TEMPERATURE   sampling temperature (0.3). Each sentence is
+                          rendered on its own; lower keeps the delivery
+                          steadier from one sentence to the next
   QWEN3_TTS_PORT          port (8890)
 """
 import asyncio
@@ -38,7 +39,7 @@ from pydantic import BaseModel
 VOICES_DIR = os.environ['QWEN3_TTS_VOICES_DIR']
 DEFAULT_VOICE = os.getenv('QWEN3_TTS_VOICE', 'luna')
 MODEL = os.getenv('QWEN3_TTS_MODEL', 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit')
-TEMPERATURE = float(os.getenv('QWEN3_TTS_TEMPERATURE', '0.6'))
+TEMPERATURE = float(os.getenv('QWEN3_TTS_TEMPERATURE', '0.3'))
 PORT = int(os.getenv('QWEN3_TTS_PORT', '8890'))
 
 SAMPLE_RATE = 24000
