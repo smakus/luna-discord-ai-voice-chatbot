@@ -13,6 +13,10 @@ const { WakeWordEngine } = require('./wakeword');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { takeSentences } = require('./sentences');
+const {
+  stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
+  decideWake, confirmWake, decideSilentSpeaker,
+} = require('./voice-input');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -29,12 +33,7 @@ const { takeSentences } = require('./sentences');
 //   2. stripping the phrase off the front of a transcript before it reaches
 //      the LLM or the music-command parser
 // Detection itself is the ONNX model's job.
-// The trailing \b is load-bearing: without it "lunar eclipse" matches and gets
-// mangled into "eclipse".
-const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona)\b[\s,.]*/i;
-// The same phrase anywhere in a transcript ("so anyway, hey Luna, what's…"),
-// for confirming a wake candidate (see OWW_CANDIDATE_THRESHOLD).
-const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
+// (WAKE_RE and the other voice-input stages live in voice-input.js.)
 
 // Text command to summon the bot. Deliberately NOT derived from the spoken
 // phrase — "!hey luna" would be an awkward thing to type.
@@ -302,7 +301,7 @@ const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 
 // Hard cap on a single buffered utterance. `flushing` stays true for the whole
 // LLM + TTS response, during which flushUtterance() early-returns while the
-// decoder keeps appending — without this cap, speechChunks grows for the entire
+// decoder keeps appending — without this cap, the segmenter's buffer grows for the entire
 // duration of Luna's reply (~2.9 MB per 30 s per speaker).
 // Request timeouts. Without these a hung Whisper or LM Studio call never
 // settles, `flushing` stays true forever, and that speaker goes permanently
@@ -365,7 +364,7 @@ const MAX_UTTERANCE_CHUNKS = MAX_UTTERANCE_MS / DECODER_CHUNK_MS;
 //
 // An utterance normally ends after SILENCE_MS of audio below ENERGY_THRESHOLD.
 // If the threshold sits below the room's noise floor — or Luna's own voice
-// returns through a speaker into the mic — hasEnergy() is true on every frame,
+// returns through a speaker into the mic — the energy gate is open on every frame,
 // the silence timer is reset on every frame, and the utterance never ends. That
 // speaker then buffers audio forever and is never heard again.
 const MAX_SPEECH_MS = parseInt(process.env.MAX_SPEECH_MS || '15000', 10);
@@ -697,17 +696,17 @@ function checkSilentSpeaker(userId) {
   const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
   const verdict = cryptoVerdict(voiceCryptoState(), userId);
   const why = verdict ? ` (encryption: ${verdict.text})` : '';
-  // Their audio is decrypting, so encryption is fine and a reconnect (which
-  // disrupts everyone) would not help: the audio is being lost after
-  // decryption. Restart just this speaker's capture; Discord's next
-  // "speaking" starts a fresh one.
-  if (verdict && !verdict.problem && verdict.ok > 0) {
+  const action = decideSilentSpeaker({ verdict, now: Date.now(), lastReconnectAt: lastVoiceRecoveryAt, gapMs: VOICE_RECOVER_GAP_MS });
+  if (action === 'restart-capture') {
+    // Encryption is fine, so a reconnect (which disrupts everyone) would not
+    // help: restart just this speaker's capture; Discord's next "speaking"
+    // starts a fresh one.
     console.warn(`[voice] Discord reports ${name} speaking and their audio is decrypting${why}, ` +
       'but none of it reached Luna — restarting their capture (not an encryption problem)');
     activeConnection.receiver.subscriptions.get(userId)?.destroy();
     return;
   }
-  if (Date.now() - lastVoiceRecoveryAt < VOICE_RECOVER_GAP_MS) {
+  if (action === 'wait') {
     console.warn(`[voice] still no decryptable audio from ${name}${why}; already reconnected recently, not retrying yet`);
     return;
   }
@@ -783,14 +782,6 @@ function startListening(connection, channel) {
   });
 }
 
-function hasEnergy(chunk) {
-  let sum = 0;
-  for (let i = 0; i < chunk.length - 1; i += 2) {
-    sum += Math.abs(chunk.readInt16LE(i));
-  }
-  return (sum / (chunk.length / 2)) > ENERGY_THRESHOLD;
-}
-
 // Live view of every active capture, for the health heartbeat below.
 const captureStates = new Map();
 
@@ -835,53 +826,26 @@ function continuousCapture(connection, userId, channel) {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 60000 },
   });
 
-  // Decode packet by packet, dropping only packets that cannot be decoded.
-  // This used to pipe into a prism Decoder with its errors ignored — but a
-  // Transform stream that errors is destroyed, so ONE bad packet silently and
-  // permanently deafened Luna to this speaker: their audio kept arriving and
-  // decrypting (thousands of packets) while nothing was decoded, until 60 s
-  // of total silence ended the capture. Bad packets are routine right after
-  // Luna joins or reconnects, when the encryption session is not ready yet
-  // and packets pass through still encrypted.
-  const opusDecoder = new OpusEncoder(48000, 1);
-  let undecodable = 0;
-  let undecodableLoggedAt = 0;
-  audioStream.setMaxListeners(20);
-  audioStream.on('data', packet => {
-    let pcm;
-    try {
-      pcm = opusDecoder.decode(packet);
-    } catch (_) {
-      undecodable++;
-      const now = Date.now();
-      if (now - undecodableLoggedAt >= 10000) {
-        console.warn(`[${userId}] ${undecodable} audio packet(s) could not be decoded — dropped ` +
-          '(normal for a moment while the encryption session is set up)');
-        undecodable = 0;
-        undecodableLoggedAt = now;
-      }
-      return;
-    }
-    onPcm(pcm);
-  });
-  
-  let speechChunks = [];
-  // Ring of sub-threshold frames immediately preceding speech; prepended to the
-  // utterance when the energy gate opens so word onsets are not clipped.
-  let preroll      = [];
-  let prerollMs    = 0;   // how much of the current utterance is pre-roll
-  let silenceTimer = null;
-  let speaking       = false;
-  let flushing       = false;
+  // The pipeline (see voice-input.js): packets → decoder → PCM frames, which
+  // go both to the wake-word model and to the segmenter; each utterance the
+  // segmenter cuts is gated on the wake word (flushUtterance) and, if it
+  // passes, transcribed and turned into a question (processUtterance).
+  let flushing       = false;   // an utterance of this speaker is being processed
   let flushStartedAt = 0;
   let lastDataTime   = Date.now();
+  let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
 
-  // ── openWakeWord state for this user ───────────────────────────────────────
-  // Each speaker needs an independent feature pipeline — sharing one buffer
+  const segmenter = createSegmenter({
+    energyThreshold: ENERGY_THRESHOLD,
+    prerollFrames:   PREROLL_CHUNKS,
+    frameMs:         DECODER_CHUNK_MS,
+    maxFrames:       MAX_UTTERANCE_CHUNKS,
+    silenceMs:       SILENCE_MS,
+    onSilence:       () => flushUtterance(),
+  });
+
+  // Each speaker needs an independent wake-word pipeline — sharing one buffer
   // across users would interleave their audio and corrupt every detection.
-  let lastWakeAt      = 0;
-  let speechStartedAt = 0;
-
   const wakeStream = wakeEngine
     ? wakeEngine.createStream({
         threshold:     OWW_THRESHOLD,
@@ -906,28 +870,50 @@ function continuousCapture(connection, userId, channel) {
           if (flushing) {
             console.log(`[${userId}] barge-in — cancelling the previous question`);
             interruptOwnPlayback(userId);
-            const keep = Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS);
-            if (speechChunks.length > keep) {
-              speechChunks = speechChunks.slice(-keep);
-              prerollMs = 0;
-            }
+            segmenter.keepLast(Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS));
           }
         },
       })
     : null;
+  const feedWake = wakeStream
+    ? createWakeFeeder(wakeStream, { frameMs: DECODER_CHUNK_MS, maxFillMs: MAX_SILENCE_FILL_MS })
+    : null;
+
+  const decodePacket = createPacketDecoder(new OpusEncoder(48000, 1), {
+    onPcm,
+    onUndecodable: count => console.warn(`[${userId}] ${count} audio packet(s) could not be decoded — dropped ` +
+      '(normal for a moment while the encryption session is set up)'),
+  });
+  audioStream.setMaxListeners(20);
+  audioStream.on('data', decodePacket);
 
   captureStates.set(userId, {
     wakeStream,
     get flushing() { return flushing; },
-    get buffered() { return speechChunks.length; },
+    get buffered() { return segmenter.buffered; },
     get lastData() { return lastDataTime; },
   });
+
+  function onPcm(frame) {
+    lastDataTime = Date.now();
+    noteAudio(userId);
+    // The model hears every frame, quiet ones included.
+    if (feedWake) {
+      feedWake(frame).then(score => {
+        if (OWW_DEBUG_SCORE > 0 && score !== null && score >= OWW_DEBUG_SCORE) {
+          console.log(
+            `[${userId}] [oww] score=${score.toFixed(3)} ` +
+            `gain=${wakeStream.lastGain.toFixed(1)}x rms=${Math.round(wakeStream.lastRms)}`
+          );
+        }
+      }).catch(() => {});
+    }
+    segmenter.push(frame);
+  }
 
   let blockedWarnAt = 0;
 
   function flushUtterance() {
-    silenceTimer = null;
-
     // Being blocked here is how "she only answers once" manifests: `flushing`
     // stays true while a response is in flight, and every utterance in that
     // window is refused. Normally it clears; if it does not, this is the only
@@ -944,12 +930,10 @@ function continuousCapture(connection, userId, channel) {
       return;
     }
 
-    if (speechChunks.length === 0) return;
+    if (segmenter.buffered === 0) return;
     flushing = true;
     flushStartedAt = Date.now();
-    const pcm = Buffer.concat(speechChunks);
-    speechChunks = [];
-    speaking     = false;
+    const { pcm, durationMs, speechMs, speechStartedAt } = segmenter.take();
 
     // Consume the detection up front. Every exit path below must leave
     // lastWakeAt disarmed, otherwise a detection that was dropped by an early
@@ -958,18 +942,11 @@ function continuousCapture(connection, userId, channel) {
     const wakeAt = lastWakeAt;
     lastWakeAt = 0;
 
-    const durationMs = (pcm.length / 2 / 48000) * 1000;
-
-    // Measure the MIN_SPEECH_MS gate against actual speech, not against speech
-    // plus pre-roll. Otherwise adding PREROLL_MS of lead-in would quietly
-    // lower the effective minimum by the same amount and let short noise
-    // bursts through as utterances.
-    const speechMs = durationMs - prerollMs;
-    prerollMs = 0;
-
+    // MIN_SPEECH_MS is measured against speech, not speech plus lead-in, or
+    // the lead-in would quietly lower it and let short noise bursts through.
     if (speechMs < MIN_SPEECH_MS) {
-      // Too short to transcribe, but the detector sees all audio while
-      // speechChunks only sees chunks above ENERGY_THRESHOLD. A quiet speaker
+      // Too short to transcribe, but the detector sees all audio while the
+      // segmenter only keeps frames above ENERGY_THRESHOLD. A quiet speaker
       // can trip the model without clearing the energy gate — re-arm rather
       // than burning the detection and rejecting the query that follows.
       lastWakeAt = wakeAt;
@@ -977,40 +954,28 @@ function continuousCapture(connection, userId, channel) {
       return;
     }
 
-    // ── The gate ─────────────────────────────────────────────────────────────
-    // Two-sided window. The detection must have landed inside this utterance —
-    // allowing OWW_GRACE_MS of lead-in, since the model fires the moment the
-    // wake word completes, which can precede the energy gate opening — and it
-    // must not be stale relative to the audio we are about to send.
-    let wakeDetected = false;
-    let wakeCandidate = false;
+    let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
     if (wakeStream) {
       const now = Date.now();
-      // Discord stops sending Opus packets during silence, so buffered
-      // duration can lag wall-clock. Measure staleness against whichever is
-      // longer, or a hesitant speaker's valid wake word gets rejected.
-      const span = Math.max(durationMs, now - speechStartedAt);
-      wakeDetected =
-        wakeAt > 0 &&
-        wakeAt >= speechStartedAt - OWW_GRACE_MS &&
-        now - wakeAt <= span + OWW_GRACE_MS;
-      const peak = wakeDetected ? 0 : wakeStream.takePeak();
-      if (!wakeDetected && OWW_CANDIDATE_THRESHOLD > 0 && peak >= OWW_CANDIDATE_THRESHOLD) {
-        // Probably "hey Luna" run into the question; Whisper decides.
-        wakeCandidate = true;
+      // The peak is read (and reset) once per utterance, whatever the verdict,
+      // so a good score cannot leak into a later utterance.
+      const peak = wakeStream.takePeak();
+      const decision = decideWake({ wakeAt, speechStartedAt, now, durationMs, peak,
+        graceMs: OWW_GRACE_MS, candidateThreshold: OWW_CANDIDATE_THRESHOLD });
+      verdict = decision.verdict;
+      if (verdict === 'candidate') {
         console.log(`[${userId}] [oww] wake candidate (peak score ${peak.toFixed(3)}, ` +
           `threshold ${OWW_THRESHOLD}) — transcribing to confirm`);
-      } else if (!wakeDetected) {
-        // Report the model's best score across the discarded utterance.
-        // If you spoke the wake word and this reads 0.2x, the threshold is
-        // too high. If it reads 0.00x, the model did not react to your voice
-        // at all and no threshold will help.
+      } else if (verdict === 'discard') {
+        // The model's best score across the discarded utterance. If you spoke
+        // the wake word and this reads 0.2x, the threshold is too high. If it
+        // reads 0.00x, the model did not react to your voice at all and no
+        // threshold will help.
         console.log(
           `[${userId}] utterance discarded — no wake word ` +
           `(${Math.round(durationMs)}ms, peak score ${peak.toFixed(3)}, ` +
           `threshold ${OWW_THRESHOLD})`
         );
-
         // A detection that exists but fails the window check is the single
         // most confusing failure mode — the user said the wake word, saw it
         // logged, and got nothing. Say why. (Silence when wakeAt === 0 is
@@ -1019,7 +984,7 @@ function continuousCapture(connection, userId, channel) {
           console.warn(
             `[${userId}] DISCARDED despite detection — ` +
             `wake was ${now - wakeAt}ms ago, speech began ${now - speechStartedAt}ms ago, ` +
-            `utterance ${Math.round(durationMs)}ms, span ${Math.round(span)}ms. ` +
+            `utterance ${Math.round(durationMs)}ms, span ${Math.round(decision.span)}ms. ` +
             'Raise OWW_GRACE_MS if this looks wrong.'
           );
         }
@@ -1028,110 +993,37 @@ function continuousCapture(connection, userId, channel) {
       }
     }
 
-    // Consume the peak on success too, so a good score cannot leak forward and
-    // be reported against (or make a candidate of) a later utterance.
-    if (wakeStream && wakeDetected) wakeStream.takePeak();
-
     console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, wakeDetected, wakeCandidate)
+    processUtterance(pcm, userId, connection, channel, wakeStream ? verdict === 'detected' : false, verdict === 'candidate')
       .finally(() => { flushing = false; });
   }
 
-  let lastChunkAt = 0;
-
-  function onPcm(chunk) {
-    const chunkAt = Date.now();
-    lastDataTime = chunkAt;
-    noteAudio(userId);
-
-    // Feed the detector every frame we receive, including low-energy ones.
-    if (wakeStream) {
-      // Re-insert any silence Discord dropped, so the detector's timeline
-      // matches wall-clock. Without this a pause inside the wake phrase is
-      // spliced out and the phrase becomes unrecognisable.
-      if (lastChunkAt) {
-        const gapMs = chunkAt - lastChunkAt - DECODER_CHUNK_MS;
-        if (gapMs > DECODER_CHUNK_MS) {
-          const fillMs  = Math.min(gapMs, MAX_SILENCE_FILL_MS);
-          const samples = Math.floor((fillMs / 1000) * 48000);
-          if (samples > 0) {
-            // Buffer.alloc zero-fills — silent 16-bit PCM.
-            wakeStream.write(Buffer.alloc(samples * 2)).catch(() => {});
-          }
-        }
-      }
-      lastChunkAt = chunkAt;
-    }
-
-    if (wakeStream) {
-      wakeStream.write(chunk).then(score => {
-        if (OWW_DEBUG_SCORE > 0 && score !== null && score >= OWW_DEBUG_SCORE) {
-          console.log(
-            `[${userId}] [oww] score=${score.toFixed(3)} ` +
-            `gain=${wakeStream.lastGain.toFixed(1)}x rms=${Math.round(wakeStream.lastRms)}`
-          );
-        }
-      }).catch(() => {});
-    }
-
-    if (hasEnergy(chunk)) {
-     if (!speaking) {
-        speechStartedAt = Date.now();
-        // Prepend the quiet lead-in. speechStartedAt deliberately still marks
-        // the energy onset, not the start of the pre-roll: the wake-word window
-        // check is calibrated against it, and moving it would shift the gate.
-        if (preroll.length) {
-          prerollMs = preroll.length * DECODER_CHUNK_MS;
-          for (const c of preroll) speechChunks.push(c);
-          preroll = [];
-        }
-      }
-      speaking = true;
-      speechChunks.push(chunk);
-      if (silenceTimer) clearTimeout(silenceTimer);
-      silenceTimer = setTimeout(flushUtterance, SILENCE_MS);
-   } else if (speaking) {
-      speechChunks.push(chunk);
-    } else if (PREROLL_CHUNKS > 0) {
-      preroll.push(chunk);
-      if (preroll.length > PREROLL_CHUNKS) preroll.shift();
-    }
-
-    // Drop the oldest audio rather than growing without bound.
-    while (speechChunks.length > MAX_UTTERANCE_CHUNKS) speechChunks.shift();
-  }
-
-  // Discord stops sending Opus packets when truly silent — track real time elapsed
-  // and flush if we've been speaking and no data arrives for SILENCE_MS
+  // Discord stops sending packets during true silence, so the segmenter's
+  // silence timer alone can miss the end of speech. Every 100 ms:
   const dataWatchdog = setInterval(() => {
-    if (speaking && Date.now() - lastDataTime > SILENCE_MS) {
+    // …no data for SILENCE_MS while speaking ends the utterance;
+    if (segmenter.speaking && Date.now() - lastDataTime > SILENCE_MS) {
       flushUtterance();
     }
 
-    // Backstop for an utterance that never sees a silence gap.
-    if (speaking && Date.now() - speechStartedAt > MAX_SPEECH_MS) {
+    // …an utterance that never sees a silence gap is cut off;
+    if (segmenter.speaking && Date.now() - segmenter.speechStartedAt > MAX_SPEECH_MS) {
       console.warn(
         `[${userId}] ${Math.round(MAX_SPEECH_MS / 1000)}s of continuous speech with no ` +
         'silence gap — forcing flush. ENERGY_THRESHOLD is likely below your background ' +
         'noise floor, or Luna is hearing herself through your speakers.'
       );
-      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+      segmenter.stopSilenceTimer();
       flushUtterance();
-
       // If the flush was refused — already flushing, or nothing buffered —
       // reset anyway so this does not re-fire every 100 ms.
-      if (speaking) {
-        speaking = false;
-        speechChunks = [];
-        preroll = [];
-        prerollMs = 0;
-      }
+      if (segmenter.speaking) segmenter.abandon();
     }
 
-    // `flushing` gates every subsequent utterance from this user, and it is
-    // cleared in processUtterance's .finally(). If a Whisper or LM Studio call
-    // never settles, it stays true forever and this user goes permanently
-    // deaf with no error logged. Self-heal, and say so loudly.
+    // …and a request that never returns releases this speaker. `flushing` is
+    // cleared in processUtterance's .finally(); if a Whisper or LM Studio call
+    // never settles it stays true forever and this user goes permanently deaf
+    // with no error logged. Self-heal, and say so loudly.
     if (flushing && Date.now() - flushStartedAt > STUCK_FLUSH_MS) {
       console.error(
         `[${userId}] flush stuck for ${Math.round((Date.now() - flushStartedAt) / 1000)}s ` +
@@ -1146,10 +1038,10 @@ function continuousCapture(connection, userId, channel) {
     }
   }, 100);
 
-    audioStream.once('close', () => {
+  audioStream.once('close', () => {
     console.log(`[${userId}] capture stream closed — will resume on next speech`);
     clearInterval(dataWatchdog);
-    if (silenceTimer) clearTimeout(silenceTimer);
+    segmenter.close();
     if (wakeStream) {
       userGainState.set(userId, wakeStream.exportGainState());
       wakeStream.close();
@@ -1162,7 +1054,7 @@ function continuousCapture(connection, userId, channel) {
   audioStream.once('error', err => {
     console.error(`[${userId}] capture stream error:`, err);
     clearInterval(dataWatchdog);
-    if (silenceTimer) clearTimeout(silenceTimer);
+    segmenter.close();
     if (wakeStream) wakeStream.close();
     captureStates.delete(userId);
     listeningUsers.delete(userId);
@@ -1372,29 +1264,18 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
 
     if (!transcript) return;
 
-    let query;
-    if (wakeCandidate) {
-      // The model was unsure, so the transcript decides — anywhere in it, and
-      // the question is what follows the wake phrase.
-      const match = WAKE_ANYWHERE_RE.exec(transcript);
-      if (!match) {
-        console.log(`[${userId}] [oww] wake candidate rejected — no "Luna" in the transcript ` +
+    // The question: the wake phrase removed, or nothing if a candidate turns
+    // out to have no "Luna" in it (see confirmWake in voice-input.js).
+    const confirmed = confirmWake(transcript, { detected: wakeDetected, candidate: wakeCandidate });
+    if (!confirmed.accepted) {
+      if (wakeCandidate) {
+        console.log(`[${userId}] [oww] wake candidate rejected — ${confirmed.reason} ` +
           `(${transcript.split(/\s+/).length} words)`);
-        return;
       }
-      console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
-      query = transcript.slice(match.index + match[0].length).trim() || transcript;
-    } else {
-      // When the ONNX model already confirmed the wake word on the raw audio,
-      // do not re-check the transcript — Whisper frequently mangles or drops a
-      // leading wake word, and rejecting on that would discard valid queries.
-      if (!wakeDetected && !WAKE_RE.test(transcript)) return;
-
-      // Strip the wake phrase so the LLM gets a clean query. Falls back to the
-      // raw transcript when the phrase was the whole utterance (a bare "hey
-      // Luna"), so that still reaches the LLM as a greeting rather than "".
-      query = stripWakeWord(transcript) || transcript;
+      return;
     }
+    if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
+    const query = confirmed.query;
 
     console.log(`[${userId}] Query:`, query);
     await handleQuery(query, connection, channel, t0, userId);
@@ -1546,13 +1427,6 @@ function needsWebSearch(query) {
   if (SEARCH_YEAR_RE.test(lower)) return true;
   if (SEARCH_KEYWORDS.some(k => lower.includes(k))) return true;
   return TEMPORAL.some(t => lower.includes(t)) && TOPICAL.some(t => lower.includes(t));
-}
-
-// Removes a leading wake word if Whisper transcribed one. With openWakeWord
-// gating the transcript often has no wake word at all (the model already
-// consumed it on the audio), so this must degrade gracefully to a no-op.
-function stripWakeWord(query) {
-  return query.replace(WAKE_RE, '').trim();
 }
 
 // ─── Smakbot commands ─────────────────────────────────────────────────────────
