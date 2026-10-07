@@ -16,37 +16,40 @@ const SMALL = {
 };
 const SCALE = { hundred: 100, thousand: 1000, million: 1e6, billion: 1e9 };
 
-// "two hundred and six bones" → "206 bones", "three hundred eighty-four
-// thousand" → "384000". Answers are written for speech, so numbers often come
-// spelled out. "and" counts as part of a number only between number words.
+// "two hundred and six bones" → "206 bones", "four thousand, one hundred and
+// eighty-nine dollars" → "4189 dollars". Answers are written for speech, so
+// numbers often come spelled out. Numbers side by side stay apart ("between
+// twenty and thirty", "twenty thirty"): "and" or a comma joins only after
+// hundred, thousand, million or billion.
 function wordsToDigits(text) {
-  const tokens = text.split(/(\s+|-)/);
+  const tokens = text.split(/([a-z]+)/i);   // words at odd indexes, what lies between them at even
   const out = [];
-  let total = 0, current = 0, inNumber = false, pending = [];
-  const flush = () => {
+  let total = 0, current = 0, inNumber = false, afterScale = false, gap = [];
+  const end = () => {
     if (inNumber) out.push(String(total + current));
-    out.push(...pending);
-    total = 0; current = 0; inNumber = false; pending = [];
+    out.push(...gap);
+    total = 0; current = 0; inNumber = false; afterScale = false; gap = [];
   };
-  for (const token of tokens) {
-    if (token === '') continue;
-    const word = token.toLowerCase();
-    if (inNumber && (/^(\s+|-)$/.test(token) || word === 'and')) { pending.push(token); continue; }
-    if (word in SMALL) {
-      current += SMALL[word]; inNumber = true;
-      pending = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i], word = token.toLowerCase();
+    if (i % 2 === 0) {
+      if (inNumber && (/^[\s-]*$/.test(token) || afterScale && /^,\s*$/.test(token))) gap.push(token);
+      else { end(); out.push(token); }
+    } else if (inNumber && afterScale && word === 'and') {
+      gap.push(token);
+    } else if (word in SMALL) {
+      const value = SMALL[word];
+      if (inNumber && !afterScale && (value >= 10 ? current % 100 !== 0 : current % 10 !== 0)) end();
+      current += value; inNumber = true; afterScale = false; gap = [];
     } else if (word in SCALE && inNumber) {
       if (SCALE[word] === 100) current *= 100;
       else { total += current * SCALE[word]; current = 0; }
-      pending = [];
+      afterScale = true; gap = [];
     } else {
-      // A trailing "and"/space belongs to the text after the number.
-      const kept = pending; pending = [];
-      if (inNumber) { out.push(String(total + current)); total = 0; current = 0; inNumber = false; }
-      out.push(...kept, token);
+      end(); out.push(token);
     }
   }
-  flush();
+  end();
   return out.join('');
 }
 
@@ -106,6 +109,18 @@ function rate(values) {
   return v.length ? v.filter(Boolean).length / v.length : null;
 }
 
+// The checks for one answer. Kept apart from the timings so report.js can
+// re-score saved answers after a fix here or in questions.json.
+function scoreRun(run, question, { timeZone = 'UTC', now = new Date() } = {}) {
+  const answer = run.answer || '';
+  return {
+    correct: run.error ? false : isCorrect(answer, question?.expect, { timeZone, now }),
+    searchOk: run.error ? false : searchOk((run.searches?.length ?? 0) > 0, question?.search),
+    voiceIssues: run.error ? ['error'] : voiceIssues(answer),
+    words: wordCount(answer),
+  };
+}
+
 // A run counts as right when its answer matches the key and the search rule
 // was kept; null when the question checks neither (opinions, small talk).
 function isRight(run) {
@@ -151,4 +166,4 @@ function summarize(runs, ratingOf = () => undefined) {
   return summary;
 }
 
-module.exports = { wordsToDigits, weekday, isCorrect, searchOk, voiceIssues, wordCount, median, mean, rate, isRight, summarize, LONG_WORDS };
+module.exports = { wordsToDigits, weekday, isCorrect, searchOk, voiceIssues, wordCount, median, mean, rate, scoreRun, isRight, summarize, LONG_WORDS };

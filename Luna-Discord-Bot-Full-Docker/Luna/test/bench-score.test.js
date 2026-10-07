@@ -16,6 +16,10 @@ describe('spoken numbers', () => {
     ['one hundred twenty-eight ounces', '128 ounces'],
     ['nothing to see', 'nothing to see'],
     ['twenty-one seconds.', '21 seconds.'],
+    ['it is four!', 'it is 4!'],
+    ['between twenty and thirty seconds', 'between 20 and 30 seconds'],
+    ['four thousand, one hundred and eighty-nine dollars', '4189 dollars'],
+    ['two thousand, which is a lot', '2000, which is a lot'],
   ];
   for (const [spoken, digits] of cases) it(`"${spoken}"`, () => assert.strictEqual(wordsToDigits(spoken), digits));
 });

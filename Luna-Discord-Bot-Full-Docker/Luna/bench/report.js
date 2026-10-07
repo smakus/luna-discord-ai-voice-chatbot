@@ -19,7 +19,7 @@
 //                over questions), and the change in accuracy
 
 const { loadResults, ratingKey, RATINGS } = require('./results');
-const { summarize } = require('./score');
+const { summarize, scoreRun } = require('./score');
 const fs = require('fs'), path = require('path');
 
 function main() {
@@ -27,6 +27,13 @@ function main() {
   const all = argv.includes('--all');
   const results = loadResults(argv.filter(a => a !== '--all'));
   const ratings = fs.existsSync(RATINGS) ? JSON.parse(fs.readFileSync(RATINGS, 'utf8')) : {};
+  // Saved answers are scored again, so a fix to the scoring or the answer
+  // keys applies to earlier runs too.
+  const { questions } = JSON.parse(fs.readFileSync(path.join(__dirname, 'questions.json'), 'utf8'));
+  const byId = new Map(questions.map(q => [q.id, q]));
+  for (const r of results) {
+    for (const run of r.runs) Object.assign(run, scoreRun(run, byId.get(run.id), { timeZone: r.timeZone, now: new Date(run.at ?? r.startedAt) }));
+  }
   const ratingOf = run => run.answer ? ratings[ratingKey(run.id, run.answer)] : undefined;
 
   // Latest result per model, unless --all.
@@ -68,7 +75,6 @@ function main() {
   const line = row => '| ' + row.map((c, i) => String(c).padEnd(widths[i])).join(' | ') + ' |';
   console.log([line(rows[0]), '|' + widths.map(w => '-'.repeat(w + 2)).join('|') + '|', ...rows.slice(1).map(line)].join('\n'));
   console.log(problems.join('\n'));
-  const { questions } = JSON.parse(fs.readFileSync(path.join(__dirname, 'questions.json'), 'utf8'));
   const personal = new Set(questions.filter(q => q.personality).map(q => q.id));
   const unrated = [...byModel.values()].some(r => r.runs.some(run => personal.has(run.id) && run.answer && !run.error && ratingOf(run) === undefined));
   if (unrated) console.log('\nSome answers have no personality rating yet — node bench/rate.js');
