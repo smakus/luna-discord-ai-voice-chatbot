@@ -156,13 +156,13 @@ Kokoro is the default. There are three alternatives: Chatterbox Turbo, a local e
 ./scripts/chatterbox-metal.sh
 ```
 
-The first run creates a venv in `~/.luna/chatterbox-venv` and downloads the model (about 0.7 GB). Then set this in `.env` and recreate Luna:
+The first run creates a venv in `~/.luna/chatterbox-venv` and downloads the model (about 3 GB). Then set this in `.env` and recreate Luna:
 
 ```env
 TTS_PROVIDER=chatterbox
 ```
 
-- **Speed:** about 4× faster than real time, even while a Gemma-class LLM generates on the same GPU. Sentences are rendered whole before playing (`CHATTERBOX_STREAM=false`), which is quick enough that the next one is usually ready before the current one ends.
+- **Speed and memory:** about 2.7× faster than real time, even while a Gemma-class LLM generates on the same GPU, using about 4.2 GB of GPU memory. `CHATTERBOX_MODEL=mlx-community/chatterbox-turbo-8bit` is faster (4.5×) and needs 2.5 GB, but sounds rougher. Sentences are rendered whole before playing (`CHATTERBOX_STREAM=false`), which is quick enough that the next one is usually ready before the current one ends.
 - **Voices:** `default` is the voice built into the model. Any `<name>.wav` in `~/.luna/chatterbox-voices` (10–20 seconds of clear speech by one speaker, no transcript needed) is a clone; pick one with `CHATTERBOX_VOICE`. `curl localhost:8891/health` lists the voices and tags.
 - **Tags it doesn't know** are dropped before it speaks; ElevenLabs spellings such as `[laughs]` or `[whispers]` are mapped to its own.
 - **Fallback:** Kokoro still covers for it, with tags removed.
@@ -305,7 +305,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `CHATTERBOX_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8891/v1/audio/speech` |
 | `CHATTERBOX_VOICE` | server default (`default`) | `default` is the built-in voice; any other name is a clone in the voices folder |
 | `CHATTERBOX_STREAM` | `false` | `true` plays each sentence while it renders |
-| `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-8bit` / `1.1` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too). A higher temperature sounds livelier; 1.1 was preferred by ear over 0.8 and 1.0 |
+| `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-fp16` / `1.1` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too). A higher temperature sounds livelier; 1.1 was preferred by ear over 0.8 and 1.0 |
 | `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.3` | Set when starting `qwen3-tts-metal.sh`. Each sentence is rendered on its own; a lower temperature keeps the delivery steadier from one sentence to the next, a higher one varies it more |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |

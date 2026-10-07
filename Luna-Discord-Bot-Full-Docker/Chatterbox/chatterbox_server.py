@@ -13,13 +13,16 @@ Voices:
   <name>        a clone of <name>.wav in CHATTERBOX_VOICES_DIR: 10-20 s of
                 clear speech by one speaker (no transcript needed)
 
-Runs on Apple Silicon through MLX, about 4x faster than real time next to a
+Runs on Apple Silicon through MLX, about 2.7x faster than real time next to a
 Gemma-class LLM; start it with scripts/chatterbox-metal.sh.
 
 Environment:
   CHATTERBOX_VOICES_DIR    folder of <name>.wav clones (optional)
   CHATTERBOX_VOICE         default voice (default)
-  CHATTERBOX_MODEL         mlx-community/chatterbox-turbo-8bit
+  CHATTERBOX_MODEL         mlx-community/chatterbox-turbo-fp16: full precision,
+                           which sounds cleaner than -8bit (less rough), at
+                           ~4.2 GB of GPU memory instead of 2.5 and 2.7x real
+                           time instead of 4.5x
   CHATTERBOX_TEMPERATURE   sampling temperature (1.1). Higher is livelier;
                            chosen by ear over 0.8 (the model's default) and 1.0
   CHATTERBOX_PORT          port (8891)
@@ -49,7 +52,7 @@ def keep_known_tags(text: str) -> str:
 
 class ChatterboxEngine:
     name = 'chatterbox'
-    model = os.getenv('CHATTERBOX_MODEL', 'mlx-community/chatterbox-turbo-8bit')
+    model = os.getenv('CHATTERBOX_MODEL', 'mlx-community/chatterbox-turbo-fp16')
     default_voice = os.getenv('CHATTERBOX_VOICE', BUILTIN)
     sample_rate = 24000
     tags = TAGS
