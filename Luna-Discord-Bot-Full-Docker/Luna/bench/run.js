@@ -16,7 +16,7 @@
 const fs = require('fs'), path = require('path'), util = require('util');
 const { loadConfig } = require('../config');
 const { systemPrompt } = require('../prompt');
-const { isCorrect, searchOk, voiceIssues, wordCount } = require('./score');
+const { scoreRun } = require('./score');
 
 const LIMIT_MS = 240_000;   // per answer
 const RESULTS = path.join(__dirname, 'results');
@@ -36,9 +36,9 @@ function parseArgs(argv) {
 }
 
 // What LM Studio is sent for each mode, best first. Models differ: Gemma
-// takes only on/off, others want a level, and a model that cannot reason
-// rejects the setting altogether (null = leave it out).
-const REASONING_VALUES = { off: ['off', null], on: ['on', 'medium'] };
+// takes only on/off, others want a level, and some (Nemotron) reject the
+// setting altogether (null = leave it out, the model's default).
+const REASONING_VALUES = { off: ['off', null], on: ['on', 'medium', null] };
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -74,8 +74,10 @@ async function main() {
     for (const value of REASONING_VALUES[mode]) {
       const res = await ask('hi', value);
       if (res.error) { modes[mode].error = res.error; continue; }
-      // Left out, the setting is the model's default — which isn't "off" if it reasons.
-      if (value === null && (res.reasoning_tokens > 0 || res.reasoning_s > 0)) { modes[mode].error = 'the model always reasons'; continue; }
+      // Left out, the setting is the model's default: "off" only if it doesn't
+      // reason, "on" only if it does.
+      const reasoned = res.reasoning_tokens > 0 || res.reasoning_s > 0;
+      if (value === null && reasoned !== (mode === 'on')) { modes[mode].error = reasoned ? 'the model always reasons' : 'the model never reasons'; continue; }
       modes[mode] = { supported: true, value }; break;
     }
     console.log(`reasoning ${mode}: ` + (modes[mode].supported ? `sent as ${modes[mode].value ? `"${modes[mode].value}"` : 'nothing (model default)'}` : `not supported (${modes[mode].error})`));
@@ -99,14 +101,9 @@ async function main() {
     for (const q of chosen) {
       for (const mode of usable) {
         const res = await ask(q.q, modes[mode].value);
-        const answer = res.answer || '';
-        const run = {
-          id: q.id, kind: q.kind, mode, take, ...res,
-          correct: res.error ? false : isCorrect(answer, q.expect, { timeZone, now: new Date() }),
-          searchOk: res.error ? false : searchOk(res.searches.length > 0, q.search),
-          voiceIssues: res.error ? ['error'] : voiceIssues(answer),
-          words: wordCount(answer),
-        };
+        const at = new Date();
+        const run = { id: q.id, kind: q.kind, mode, take, at: at.toISOString(), ...res };
+        Object.assign(run, scoreRun(run, q, { timeZone, now: at }));
         result.runs.push(run);
         fs.writeFileSync(file, JSON.stringify(result, null, 1));
         const marks = [run.correct === false && 'WRONG', run.searchOk === false && (q.search === 'required' ? 'NO SEARCH' : 'SEARCHED'),

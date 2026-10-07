@@ -16,6 +16,10 @@ describe('spoken numbers', () => {
     ['one hundred twenty-eight ounces', '128 ounces'],
     ['nothing to see', 'nothing to see'],
     ['twenty-one seconds.', '21 seconds.'],
+    ['it is four!', 'it is 4!'],
+    ['between twenty and thirty seconds', 'between 20 and 30 seconds'],
+    ['four thousand, one hundred and eighty-nine dollars', '4189 dollars'],
+    ['two thousand, which is a lot', '2000, which is a lot'],
   ];
   for (const [spoken, digits] of cases) it(`"${spoken}"`, () => assert.strictEqual(wordsToDigits(spoken), digits));
 });
@@ -29,6 +33,7 @@ describe('answer key', () => {
     assert.strictEqual(isCorrect('Around 300 bones.', q('bones')), false);
     assert.strictEqual(isCorrect('It fell in nineteen eighty-nine.', q('berlin-wall')), true);
     assert.strictEqual(isCorrect('About 384,400 kilometers away.', q('moon')), true);
+    assert.strictEqual(isCorrect('On average about 384 000 km away.', q('moon')), true);
     assert.strictEqual(isCorrect('Roughly two hundred thirty-nine thousand miles.', q('moon')), true);
     assert.strictEqual(isCorrect('That comes to twelve dollars and sixty cents.', q('tip')), true);
     assert.strictEqual(isCorrect('A tip of $12.60.', q('tip')), true);

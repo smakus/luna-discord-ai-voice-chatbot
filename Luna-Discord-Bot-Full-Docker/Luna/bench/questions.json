@@ -11,7 +11,7 @@
     { "id": "australia", "kind": "fact", "q": "what's the capital of Australia?", "expect": ["canberra"] },
     { "id": "pride-prejudice", "kind": "fact", "q": "who wrote Pride and Prejudice?", "expect": ["austen"] },
     { "id": "berlin-wall", "kind": "fact", "q": "what year did the Berlin Wall fall?", "expect": ["\\b1989\\b", "nineteen eighty[- ]nine"] },
-    { "id": "moon", "kind": "fact", "q": "how far away is the moon?", "expect": ["\\b(38\\d|23\\d)(,?\\d{3}| thousand)\\b"] },
+    { "id": "moon", "kind": "fact", "q": "how far away is the moon?", "expect": ["\\b(38\\d|23\\d)([,\\s]?\\d{3}| thousand)\\b"] },
     { "id": "pee", "kind": "fact", "q": "how long does it take the average human to pee?", "expect": ["\\b(2[0-3]|about 20)\\b[^.]*second"] },
 
     { "id": "tip", "kind": "math", "q": "what's a fifteen percent tip on eighty four dollars?", "expect": ["\\b12\\.60?\\b", "\\b12 dollars,? and 60 cents\\b", "\\b12 60\\b"], "search": "forbidden" },
