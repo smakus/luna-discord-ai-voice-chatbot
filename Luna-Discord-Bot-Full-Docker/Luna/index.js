@@ -14,6 +14,7 @@ const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { takeSentences } = require('./sentences');
+const { systemPrompt, SEARCH_PROMPT, QUICK_PROMPT } = require('./prompt');
 const {
   stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, confirmWake, decideSilentSpeaker,
@@ -177,26 +178,8 @@ function nextWhisperUrl() {
   return url;
 }
 const LM_STUDIO_URL = config.LM_STUDIO_URL;
-// Luna's character is set in .env: LM_PERSONALITY is how she is described
-// ("a fun, bubbly and helpful voice assistant"), LM_CONCISE asks for short
-// answers. The rest — the wake phrase, speakable text, the search tool — is
-// what she needs to work, so it stays here.
-const LM_SYSTEM_PROMPT =
-  `You are Luna, a ${config.LM_PERSONALITY} voice assistant in a Discord voice channel. ` +
-  'The user addresses you by saying "hey Luna" at the start of their message. ' +
-  'This prefix is usually stripped before the message reaches you, but may ' +
-  'sometimes remain — either way, ignore it and respond only to the rest. ' +
-  `Keep responses ${config.LM_CONCISE ? 'concise and ' : ''}` +
-  'conversational — no markdown, no bullet points, no emojis, just natural spoken ' +
-  'sentences. Do not ask follow-up questions unless necessary for data. You have ' +
-  'access to the internet via a web search tool and should use it whenever asked ' +
-  'about current events, prices, weather, news, scores, or anything time-sensitive.';
 
-// Today's date, for the system prompt. The model otherwise guesses: it has
-// searched for "today" as June 2026 in October, and called October "a December
-// day". Date only, not the time, on purpose: LM Studio reuses its cached copy
-// of an identical prompt prefix, and a clock in the prompt would change it on
-// every request. LUNA_TIMEZONE (an IANA name) decides what "today" is;
+// The time zone of "today" in the system prompt (see prompt.js). An IANA name;
 // containers run in UTC, which turns evenings in the Americas into tomorrow.
 const LUNA_TIMEZONE = (() => {
   const tz = config.LUNA_TIMEZONE;
@@ -204,12 +187,6 @@ const LUNA_TIMEZONE = (() => {
   catch { console.warn(`LUNA_TIMEZONE="${tz}" is not a valid time zone — using UTC`); return 'UTC'; }
 })();
 
-function todayLine() {
-  const date = new Intl.DateTimeFormat('en-US', {
-    timeZone: LUNA_TIMEZONE, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  }).format(new Date());
-  return `Today is ${date} (${LUNA_TIMEZONE} time).`;
-}
 
   // Optional personality line, injected on a fraction of requests. Keep the base
 // prompt above free of "sometimes"/"occasionally" instructions — see below.
@@ -1864,21 +1841,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
-// Added to the system prompt whenever the search tool is offered and Luna's
-// own heads-up is on. Luna announces the search the moment it starts; the
-// model's own "I need to look that up for you" duplicated it, and — counting
-// as the answer starting — silenced the "still thinking" fillers for the whole
-// search that followed.
-const SEARCH_PROMPT =
-  "When you search the web, the user is told automatically, so never say that " +
-  "you will search or look anything up; once you have the information, just answer.";
 
-// Added to the system prompt of a quick-answer (reasoning off) retry. Without
-// reasoning, the model's planning ends up in the answer — "Keep it natural,
-// conversational, no markdown." was read out loud.
-const QUICK_PROMPT =
-  "Reply with only the words you will say out loud: no planning, no notes to " +
-  "yourself, and no drafts in quotation marks.";
 
 // Search results from tool_call.success events, condensed for a quick-answer
 // retry: each result's title and snippet (never raw page content), deduplicated,
@@ -1983,18 +1946,12 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // "occasionally" reliably becomes "every single time". Deciding here — and
   // simply omitting the line most of the time — is the only way to get a rate
   // that is actually a rate.
-  const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE
-    ? ' ' + LM_FLAVOR_PROMPT
-    : '';
+  const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = expressivePrompt();
-  // Stable parts first and the occasional flavor line last, so the cached
-  // prefix LM Studio can reuse stays as long as possible.
-  body.system_prompt = LM_SYSTEM_PROMPT + ' ' + todayLine() +
-    (expressive ? ' ' + expressive : '') +
-    (useSearch && ANNOUNCE_SEARCH ? ' ' + SEARCH_PROMPT : '') +
-    (extraSystem ? ' ' + extraSystem : '') + flavor;
+  body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
+    search: useSearch && ANNOUNCE_SEARCH, extra: extraSystem, flavor });
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;

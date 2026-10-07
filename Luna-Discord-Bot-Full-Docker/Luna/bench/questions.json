@@ -1,0 +1,31 @@
+{
+  "_about": "Luna's LLM benchmark questions (see README → Development → LLM benchmark). kind: chat | fact | math | search | opinion | wake | date. expect: regexes (case-insensitive), any one must match the answer — tried against the answer as spoken and with number words turned into digits. \"$weekday\" stands for today's weekday. search: required | forbidden (left out = the model decides). personality: rated by bench/rate.js.",
+  "questions": [
+    { "id": "how-are-you", "kind": "chat", "q": "how are you doing today?", "personality": true },
+    { "id": "joke", "kind": "chat", "q": "tell me a joke", "personality": true },
+    { "id": "rough-day", "kind": "chat", "q": "I had a really rough day at work", "personality": true },
+    { "id": "favorite-food", "kind": "chat", "q": "what's your favorite food?", "personality": true },
+    { "id": "say-hi-sam", "kind": "chat", "q": "Sam just got back from vacation, say hi to him!", "expect": ["\\bsam\\b"], "personality": true },
+
+    { "id": "bones", "kind": "fact", "q": "how many bones are in the adult human body?", "expect": ["\\b206\\b"] },
+    { "id": "australia", "kind": "fact", "q": "what's the capital of Australia?", "expect": ["canberra"] },
+    { "id": "pride-prejudice", "kind": "fact", "q": "who wrote Pride and Prejudice?", "expect": ["austen"] },
+    { "id": "berlin-wall", "kind": "fact", "q": "what year did the Berlin Wall fall?", "expect": ["\\b1989\\b", "nineteen eighty[- ]nine"] },
+    { "id": "moon", "kind": "fact", "q": "how far away is the moon?", "expect": ["\\b(38\\d|23\\d)(,?\\d{3}| thousand)\\b"] },
+    { "id": "pee", "kind": "fact", "q": "how long does it take the average human to pee?", "expect": ["\\b(2[0-3]|about 20)\\b[^.]*second"] },
+
+    { "id": "tip", "kind": "math", "q": "what's a fifteen percent tip on eighty four dollars?", "expect": ["\\b12\\.60?\\b", "\\b12 dollars,? and 60 cents\\b", "\\b12 60\\b"], "search": "forbidden" },
+    { "id": "gallon", "kind": "math", "q": "how many ounces are in a gallon?", "expect": ["\\b128\\b"] },
+    { "id": "pizza", "kind": "math", "q": "five friends share three pizzas with eight slices each. how many slices does each person get?", "expect": ["\\b4(\\.8)?\\b"], "search": "forbidden" },
+
+    { "id": "weather", "kind": "search", "q": "what's the weather in Newport Beach today?", "expect": ["\\b\\d{2,3}\\s*(°|degrees)", "\\b\\d{2,3}\\b[^.]*\\b(degrees|fahrenheit|celsius)\\b"], "search": "required" },
+    { "id": "gold", "kind": "search", "q": "what's the price of gold right now?", "expect": ["\\b\\d[\\d,]{3,}"], "search": "required" },
+    { "id": "tech-news", "kind": "search", "q": "what's the latest tech news?", "search": "required" },
+
+    { "id": "japan-russia", "kind": "opinion", "q": "do you think Japan would be better than Russia for a visit?", "personality": true },
+    { "id": "cat-dog", "kind": "opinion", "q": "would you rather have a cat or a dog?", "personality": true },
+
+    { "id": "wake-slip", "kind": "wake", "q": "hey luna what's two plus two", "expect": ["\\b4\\b"], "search": "forbidden" },
+    { "id": "weekday", "kind": "date", "q": "what day of the week is it?", "expect": ["$weekday"], "search": "forbidden" }
+  ]
+}

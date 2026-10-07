@@ -16,3 +16,6 @@ Dockerfile
 
 # Tests run against the source (npm test), never inside the image.
 test
+
+# The LLM benchmark runs from the source checkout, never inside the image.
+bench
