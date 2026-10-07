@@ -1,13 +1,14 @@
 // ─── Text-to-speech providers ─────────────────────────────────────────────────
 //
 // fetchTTS(text) starts synthesis and resolves to a readable audio stream (any
-// container ffmpeg can probe — Kokoro and Qwen3-TTS send WAV, ElevenLabs MP3),
+// container ffmpeg can probe — Kokoro, Qwen3-TTS and Chatterbox send WAV,
+// ElevenLabs MP3),
 // or null if every provider failed. It resolves as soon as the response headers
 // arrive, so the prefetch pipeline in index.js keeps overlapping synthesis with
 // playback.
 //
-// TTS_PROVIDER picks the preferred provider: "kokoro" (default), "qwen3" or
-// "elevenlabs". TTS_FALLBACK (default "kokoro") is tried next, then Kokoro as a
+// TTS_PROVIDER picks the preferred provider: "kokoro" (default), "qwen3",
+// "chatterbox" or "elevenlabs". TTS_FALLBACK (default "kokoro") is tried next, then Kokoro as a
 // last resort — e.g. ElevenLabs → Qwen3-TTS → Kokoro. TTS_FALLBACK=none
 // disables fallback. A provider that fails is handled like this:
 //
@@ -52,6 +53,14 @@ const QWEN3_TTS_VOICE = config.QWEN3_TTS_VOICE || undefined;
 const QWEN3_TTS_STREAM     = config.QWEN3_TTS_STREAM;
 const QWEN3_TTS_TIMEOUT_MS = config.QWEN3_TTS_TIMEOUT_MS;
 
+// Chatterbox Turbo (Chatterbox/chatterbox_server.py, macOS only): Kokoro's API
+// again, with a built-in voice ("default") or clones, and it performs audio
+// tags. Renders ~4x faster than real time, but buffered by default like Qwen3.
+const CHATTERBOX_URL        = config.CHATTERBOX_URL;
+const CHATTERBOX_VOICE      = config.CHATTERBOX_VOICE || undefined;
+const CHATTERBOX_STREAM     = config.CHATTERBOX_STREAM;
+const CHATTERBOX_TIMEOUT_MS = config.CHATTERBOX_TIMEOUT_MS;
+
 const ELEVENLABS_API_KEY  = config.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = config.ELEVENLABS_VOICE_ID;
 // v4 Turbo: real-time latency (~100 ms) and it follows audio tags.
@@ -68,24 +77,60 @@ const CREDITS_RETRY_MS  = config.TTS_CREDITS_RETRY_MS;
 
 // ─── Expressiveness ───────────────────────────────────────────────────────────
 //
-// ElevenLabs' v3/v4 models act on inline audio tags — "[laughs] That's great."
-// While such a model is the provider actually in use, the LLM is told it may
-// use them (expressivePrompt()). Kokoro and Qwen3-TTS have no such feature and
-// would read the tag out loud, so they get no instruction, and any tag that
-// still reaches them — e.g. an answer started on ElevenLabs that falls back
-// mid-way, or a custom announcement phrase — is stripped first.
+// Some voices act on inline audio tags — "[laugh] That's great." Each provider
+// says which tags it performs (`tags`) and what the LLM is told about them
+// (`tagPrompt`); while such a provider is the one actually in use, the LLM
+// gets that instruction (expressivePrompt()). Before a sentence goes to a
+// provider, tags it can't perform are dropped (`speakable`), so they are never
+// read out — e.g. an answer started on ElevenLabs that falls back mid-way, or
+// a custom announcement phrase. Kokoro and Qwen3-TTS perform none.
 const TTS_EXPRESSIVE = config.TTS_EXPRESSIVE;
-const TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
-const EXPRESSIVE_PROMPT = config.TTS_EXPRESSIVE_PROMPT ||
-  'Your voice can perform audio tags written in square brackets, such as ' +
-  '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Where ' +
-  'one genuinely fits the moment, put it right before the words it applies to; ' +
-  'use at most one per reply, and none at all for plain factual answers.';
 
 const AUDIO_TAG = /\[[^\[\]\n]{1,40}\]/g;
 
 function stripAudioTags(text) {
   return text.replace(AUDIO_TAG, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// ElevenLabs v3/v4 take free-form tags ("any").
+const ELEVENLABS_TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
+const ELEVENLABS_PROMPT =
+  'Your voice can perform audio tags written in square brackets, such as ' +
+  '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Where ' +
+  'one genuinely fits the moment, put it right before the words it applies to; ' +
+  'use at most one per reply, and none at all for plain factual answers.';
+
+// Chatterbox Turbo performs exactly the tags it was trained on (the server's
+// /health lists them). The LLM is told all of them; ElevenLabs-style spellings
+// it may still write are mapped to the nearest one, and the rest dropped.
+const CHATTERBOX_EMOTIONS = ['happy', 'sarcastic', 'surprised', 'whispering', 'angry', 'fear', 'crying', 'dramatic'];
+const CHATTERBOX_SOUNDS = ['laugh', 'chuckle', 'sigh', 'gasp', 'groan', 'sniff', 'cough', 'clear throat', 'shush'];
+const CHATTERBOX_ALIASES = {
+  laughs: 'laugh', laughing: 'laugh', giggles: 'laugh', giggle: 'laugh',
+  chuckles: 'chuckle', chuckling: 'chuckle', sighs: 'sigh', sighing: 'sigh',
+  gasps: 'gasp', groans: 'groan', sniffs: 'sniff', sniffles: 'sniff', coughs: 'cough',
+  whispers: 'whispering', whisper: 'whispering', excited: 'happy', cheerful: 'happy',
+  surprise: 'surprised', scared: 'fear', afraid: 'fear', cries: 'crying', sad: 'crying',
+};
+const tagList = names => names.map(n => `[${n}]`).join(', ');
+const CHATTERBOX_PROMPT =
+  'Your voice can perform these audio tags, written in square brackets exactly ' +
+  `as shown. Emotions: ${tagList(CHATTERBOX_EMOTIONS)}; an emotion only colors the ` +
+  'words after it, so put it at the start of a sentence, never at the end. ' +
+  `Sounds: ${tagList(CHATTERBOX_SOUNDS)}; a sound is performed where it stands. ` +
+  'Use a tag only where it genuinely fits the moment, at most two per reply. ' +
+  'Never use any for plain facts, numbers or information. No other bracketed tags.';
+
+// The text with only the tags `tags` performs: a Set of tag names (after
+// aliases), "any", or null for none.
+function keepTags(text, tags, aliases = {}) {
+  if (tags === 'any') return text.trim();
+  if (!tags) return stripAudioTags(text);
+  return text.replace(AUDIO_TAG, tag => {
+    const name = tag.slice(1, -1).trim().toLowerCase();
+    const known = aliases[name] || name;
+    return tags.has(known) ? `[${known}]` : ' ';
+  }).replace(/\s+/g, ' ').trim();
 }
 
 // Thrown by a provider to say whether the whole provider should be benched
@@ -146,10 +191,11 @@ async function request(label, url, init, timeoutMs, cancel) {
 }
 
 // A local server with Kokoro's /v1/audio/speech API (WAV).
-function localProvider(name, url, voice, stream, timeoutMs) {
+function localProvider(name, url, voice, stream, timeoutMs, { tags = null, aliases = {}, tagPrompt = '' } = {}) {
   return {
     name,
-    supportsTags: false,
+    tagPrompt,
+    speakable: text => keepTags(text, tags, aliases),
     configured: () => Boolean(url),
     async synthesize(text, signal) {
       const res = await request(name, url, {
@@ -171,6 +217,9 @@ function localProvider(name, url, voice, stream, timeoutMs) {
 
 const kokoro = localProvider('Kokoro', KOKORO_URL, KOKORO_VOICE, true, KOKORO_TIMEOUT_MS);
 const qwen3  = localProvider('Qwen3-TTS', QWEN3_TTS_URL, QWEN3_TTS_VOICE, QWEN3_TTS_STREAM, QWEN3_TTS_TIMEOUT_MS);
+const chatterbox = localProvider('Chatterbox', CHATTERBOX_URL, CHATTERBOX_VOICE, CHATTERBOX_STREAM, CHATTERBOX_TIMEOUT_MS, {
+  tags: new Set([...CHATTERBOX_EMOTIONS, ...CHATTERBOX_SOUNDS]), aliases: CHATTERBOX_ALIASES, tagPrompt: CHATTERBOX_PROMPT,
+});
 
 // Error codes per https://elevenlabs.io/docs/eleven-api/resources/errors.
 // Credits used to be reported as 401 + detail.status "quota_exceeded" and are
@@ -192,9 +241,11 @@ function classifyElevenLabs(status, detail) {
   return 'transient'; // 400 text issues, 409, 429, 5xx
 }
 
+const ELEVENLABS_TAGS = ELEVENLABS_TAG_MODELS.has(ELEVENLABS_MODEL);
 const elevenlabs = {
   name: 'ElevenLabs',
-  supportsTags: TAG_MODELS.has(ELEVENLABS_MODEL),
+  tagPrompt: ELEVENLABS_TAGS ? ELEVENLABS_PROMPT : '',
+  speakable: text => keepTags(text, ELEVENLABS_TAGS ? 'any' : null),
   configured: () => Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
   async synthesize(text, signal) {
     const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}` +
@@ -215,7 +266,7 @@ const elevenlabs = {
   },
 };
 
-const PROVIDERS = { kokoro, qwen3, elevenlabs };
+const PROVIDERS = { kokoro, qwen3, chatterbox, elevenlabs };
 
 const preferred = PROVIDERS[config.TTS_PROVIDER.toLowerCase()];
 const fallbackName = config.TTS_FALLBACK.toLowerCase();
@@ -247,7 +298,7 @@ function describeTTS() {
   if (!chain.length) return 'none configured (set KOKORO_URL)';
   const desc = chain.map(p => p.name === 'ElevenLabs' ? `ElevenLabs (${ELEVENLABS_MODEL})` : p.name)
     .join(' → fallback ');
-  return desc + (TTS_EXPRESSIVE && chain[0].supportsTags ? ', expressive' : '');
+  return desc + (TTS_EXPRESSIVE && chain[0].tagPrompt ? ', expressive' : '');
 }
 
 // The provider the next sentence will most likely go to.
@@ -255,12 +306,14 @@ function activeProvider() {
   return chain.find((p, i) => !isBenched(p) || i === chain.length - 1) || null;
 }
 
-// Extra system-prompt text for the LLM: the audio-tag instruction while an
-// expressive provider is in use, '' otherwise (including while ElevenLabs is
-// benched and Kokoro is speaking).
+// Extra system-prompt text for the LLM: the audio-tag instruction of the
+// provider in use, '' if it performs none (including while ElevenLabs is
+// benched and Kokoro is speaking). TTS_EXPRESSIVE_PROMPT replaces the
+// provider's own wording.
 function expressivePrompt() {
   const p = activeProvider();
-  return TTS_EXPRESSIVE && p && p.supportsTags ? EXPRESSIVE_PROMPT : '';
+  if (!TTS_EXPRESSIVE || !p || !p.tagPrompt) return '';
+  return config.TTS_EXPRESSIVE_PROMPT || p.tagPrompt;
 }
 
 async function fetchTTS(text, { signal } = {}) {
@@ -273,7 +326,7 @@ async function fetchTTS(text, { signal } = {}) {
     // trying is strictly better than certain silence.
     if (isBenched(provider) && !isLast) continue;
 
-    const spoken = provider.supportsTags && TTS_EXPRESSIVE ? text.trim() : stripAudioTags(text);
+    const spoken = TTS_EXPRESSIVE ? provider.speakable(text) : stripAudioTags(text);
     // A sentence that was only a tag ("[laughs]") has nothing left to say.
     if (!spoken) return null;
 
