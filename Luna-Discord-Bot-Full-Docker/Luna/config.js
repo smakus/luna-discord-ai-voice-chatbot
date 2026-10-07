@@ -73,6 +73,8 @@ const SETTINGS = [
   { name: 'QUICK_ANSWER_PHRASES', type: 'phrases' },
 
   // LLM
+  { name: 'LM_PERSONALITY', type: 'string', default: 'helpful' },
+  { name: 'LM_CONCISE', type: 'bool', default: true },
   { name: 'LLM_REASONING', type: 'string' },
   { name: 'LLM_THINK_LIMIT_MS', type: 'int', default: 60000, min: 0 },
   { name: 'LM_FLAVOR_PROMPT', type: 'string' },

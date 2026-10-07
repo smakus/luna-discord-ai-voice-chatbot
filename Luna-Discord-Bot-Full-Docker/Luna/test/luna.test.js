@@ -389,6 +389,22 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('"don\'t announce the search" instruction: only when the search tool is offered, and only with Luna\'s own heads-up on'); }
 
 
+  console.log('personality settings');
+  { const H = await setup(); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(50);
+    const sys = H.S.llmRequests[0].system;
+    assert.ok(sys.startsWith('You are Luna, a helpful voice assistant in a Discord voice channel. '), sys.slice(0, 80));
+    assert.ok(sys.includes('Keep responses concise and conversational — no markdown'));
+    ok('defaults: the prompt is exactly as before ("a helpful voice assistant", "concise and conversational")'); }
+  { const H = await setup({ LM_PERSONALITY: 'fun, bubbly, friendly and helpful', LM_CONCISE: 'false' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(50);
+    const sys = H.S.llmRequests[0].system;
+    assert.ok(sys.startsWith('You are Luna, a fun, bubbly, friendly and helpful voice assistant in a Discord voice channel. '), sys.slice(0, 100));
+    assert.ok(sys.includes('Keep responses conversational — no markdown') && !sys.includes('concise'));
+    assert.ok(sys.includes('web search tool'), 'the working instructions stay');
+    ok('LM_PERSONALITY sets how Luna is described; LM_CONCISE=false drops "concise"; the working instructions stay'); }
+
+
   console.log('fake tool calls + date');
   const FAKE = "<tool_call>\n<function=web_search.query>(UCLA football game today score)\n</function>\n</tool_call>";
   { const H = await setup({ LUNA_TIMEZONE: 'America/Los_Angeles', WEB_SEARCH: 'keywords' }); H.S.llmRequests.length = 0;
