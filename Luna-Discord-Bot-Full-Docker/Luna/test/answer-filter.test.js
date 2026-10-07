@@ -10,7 +10,7 @@
 const { describe, it } = require('node:test');
 const assert = require('assert');
 const fs = require('fs'), path = require('path');
-const { createAnswerFilter, stripMarkdown } = require('../answer-filter');
+const { createAnswerFilter, stripMarkdown, stripEmoji } = require('../answer-filter');
 const boot = require('./harness');
 
 // A filter whose speech and drops are recorded.
@@ -103,6 +103,34 @@ describe('answer filter rules', () => {
     const { filter, spoken } = rig();
     assert.strictEqual(filter.text('<tool_call>\n<function=web_search>(x)</function>\n</tool_call>'), 'tool-call-as-text');
     assert.deepStrictEqual(spoken, []);
+  });
+});
+
+describe('emoji are not spoken', () => {
+  const said = text => stripEmoji(text).replace(/\s+/g, ' ').trim();
+  const cases = [
+    ['get yourself some🍦 scooped', 'get yourself some scooped'],
+    ['That is so funny 😂😂', 'That is so funny'],
+    ['I love it ❤️ so much', 'I love it so much'],
+    ['Nice 👍🏽 work', 'Nice work'],
+    ['The coder 👩‍💻 is here', 'The coder is here'],
+    ['Go team 🇺🇸!', 'Go team !'],
+    ['Option 1️⃣ first', 'Option 1 first'],
+    ['Sunny ☀ today', 'Sunny today'],
+  ];
+  for (const [input, output] of cases) it(`${JSON.stringify(input)} → ${JSON.stringify(output)}`, () => assert.strictEqual(said(input), output));
+
+  it('leaves alone what is not an emoji: accents, tone marks, symbols, numbers, dashes, tags', () => {
+    for (const text of ['Café au lait with José.', 'Marshmallow is mián huā táng.', "It's 72° and €5 — or £4.", 'About 1,000 people, 50% of them.', '[laugh] Ha!', 'Tom & Jerry #1 © 2026', 'Acme® and Luna™'])
+      assert.strictEqual(stripEmoji(text), text);
+  });
+
+  it('the filter speaks the cleaned sentence and reports what the model wrote', () => {
+    const raw = [];
+    const { filter, spoken } = rig({ cleaned: r => raw.push(r) });
+    filter.text('Plain sentence.'); filter.text('Some 🍦 here.'); filter.text('🎉');
+    assert.deepStrictEqual(spoken, ['Plain sentence.', 'Some here.']);
+    assert.deepStrictEqual(raw, ['Some 🍦 here.']);
   });
 });
 

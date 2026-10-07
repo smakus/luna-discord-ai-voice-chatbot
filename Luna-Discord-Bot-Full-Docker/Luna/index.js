@@ -1728,6 +1728,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         drop: (kind, text) => console.log(kind === 'narration'
           ? `[${userId}] [LLM] dropped narration before a search (not spoken): ${text.slice(0, 160)}`
           : `[${userId}] [LLM] dropped reasoning that leaked into the answer (not spoken): ${text.slice(0, 160)}`),
+        cleaned: raw => console.log(`[${userId}] [LLM] cleaned up for speech; as written: ${JSON.stringify(raw.slice(0, 200))}`),
       });
       const onEvent = e => {
         if (e.type === 'reasoning.start' && !reasoningAt) {
