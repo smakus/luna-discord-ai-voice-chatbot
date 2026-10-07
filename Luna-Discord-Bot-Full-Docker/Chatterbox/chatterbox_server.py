@@ -20,7 +20,8 @@ Environment:
   CHATTERBOX_VOICES_DIR    folder of <name>.wav clones (optional)
   CHATTERBOX_VOICE         default voice (default)
   CHATTERBOX_MODEL         mlx-community/chatterbox-turbo-8bit
-  CHATTERBOX_TEMPERATURE   sampling temperature (0.8)
+  CHATTERBOX_TEMPERATURE   sampling temperature (1.1). Higher is livelier;
+                           chosen by ear over 0.8 (the model's default) and 1.0
   CHATTERBOX_PORT          port (8891)
 """
 import os
@@ -52,7 +53,7 @@ class ChatterboxEngine:
     default_voice = os.getenv('CHATTERBOX_VOICE', BUILTIN)
     sample_rate = 24000
     tags = TAGS
-    temperature = float(os.getenv('CHATTERBOX_TEMPERATURE', '0.8'))
+    temperature = float(os.getenv('CHATTERBOX_TEMPERATURE', '1.1'))
     settings = {'temperature': temperature}
 
     def __init__(self):
