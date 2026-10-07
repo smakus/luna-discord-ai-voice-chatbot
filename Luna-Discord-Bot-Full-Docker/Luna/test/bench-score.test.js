@@ -33,6 +33,7 @@ describe('answer key', () => {
     assert.strictEqual(isCorrect('Around 300 bones.', q('bones')), false);
     assert.strictEqual(isCorrect('It fell in nineteen eighty-nine.', q('berlin-wall')), true);
     assert.strictEqual(isCorrect('About 384,400 kilometers away.', q('moon')), true);
+    assert.strictEqual(isCorrect('On average about 384 000 km away.', q('moon')), true);
     assert.strictEqual(isCorrect('Roughly two hundred thirty-nine thousand miles.', q('moon')), true);
     assert.strictEqual(isCorrect('That comes to twelve dollars and sixty cents.', q('tip')), true);
     assert.strictEqual(isCorrect('A tip of $12.60.', q('tip')), true);
