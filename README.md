@@ -10,6 +10,7 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 🧠 **Local LLM** via LM Studio, with separate conversation memory for each speaker.
 - 🔊 **Streaming TTS** via Kokoro. Luna starts speaking her first sentence while the rest is still being generated.
 - 🗣️ **Optional cloned voice** on Apple Silicon with Qwen3-TTS: describe a voice in words, pick a take you like, and Luna speaks in it.
+- 🎭 **Optional expressive voice** on Apple Silicon with Chatterbox Turbo: she laughs, sighs and whispers where it fits.
 - 🎭 **Optional ElevenLabs voice** (v4 Turbo), with expressive audio tags like `[laughs]` and `[whispers]`. Luna falls back to Kokoro automatically when credits run out. See [Text-to-speech providers](#text-to-speech-providers).
 - 👥 **Multi-user.** Every speaker gets their own audio capture and wake word detector, and answers queue so no one's question cancels someone else's.
 - 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer, even while she's still thinking about it.
@@ -84,7 +85,7 @@ docker compose -f docker-compose.metal.yml up --build   # 3. Luna
 
 Luna has no health check to wait on for the native services, so start terminal 3 only after the first two report they're ready. In terminal 2, `[kokoro] warm — device=mps` confirms Kokoro is actually on the GPU.
 
-To use a Qwen3-TTS voice (see [Text-to-speech providers](#text-to-speech-providers)), also run `./scripts/qwen3-tts-metal.sh` in a fourth terminal and wait for "Starting Qwen3-TTS server".
+To use a Qwen3-TTS or Chatterbox voice (see [Text-to-speech providers](#text-to-speech-providers)), also run `./scripts/qwen3-tts-metal.sh` or `./scripts/chatterbox-metal.sh` in a fourth terminal and wait for its "Starting … server" line.
 
 **Linux or Intel Mac ONLY:** Everything runs in containers:
 
@@ -145,7 +146,26 @@ INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
 
 ### Text-to-speech providers
 
-Kokoro is the default. There are two alternatives: Qwen3-TTS, a local voice of your own design for Apple Silicon Macs, and ElevenLabs, a paid cloud service.
+Kokoro is the default. There are three alternatives: Chatterbox Turbo, a local expressive voice for Apple Silicon Macs; Qwen3-TTS, a local voice of your own design for Apple Silicon Macs; and ElevenLabs, a paid cloud service.
+
+#### Chatterbox Turbo (Apple Silicon)
+
+[Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) (Resemble AI, MIT license) runs on the Mac's GPU through MLX and performs audio tags in the text: emotions that set the tone of what follows (`[happy]`, `[sarcastic]`, `[surprised]`, `[whispering]`, `[angry]`, `[fear]`, `[crying]`, `[dramatic]`) and sounds (`[laugh]`, `[chuckle]`, `[sigh]`, `[gasp]`, `[groan]`, `[sniff]`, `[cough]`, `[clear throat]`, `[shush]`). While it is speaking, the LLM is told exactly these tags and may use up to two per reply.
+
+```bash
+./scripts/chatterbox-metal.sh
+```
+
+The first run creates a venv in `~/.luna/chatterbox-venv` and downloads the model (about 0.7 GB). Then set this in `.env` and recreate Luna:
+
+```env
+TTS_PROVIDER=chatterbox
+```
+
+- **Speed:** about 4× faster than real time, even while a Gemma-class LLM generates on the same GPU. Sentences are rendered whole before playing (`CHATTERBOX_STREAM=false`), which is quick enough that the next one is usually ready before the current one ends.
+- **Voices:** `default` is the voice built into the model. Any `<name>.wav` in `~/.luna/chatterbox-voices` (10–20 seconds of clear speech by one speaker, no transcript needed) is a clone; pick one with `CHATTERBOX_VOICE`. `curl localhost:8891/health` lists the voices and tags.
+- **Tags it doesn't know** are dropped before it speaks; ElevenLabs spellings such as `[laughs]` or `[whispers]` are mapped to its own.
+- **Fallback:** Kokoro still covers for it, with tags removed.
 
 #### Qwen3-TTS (Apple Silicon)
 
@@ -188,10 +208,10 @@ ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
 - **Fallback:** keep Kokoro running, because it's the fallback.
   - When ElevenLabs runs out of credits, Luna switches to Kokoro for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
   - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
-- **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro never gets that instruction, and any tag that does reach it is removed, so it never reads "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
+- **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro and Qwen3-TTS never get that instruction, and any tag that does reach them is removed, so they never read "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
 
-To fall back to Qwen3-TTS before Kokoro, add `TTS_FALLBACK=qwen3`. Luna then tries ElevenLabs, then Qwen3-TTS, then Kokoro.
+To fall back to Chatterbox or Qwen3-TTS before Kokoro, add `TTS_FALLBACK=chatterbox` or `TTS_FALLBACK=qwen3`. Luna then tries ElevenLabs, then that voice, then Kokoro.
 
 The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4_turbo) → fallback Kokoro, expressive`.
 
@@ -265,12 +285,12 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `TTS_PROVIDER` | `kokoro` | `kokoro`, `qwen3` or `elevenlabs` |
+| `TTS_PROVIDER` | `kokoro` | `kokoro`, `qwen3`, `chatterbox` or `elevenlabs` |
 | `TTS_FALLBACK` | `kokoro` | Tried after `TTS_PROVIDER`, before Kokoro. `none` disables falling back |
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
 | `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
-| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags when an expressive ElevenLabs model is speaking |
-| `TTS_EXPRESSIVE_PROMPT` | built-in | The audio-tag instruction given to the LLM while an expressive ElevenLabs model is speaking |
+| `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags while a voice that performs them (Chatterbox, an expressive ElevenLabs model) is speaking |
+| `TTS_EXPRESSIVE_PROMPT` | per voice | Replaces the audio-tag instruction given to the LLM (each expressive voice has its own, listing its tags) |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
@@ -282,6 +302,10 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `QWEN3_TTS_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8890/v1/audio/speech` |
 | `QWEN3_TTS_VOICE` | server default (`luna`) | Any voice in the voices folder |
 | `QWEN3_TTS_STREAM` | `false` | `true` plays each sentence while it renders: no pauses, but it stutters when rendering falls behind |
+| `CHATTERBOX_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8891/v1/audio/speech` |
+| `CHATTERBOX_VOICE` | server default (`default`) | `default` is the built-in voice; any other name is a clone in the voices folder |
+| `CHATTERBOX_STREAM` | `false` | `true` plays each sentence while it renders |
+| `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-8bit` / `0.8` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too) |
 | `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.3` | Set when starting `qwen3-tts-metal.sh`. Each sentence is rendered on its own; a lower temperature keeps the delivery steadier from one sentence to the next, a higher one varies it more |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
@@ -291,7 +315,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
 | `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
-| `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` / `QWEN3_TTS_TIMEOUT_MS` | `60000` / `30000` / `60000` | Request timeouts |
+| `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` / `QWEN3_TTS_TIMEOUT_MS` / `CHATTERBOX_TIMEOUT_MS` | `60000` / `30000` / `60000` / `60000` | Request timeouts |
 
 The Whisper model is `ggml-small.en-q5_1.bin` by default. On Apple Silicon you can afford a more accurate one: `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh` (or `ggml-large-v3-turbo-q5_0.bin`). On the Docker path it's a build arg in `docker-compose.yml`.
 
@@ -370,7 +394,7 @@ Voice encryption: active, epoch 7 — privacy code `12345 67890 …`
 | Have to speak loudly to trigger it | Turn off Discord's Noise Suppression and Automatic Gain Control |
 | LM Studio not reachable from Docker | Bind its server to `0.0.0.0`, not `127.0.0.1` |
 | No audio in the voice channel | Give the bot **Connect** and **Speak** permissions |
-| `qwen3-tts-metal.sh` reports port 8890 in use | Another copy of the script is running in a different terminal |
+| `qwen3-tts-metal.sh` reports port 8890 in use (`chatterbox-metal.sh`: 8891) | Another copy of the script is running in a different terminal |
 | `kokoro-metal.sh` reports port 8880 in use | Another Kokoro is running: a leftover container (`docker compose down`) or a second copy of the script |
 | `MPS available: False` | Metal needs macOS 12.3+ on Apple Silicon; otherwise Kokoro runs on CPU |
 | Slow Whisper or Kokoro on a Mac | You're on the Docker path. Use the Metal scripts instead |

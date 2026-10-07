@@ -1,0 +1,5 @@
+mlx-audio==0.5.7
+soundfile
+fastapi
+uvicorn
+numpy

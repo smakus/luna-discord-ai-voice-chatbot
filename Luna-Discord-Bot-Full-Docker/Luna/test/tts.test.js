@@ -10,7 +10,7 @@ const body = s => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().en
 const res = (status, payload, audio) => () => ({ ok: status < 300, status,
   text: async () => typeof payload === 'string' ? payload : JSON.stringify(payload), body: body(audio || '') });
 global.fetch = async (url, init) => {
-  const who = url.includes('kokoro') ? 'kokoro' : url.includes('qwen') ? 'qw' : 'el';
+  const who = url.includes('kokoro') ? 'kokoro' : url.includes('qwen') ? 'qw' : url.includes('chatterbox') ? 'cb' : 'el';
   const sent = JSON.parse(init.body); calls.push({ who, url, voice: sent.voice, stream: sent.stream, text: sent.text ?? sent.input, model: sent.model_id, key: init.headers['xi-api-key'] });
   const r = script[who].length > 1 ? script[who].shift() : script[who][0];
   if (r === 'hang') return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(init.signal.reason)));
@@ -19,9 +19,9 @@ global.fetch = async (url, init) => {
 };
 const read = async s => { let out = ''; for await (const c of s) out += Buffer.from(c).toString(); return out; };
 function load(env, s = {}) {
-  for (const k of Object.keys(process.env)) if (/^(TTS_|ELEVENLABS_|KOKORO_|QWEN3_)/.test(k)) delete process.env[k];
+  for (const k of Object.keys(process.env)) if (/^(TTS_|ELEVENLABS_|KOKORO_|QWEN3_|CHATTERBOX_)/.test(k)) delete process.env[k];
   Object.assign(process.env, env);
-  calls = []; logs = []; script = { kokoro: [res(200, '', 'KOKORO-AUDIO')], el: [res(200, '', 'EL-AUDIO')], qw: [res(200, '', 'QW-AUDIO')], ...s };
+  calls = []; logs = []; script = { kokoro: [res(200, '', 'KOKORO-AUDIO')], el: [res(200, '', 'EL-AUDIO')], qw: [res(200, '', 'QW-AUDIO')], cb: [res(200, '', 'CB-AUDIO')], ...s };
   console.error = console.warn = console.log = (...a) => logs.push(a.join(' '));
   delete require.cache[require.resolve(require('path').join(__dirname, '..', 'tts.js'))];
   return require(require('path').join(__dirname, '..', 'tts.js'));
@@ -157,6 +157,33 @@ const keepAlive = setInterval(() => {}, 1000);
   t = load({ ...QW, TTS_PROVIDER: 'qwen3', QWEN3_TTS_TIMEOUT_MS: '50' }, { qw: ['hang'] });
   const t1 = Date.now(); assert.strictEqual(await read(await t.fetchTTS('A.')), 'KOKORO-AUDIO'); assert.ok(Date.now() - t1 < 1000);
   assert.ok(logs.some(l => /Qwen3-TTS timed out after 50ms/.test(l))); say('QWEN3_TTS_TIMEOUT_MS → Kokoro');
+
+  real('Chatterbox');
+  const CB = { ...BASE, CHATTERBOX_URL: 'http://chatterbox/v1/audio/speech' };
+  t = load({ ...CB, TTS_PROVIDER: 'chatterbox' });
+  assert.strictEqual(t.describeTTS(), 'Chatterbox → fallback Kokoro, expressive');
+  for (const tag of ['[happy]', '[sarcastic]', '[surprised]', '[whispering]', '[angry]', '[fear]', '[crying]', '[dramatic]',
+    '[laugh]', '[chuckle]', '[sigh]', '[gasp]', '[groan]', '[sniff]', '[cough]', '[clear throat]', '[shush]']) {
+    assert.ok(t.expressivePrompt().includes(tag), tag);
+  }
+  assert.ok(!/\[advertisement\]|\[narration\]/.test(t.expressivePrompt()));
+  say('TTS_PROVIDER=chatterbox → expressive; the prompt names every emotion and sound tag it performs');
+  assert.strictEqual(await read(await t.fetchTTS('[sigh] Oh no. [laughs] Kidding! [Happy] Yay [low voice] [clear throat] ok.')), 'CB-AUDIO');
+  assert.deepStrictEqual([calls[0].text, calls[0].voice, calls[0].stream], ['[sigh] Oh no. [laugh] Kidding! [happy] Yay [clear throat] ok.', undefined, false]);
+  say('known tags kept, ElevenLabs spellings mapped ([laughs] → [laugh]), case folded, unknown tags dropped; buffered, server\'s default voice');
+  await t.fetchTTS('[laugh]'); assert.strictEqual(calls[1].text, '[laugh]'); say('a sentence that is only a sound is still performed');
+  t = load({ ...CB, TTS_PROVIDER: 'chatterbox', CHATTERBOX_VOICE: 'default', CHATTERBOX_STREAM: 'true' }); await t.fetchTTS('A.');
+  assert.deepStrictEqual([calls[0].voice, calls[0].stream], ['default', true]); say('CHATTERBOX_VOICE / CHATTERBOX_STREAM');
+  t = load({ ...CB, TTS_PROVIDER: 'chatterbox', TTS_EXPRESSIVE: 'false' });
+  assert.strictEqual(t.expressivePrompt(), ''); await t.fetchTTS('[laugh] Hi.'); assert.strictEqual(calls[0].text, 'Hi.'); say('TTS_EXPRESSIVE=false → no prompt, tags stripped');
+  t = load({ ...CB, TTS_PROVIDER: 'chatterbox', TTS_EXPRESSIVE_PROMPT: 'Custom.' }); assert.strictEqual(t.expressivePrompt(), 'Custom.'); say('TTS_EXPRESSIVE_PROMPT replaces the wording');
+  t = load({ ...CB, TTS_PROVIDER: 'chatterbox' }, { cb: ['neterr', res(200, '', 'CB-AUDIO')] });
+  assert.strictEqual(await read(await t.fetchTTS('[laugh] A.')), 'KOKORO-AUDIO'); assert.strictEqual(calls[1].text, 'A.');
+  say('server down → that sentence to Kokoro, tags stripped there');
+  t = load({ ...EL, ...CB, TTS_FALLBACK: 'chatterbox' }, { el: [res(402, { detail: { code: 'insufficient_credits' } })] });
+  await t.fetchTTS('[whispers] Psst.'); assert.strictEqual(calls.find(x => x.who === 'cb').text, '[whispering] Psst.');
+  assert.ok(t.expressivePrompt().includes('[clear throat]')); say('ElevenLabs out of credits → Chatterbox: its own tag prompt, ElevenLabs tags mapped');
+  t = load({ ...BASE, TTS_PROVIDER: 'chatterbox' }); assert.ok(logs.some(l => /Chatterbox selected but not configured/.test(l))); say('no CHATTERBOX_URL → Kokoro + warning');
 
   real('three-provider chain');
   t = load({ ...EL, ...QW, TTS_FALLBACK: 'qwen3' }, { el: [res(402, { detail: { code: 'insufficient_credits' } })] });

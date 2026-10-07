@@ -108,6 +108,10 @@ const SETTINGS = [
   { name: 'QWEN3_TTS_VOICE', type: 'string' },
   { name: 'QWEN3_TTS_STREAM', type: 'bool', default: false },
   { name: 'QWEN3_TTS_TIMEOUT_MS', type: 'int', default: 60000, min: 1 },
+  { name: 'CHATTERBOX_URL', type: 'string' },
+  { name: 'CHATTERBOX_VOICE', type: 'string' },
+  { name: 'CHATTERBOX_STREAM', type: 'bool', default: false },
+  { name: 'CHATTERBOX_TIMEOUT_MS', type: 'int', default: 60000, min: 1 },
   { name: 'ELEVENLABS_API_KEY', type: 'secret' },
   { name: 'ELEVENLABS_VOICE_ID', type: 'string' },
   { name: 'ELEVENLABS_MODEL', type: 'string', default: 'eleven_v4_turbo' },
@@ -116,12 +120,13 @@ const SETTINGS = [
   { name: 'ELEVENLABS_TIMEOUT_MS', type: 'int', default: 10000, min: 1 },
 ];
 
-// Settings of the other programs (Kokoro, Whisper, the Qwen3-TTS server) that
+// Settings of the other programs (Kokoro, Whisper, the MLX voice servers) that
 // may sit in the same .env or compose file. Not Luna's, but not typos either.
 const OTHER_PROGRAMS = new Set([
   'KOKORO_THREADS', 'KOKORO_MAX_CONCURRENCY', 'KOKORO_DEVICE',
   'WHISPER_THREADS', 'WHISPER_MODEL',
   'QWEN3_TTS_MODEL', 'QWEN3_TTS_TEMPERATURE', 'QWEN3_TTS_PORT', 'QWEN3_TTS_VOICES_DIR',
+  'CHATTERBOX_MODEL', 'CHATTERBOX_TEMPERATURE', 'CHATTERBOX_PORT', 'CHATTERBOX_VOICES_DIR',
 ]);
 
 // "15-22,22-30" → [[15000, 22000], [22000, 30000]], or null if malformed.

@@ -33,5 +33,7 @@ services:
       - KOKORO_URL=http://host.docker.internal:8880/v1/audio/speech
       # The optional host-native Qwen3-TTS from scripts/qwen3-tts-metal.sh.
       - QWEN3_TTS_URL=http://host.docker.internal:8890/v1/audio/speech
+      # The optional host-native Chatterbox from scripts/chatterbox-metal.sh.
+      - CHATTERBOX_URL=http://host.docker.internal:8891/v1/audio/speech
       # The host-native Metal Whisper from scripts/whisper-metal.sh.
       - WHISPER_SERVER_URLS=http://host.docker.internal:8081/inference
