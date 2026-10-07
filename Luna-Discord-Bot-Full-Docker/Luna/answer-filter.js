@@ -67,8 +67,20 @@ function stripMarkdown(text) {
     .replace(/\*{2,}|_{2,}|`+/g, '');
 }
 
-// What TTS gets: no reasoning tags, no markdown, single spaces.
-const speakable = text => stripMarkdown(text.replace(THINK_TAG_ALL, ' ')).replace(/\s+/g, ' ').trim();
+// Emoji are not spoken (the prompt asks for none, but "some🍦 scooped" got
+// through). \p{Extended_Pictographic} is Unicode's own list of emoji, so
+// accented letters, °, € and dashes are untouched; the rest are the invisible
+// pieces emoji are built from: flag letters (🇺🇸), skin tones (👍🏽), the
+// joiner (👩‍💻), the emoji-style selector (❤️) and the keycap mark (1️⃣).
+// ©, ® and ™ are on Unicode's list too, but they are ordinary text symbols.
+const EMOJI = /(?![\u00A9\u00AE\u2122])[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu;
+
+function stripEmoji(text) {
+  return text.replace(EMOJI, ' ');
+}
+
+// What TTS gets: no reasoning tags, no markdown, no emoji, single spaces.
+const speakable = text => stripEmoji(stripMarkdown(text.replace(THINK_TAG_ALL, ' '))).replace(/\s+/g, ' ').trim();
 
 // options:
 //   reasoning     false when the model answers without reasoning (reasoning
@@ -77,10 +89,12 @@ const speakable = text => stripMarkdown(text.replace(THINK_TAG_ALL, ' ')).replac
 //   holdUntilEnd  start in "holding" (reasoning-off answers that may search)
 //   speak(text)   say a sentence
 //   drop(kind, text)  a sentence will not be said: 'narration' | 'leaked reasoning'
+//   cleaned(raw)  a sentence had to be cleaned up before it could be said (the
+//                 model's text as written, for the log)
 //
 // text(sentence) returns 'ignored' (nothing to say), 'tool-call-as-text' (the
 // caller should stop this answer) or 'ok'.
-function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, drop = () => {} }) {
+function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, drop = () => {}, cleaned = () => {} }) {
   const resting = holdUntilEnd ? 'holding' : 'speaking';
   let state = resting;
   let pending = [];
@@ -98,6 +112,7 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
   const say = raw => {
     const sentence = speakable(raw);
     if (!hasWords(sentence)) return;
+    if (sentence !== raw.replace(/\s+/g, ' ').trim()) cleaned(raw);
     if (state === 'speaking') speak(sentence);
     else pending.push(sentence);
   };
@@ -152,4 +167,4 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
   };
 }
 
-module.exports = { createAnswerFilter, stripMarkdown, FAKE_TOOL_CALL };
+module.exports = { createAnswerFilter, stripMarkdown, stripEmoji, FAKE_TOOL_CALL };
