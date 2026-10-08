@@ -8,7 +8,9 @@
 # clone others from a short clip. It needs Metal, so like qwen3-tts-metal.sh it
 # runs here, outside Docker, and Luna reaches it over host.docker.internal.
 #
-# Renders about 4x faster than real time even while an LLM generates.
+# Renders about 2.7x faster than real time even while an LLM generates
+# (the full-precision model; CHATTERBOX_MODEL=mlx-community/chatterbox-turbo-8bit
+# is faster and needs less memory, but sounds rougher).
 #
 #   ./scripts/chatterbox-metal.sh
 #   CHATTERBOX_VOICE=myclone ./scripts/chatterbox-metal.sh
@@ -68,7 +70,7 @@ if lsof -i ":$CHATTERBOX_PORT" >/dev/null 2>&1; then
 fi
 
 echo "==> Starting Chatterbox on http://127.0.0.1:$CHATTERBOX_PORT  voice=${CHATTERBOX_VOICE:-default}"
-echo "    (the first run downloads the model, ~0.7 GB; wait for 'Starting chatterbox server')"
+echo "    (the first run downloads the model, ~3 GB; wait for 'Starting chatterbox server')"
 echo "    Point Luna at it with CHATTERBOX_URL=http://host.docker.internal:$CHATTERBOX_PORT/v1/audio/speech"
 
 cd "$CB_DIR"
