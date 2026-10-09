@@ -120,11 +120,32 @@ describe('decideWake', () => {
   }
 });
 
+describe('decideUtteranceEnd', () => {
+  const at = { wakeAt: 10000, listenMs: 4000 };
+  it('quiet right after "hey Luna" → listen for the question', () => {
+    assert.strictEqual(v.decideUtteranceEnd({ ...at, lastSpeechAt: 10100, quietMs: 1000 }), 'listen');
+    assert.strictEqual(v.decideUtteranceEnd({ ...at, lastSpeechAt: 9800, quietMs: 3900 }), 'listen');
+  });
+  it('the question was spoken after the wake word → end', () => {
+    assert.strictEqual(v.decideUtteranceEnd({ ...at, lastSpeechAt: 10400, quietMs: 1000 }), 'end');
+  });
+  it('waited listenMs and nothing came → end (answered as a greeting)', () => {
+    assert.strictEqual(v.decideUtteranceEnd({ ...at, lastSpeechAt: 10100, quietMs: 4000 }), 'end');
+  });
+  it('no wake word, or WAKE_LISTEN_MS=0 → end', () => {
+    assert.strictEqual(v.decideUtteranceEnd({ wakeAt: 0, listenMs: 4000, lastSpeechAt: 100, quietMs: 1000 }), 'end');
+    assert.strictEqual(v.decideUtteranceEnd({ ...at, listenMs: 0, lastSpeechAt: 10100, quietMs: 1000 }), 'end');
+  });
+});
+
 describe('confirmWake', () => {
   const cases = [
     ['detected: leading wake phrase removed', 'Hey Luna, what is the weather?', { detected: true }, 'what is the weather?'],
     ['detected: transcript without it is kept as is', 'what is the weather', { detected: true }, 'what is the weather'],
     ['detected: a bare "hey Luna" stays, answered as a greeting', 'Hey Luna.', { detected: true }, 'Hey Luna.'],
+    ['detected mid-sentence: only what follows "hey Luna"', 'Gemma, Gemma. Hey Luna, what are some popular songs?', { detected: true }, 'what are some popular songs?'],
+    ['detected: "luna" inside the question is not a wake phrase', 'what does luna mean in Spanish', { detected: true }, 'what does luna mean in Spanish'],
+    ['detected: mid-sentence "hey Luna" with nothing after → whole transcript', 'So I said hey Luna.', { detected: true }, 'So I said hey Luna.'],
     ['candidate: the question after a mid-sentence wake phrase', "So anyway, hey Luna, what's the weather?", { candidate: true }, "what's the weather?"],
     ['candidate: Whisper spelling "Loona"', 'Hey Loona what time is it', { candidate: true }, 'what time is it'],
     ['no model: transcript starting with the phrase', 'hey luna tell me a joke', {}, 'tell me a joke'],

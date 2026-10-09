@@ -561,6 +561,39 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('full detections unchanged (no Whisper check); their peak is consumed, so it never leaks into the next utterance as a candidate'); }
 
 
+  console.log('listening after a bare "hey Luna"');
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '2000' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+    const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
+    const speak = async ms => { for (let t = 0; t < ms; t += 20) { mic.write(loud); await H.wait(20); } };
+    H.S.transcripts = ["Hey Luna. What's the weather like?"]; H.S.played.length = 0;
+    await speak(300); wake.onDetect(0.9, Date.now());                     // "hey Luna", the model fires as it ends
+    await H.wait(700);                                                     // a pause well past SILENCE_MS (150)
+    assert.strictEqual(H.S.llmRequests.length, 0, 'not answered as a greeting');
+    assert.ok(H.S.logs.some(l => /heard "hey Luna" — listening for the question \(up to 2s\)/.test(l)));
+    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'chime when she starts listening');
+    await speak(400); await H.wait(600);                                   // the question
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["What's the weather like?"]);
+    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'no second chime');
+    ok('"hey Luna" … pause … question → one utterance: chime while listening, question answered, no greeting'); }
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '600' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+    const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
+    H.S.transcripts = ['Hey Luna.'];
+    for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now());
+    await H.wait(400); assert.strictEqual(H.S.llmRequests.length, 0);
+    await H.wait(700);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']);
+    ok('nothing follows within WAKE_LISTEN_MS → the bare "hey Luna" is answered as a greeting'); }
+  { const H = await wakeRig(); await H.utter(0.9, "hey Luna what's the weather", true);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["what's the weather"]);
+    assert.ok(!H.S.logs.some(l => /listening for the question/.test(l)));
+    ok('run-on "hey Luna what\'s the weather" → no waiting, answered as before'); }
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '0' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+    const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
+    H.S.transcripts = ['Hey Luna.'];
+    for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now()); await H.wait(500);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']); ok('WAKE_LISTEN_MS=0 → no waiting, as before'); }
+
+
   console.log('undecodable packets');
   { const H = await wakeRig(); const mic = H.S.audio.u1;
     const bad = Buffer.from([0xBA, 0xD0, 1, 2, 3, 4, 5, 6]);

@@ -36,6 +36,7 @@ const SETTINGS = [
   { name: 'OWW_EMBEDDING_PATH', type: 'string' },
   { name: 'OWW_THRESHOLD', type: 'float', default: 0.5, min: 0, max: 1 },
   { name: 'OWW_CANDIDATE_THRESHOLD', type: 'float', default: 0.1, min: 0, max: 1 },
+  { name: 'WAKE_LISTEN_MS', type: 'int', default: 4000, min: 0 },
   { name: 'OWW_TRIGGER_FRAMES', type: 'int', default: 1, min: 1 },
   { name: 'OWW_REFRACTORY_MS', type: 'int', default: 1500, min: 0 },
   { name: 'OWW_FEATURE_FRAMES', type: 'int', default: 0, min: 0 },
