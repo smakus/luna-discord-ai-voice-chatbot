@@ -55,7 +55,9 @@ const QWEN3_TTS_TIMEOUT_MS = config.QWEN3_TTS_TIMEOUT_MS;
 
 // Chatterbox Turbo (Chatterbox/chatterbox_server.py, macOS only): Kokoro's API
 // again, with a built-in voice ("default") or clones, and it performs audio
-// tags. Renders ~2.7x faster than real time, but buffered by default like Qwen3.
+// tags. Buffered by default: whole sentences render 1.7x faster than real time
+// while the LLM writes, but streamed (in small pieces) only 0.6x, which runs
+// dry mid-sentence and cuts it off.
 const CHATTERBOX_URL        = config.CHATTERBOX_URL;
 const CHATTERBOX_VOICE      = config.CHATTERBOX_VOICE || undefined;
 const CHATTERBOX_STREAM     = config.CHATTERBOX_STREAM;

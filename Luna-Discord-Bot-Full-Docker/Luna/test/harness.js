@@ -37,7 +37,7 @@ module.exports = function boot(env = {}) {
       conn.once(st, () => { clearTimeout(t); res(conn); });
     }),
     createAudioPlayer: () => { const p = new EventEmitter(); p.play = r => { S.played.push(r.text); setTimeout(() => p.emit('idle'), S.playMs ?? 20); }; p.stop = () => {}; return p; },
-    createAudioResource: (stream) => ({ text: stream.ttsText }),
+    createAudioResource: (stream) => ({ text: stream.ttsText, playbackDuration: 1200, playStream: { readableEnded: !S.audioRunsDry } }),
   };
 
   // ── discord.js ──

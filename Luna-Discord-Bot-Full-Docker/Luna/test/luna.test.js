@@ -605,6 +605,16 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']); ok('WAKE_LISTEN_MS=0 → no waiting, as before'); }
 
 
+  console.log('playback cut short');
+  { const H = await setup({}); H.S.llmScript = sse('Hello there.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.ok(!H.S.logs.some(l => /\[audio\] sentence cut short/.test(l)), 'a sentence that plays to its end is not reported');
+    H.S.audioRunsDry = true; H.S.llmScript = sse('Cut off here.');
+    await H.T.handleQuery('again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.ok(H.S.logs.some(l => /\[audio\] sentence cut short after 1\.2s — the audio stopped arriving in time/.test(l)), H.S.logs.slice(-5).join(' | '));
+    ok('player stops before the audio ended → "[audio] sentence cut short" warning; a normal ending is not reported'); }
+
+
   console.log('undecodable packets');
   { const H = await wakeRig(); const mic = H.S.audio.u1;
     const bad = Buffer.from([0xBA, 0xD0, 1, 2, 3, 4, 5, 6]);

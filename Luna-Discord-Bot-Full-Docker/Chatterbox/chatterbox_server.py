@@ -13,8 +13,10 @@ Voices:
   <name>        a clone of <name>.wav in CHATTERBOX_VOICES_DIR: 10-20 s of
                 clear speech by one speaker (no transcript needed)
 
-Runs on Apple Silicon through MLX, about 2.7x faster than real time next to a
-Gemma-class LLM; start it with scripts/chatterbox-metal.sh.
+Runs on Apple Silicon through MLX: whole sentences render about 2.6x faster
+than real time, 1.7x while a Gemma-class LLM is writing. Streamed requests
+(rendered in small chunks) are far slower, under real time; leave Luna's
+CHATTERBOX_STREAM off. Start it with scripts/chatterbox-metal.sh.
 
 Environment:
   CHATTERBOX_VOICES_DIR    folder of <name>.wav clones (optional)
@@ -84,8 +86,14 @@ class ChatterboxEngine:
         text = keep_known_tags(text)
         if not text:        # only unknown tags: nothing to say
             return
-        for result in self._model.generate(text, temperature=self.temperature,
-                                           stream=True, streaming_interval=interval):
+        # A buffered request is rendered whole, not in chunks: Chatterbox's
+        # chunked mode is much slower. Measured (fp16, Gemma writing at the same
+        # time): whole sentence 1.7x real time, 1 s chunks 1.0x, 0.32 s chunks
+        # (streaming) 0.6x, which falls behind playback and cuts sentences off.
+        # The cost: a client hanging up mid-sentence is noticed when that
+        # sentence is done (a second or two), not within a chunk.
+        kwargs = {'stream': True, 'streaming_interval': interval} if stream else {}
+        for result in self._model.generate(text, temperature=self.temperature, **kwargs):
             yield result.audio
 
 
