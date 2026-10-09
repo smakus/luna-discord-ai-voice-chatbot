@@ -63,6 +63,7 @@ const SETTINGS = [
   { name: 'GREET_DELAY_MS', type: 'int', default: 1500, min: 0 },
   { name: 'ANNOUNCE_LEAVE', type: 'bool', default: true },
   { name: 'FAREWELL_PHRASES', type: 'phrases' },
+  { name: 'NAME_PRONUNCIATIONS', type: 'phrases' },
   { name: 'LEAVE_COOLDOWN_MS', type: 'int', default: 600000, min: 0 },
   { name: 'LEAVE_DELAY_MS', type: 'int', default: 3000, min: 0 },
   { name: 'ANNOUNCE_SEARCH', type: 'bool', default: true },

@@ -118,7 +118,7 @@ module.exports = function boot(env = {}) {
   // Like discord.js, member.voice is live: it reports where the user is now, not
   // where they were when the object was created.
   const currentChannel = uid => { for (const [cid, m] of members) if (m.has(uid)) return cid; return null; };
-  const member = (uid, chan) => ({ id: uid, user: { bot: uid === 'luna', tag: uid, username: uid }, displayName: (S.names && S.names[uid]) || uid,
+  const member = (uid, chan) => ({ id: uid, user: { bot: uid === 'luna' || (S.bots || []).includes(uid), tag: uid, username: uid }, displayName: (S.names && S.names[uid]) || uid,
     voice: { get channelId() { return currentChannel(uid); }, get channel() { const c = currentChannel(uid); return c ? channel(c) : null; } } });
   const text = { send: async (m) => { S.sends.push(m); await new Promise(r => setTimeout(r, S.sendMs ?? 0)); return { delete: async () => { S.sends.push('deleted:' + m); }, edit: async t => { S.sends.push('edit:' + t); } }; } };
   const H = {

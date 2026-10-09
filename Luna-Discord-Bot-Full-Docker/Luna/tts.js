@@ -137,6 +137,28 @@ function keepTags(text, tags, aliases = {}) {
   }).replace(/\s+/g, ' ').trim();
 }
 
+// ─── Pronunciation ────────────────────────────────────────────────────────────
+//
+// Names the voice says wrong, respelled the way they sound:
+// NAME_PRONUNCIATIONS=smakus=smack-us|appa=ah-pah. Applied to everything Luna
+// says (answers, greetings, farewells, fillers) just before the voice, so the
+// LLM keeps writing the real name. Whole words only, any capitalisation:
+// "smakus" and "Smakus's" change, "smakusbot" doesn't.
+const PRONUNCIATIONS = config.NAME_PRONUNCIATIONS.flatMap(entry => {
+  const eq = entry.indexOf('=');
+  const name = entry.slice(0, eq).trim(), sound = entry.slice(eq + 1).trim();
+  if (eq < 1 || !name || !sound) {
+    console.warn(`[tts] NAME_PRONUNCIATIONS entry "${entry}" ignored — expected name=how-it-sounds`);
+    return [];
+  }
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [{ re: new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu'), sound }];
+});
+
+function pronounce(text) {
+  return PRONUNCIATIONS.reduce((t, { re, sound }) => t.replace(re, sound), text);
+}
+
 // Thrown by a provider to say whether the whole provider should be benched
 // ('disable') or only this request should move on ('transient').
 class TTSError extends Error {
@@ -330,7 +352,7 @@ async function fetchTTS(text, { signal } = {}) {
     // trying is strictly better than certain silence.
     if (isBenched(provider) && !isLast) continue;
 
-    const spoken = TTS_EXPRESSIVE ? provider.speakable(text) : stripAudioTags(text);
+    const spoken = pronounce(TTS_EXPRESSIVE ? provider.speakable(text) : stripAudioTags(text));
     // A sentence that was only a tag ("[laughs]") has nothing left to say.
     if (!spoken) return null;
 
@@ -362,4 +384,4 @@ async function fetchTTS(text, { signal } = {}) {
   return null;
 }
 
-module.exports = { fetchTTS, describeTTS, expressivePrompt, stripAudioTags };
+module.exports = { fetchTTS, describeTTS, expressivePrompt, stripAudioTags, pronounce };

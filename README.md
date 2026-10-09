@@ -301,6 +301,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
 | `ELEVENLABS_TIMEOUT_MS` | `10000` | Falls back to Kokoro after this |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API address |
+| `NAME_PRONUNCIATIONS` | | Names the voice says wrong, respelled the way they sound, separated by a pipe character: `smakus=smack-us\|appa=ah-pah`. Applied to everything she says (whole words, any capitalisation); the LLM still sees the real name |
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
 | `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
 | `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
