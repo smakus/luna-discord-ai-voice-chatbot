@@ -5,7 +5,7 @@ const { describe, it } = require('node:test');
 const assert = require('assert');
 const fs = require('fs'), path = require('path');
 const { wordsToDigits, isCorrect, searchOk, voiceIssues, median, mean, rate, isRight, summarize } = require('../bench/score');
-const { systemPrompt, todayLine, SEARCH_PROMPT, QUICK_PROMPT } = require('../prompt');
+const { systemPrompt, todayLine, speakerLine, SEARCH_PROMPT, QUICK_PROMPT } = require('../prompt');
 
 describe('spoken numbers', () => {
   const cases = [
@@ -142,10 +142,12 @@ describe('system prompt (prompt.js)', () => {
     assert.strictEqual(todayLine('America/Los_Angeles', now), 'Today is Monday, October 5, 2026 (America/Los_Angeles time).');
   });
   it('parts in order: stable first, flavor last; empty parts leave no gaps', () => {
-    const p = systemPrompt({ config, timeZone: 'UTC', now, expressive: 'EXPR.', search: true, extra: QUICK_PROMPT, flavor: 'FLAVOR.' });
+    const p = systemPrompt({ config, timeZone: 'UTC', now, expressive: 'EXPR.', search: true, speaker: 'Sam', extra: QUICK_PROMPT, flavor: 'FLAVOR.' });
     assert.ok(p.startsWith('You are Luna, a fun and helpful voice assistant'));
     const at = s => p.indexOf(s);
-    assert.ok(at('Today is') < at('EXPR.') && at('EXPR.') < at(SEARCH_PROMPT) && at(SEARCH_PROMPT) < at(QUICK_PROMPT) && at(QUICK_PROMPT) < at('FLAVOR.'));
+    assert.ok(at('Today is') < at('EXPR.') && at('EXPR.') < at(SEARCH_PROMPT) && at(SEARCH_PROMPT) < at(speakerLine('Sam')) &&
+      at(speakerLine('Sam')) < at(QUICK_PROMPT) && at(QUICK_PROMPT) < at('FLAVOR.'));
+    assert.match(speakerLine('Sam'), /^The person talking to you now is Sam\. Use their name now and then/);
     assert.ok(p.endsWith(' FLAVOR.'));
     const plain = systemPrompt({ config, timeZone: 'UTC', now });
     assert.ok(plain.endsWith('(UTC time).') && !plain.includes('  '));

@@ -622,6 +622,19 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('player stops before the audio ended → "[audio] sentence cut short" warning; a normal ending is not reported'); }
 
 
+  console.log('the asker\'s name');
+  { const H = await setup({}); H.S.names = { u1: 'smak_99' }; H.put('u1', 'A'); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi smak.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(H.S.llmRequests[0].system.includes('The person talking to you now is smak. Use their name now and then'), H.S.llmRequests[0].system.slice(-200));
+    ok('the asker\'s speakable display name is in the prompt ("smak_99" → smak)'); }
+  { const H = await setup({}); H.S.names = { u1: '🔥🔥' }; H.put('u1', 'A'); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(!H.S.llmRequests[0].system.includes('person talking to you')); ok('a name with nothing speakable → no name line'); }
+  { const H = await setup({ LM_USE_NAMES: 'false' }); H.S.names = { u1: 'Sam' }; H.put('u1', 'A'); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(!H.S.llmRequests[0].system.includes('person talking to you')); ok('LM_USE_NAMES=false → no name line'); }
+
+
   console.log('music tools (LLM → smakbot)');
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];

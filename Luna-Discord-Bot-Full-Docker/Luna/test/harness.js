@@ -73,7 +73,7 @@ module.exports = function boot(env = {}) {
   const fakeFetch = async (url, init = {}) => {
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
     if (url.endsWith('/api/v1/models')) return { ok: true, json: async () => ({ models: [{ type: 'llm', loaded_instances: [{ id: S.model }] }] }) };
-    const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations, integrations: body.integrations });
+    const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations });
     init.signal.addEventListener('abort', () => { S.aborted = (S.aborted || 0) + 1; }, { once: true });
     if (body.model !== S.model) return { ok: false, status: 404, text: async () => 'model not found' };
     if (S.mcpDown && body.integrations) return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Unable to connect to remote MCP server 'tavily' at url 'https://mcp.tavily.com/mcp/'. Please ensure the provided url is correct and the server is reachable." } }) };

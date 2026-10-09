@@ -282,6 +282,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
 | `LM_PERSONALITY` | `helpful` | How Luna is described to the model: "You are Luna, a *…* voice assistant". E.g. `fun, bubbly, friendly and helpful` |
 | `LM_CONCISE` | `true` | Ask for concise answers. `false` lets her talk more |
+| `LM_USE_NAMES` | `true` | Tell the model who is asking (their Discord display name, made speakable) so she can use their name now and then |
 | `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
 | `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
 

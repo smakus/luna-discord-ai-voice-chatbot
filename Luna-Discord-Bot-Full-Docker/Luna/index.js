@@ -2038,8 +2038,11 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = expressivePrompt();
+  // The asker's name, so she can use it (LM_USE_NAMES); left out when they
+  // aren't in her voice channel or their name has nothing speakable.
+  const speaker = config.LM_USE_NAMES ? speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) : '';
   body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
-    search: useSearch && ANNOUNCE_SEARCH, extra: extraSystem, flavor });
+    search: useSearch && ANNOUNCE_SEARCH, speaker, extra: extraSystem, flavor });
 
   const priorId = getConversationId(userId);
   if (priorId) body.previous_response_id = priorId;
