@@ -120,7 +120,9 @@ const CHATTERBOX_PROMPT =
   `as shown. Emotions: ${tagList(CHATTERBOX_EMOTIONS)}; an emotion only colors the ` +
   'words after it, so put it at the start of a sentence, never at the end. ' +
   `Sounds: ${tagList(CHATTERBOX_SOUNDS)}; a sound is performed where it stands. ` +
-  'Use tags wherever they genuinely fit the moment. ' +
+  'Use tags wherever they genuinely fit the moment. Laugh or chuckle only at something ' +
+  'actually funny by human standards, like the punchline of a joke; never after a greeting, ' +
+  'a welcome, a question back, a kind or friendly remark, or to sound cheerful. ' +
   'Never use any for plain facts, numbers or information. No other bracketed tags.';
 
 // The text with only the tags `tags` performs: a Set of tag names (after

@@ -47,17 +47,26 @@ const QUICK_PROMPT =
   "Reply with only the words you will say out loud: no planning, no notes to " +
   "yourself, and no drafts in quotation marks.";
 
+// Who is asking, so she can use their name. "Now and then": told only the
+// name, the model starts every reply with it.
+function speakerLine(name) {
+  return `The person talking to you now is ${name}. Use their name now and then where it feels natural, not in every reply.`;
+}
+
 // The whole prompt for one request.
 //   expressive  the audio-tag / wording instruction for the voice in use ('' for none)
 //   search      the search tool is offered and Luna announces searches herself
+//   speaker     the asker's speakable name ('' to leave it out); after the
+//               parts every request shares, so they stay a cached prefix
 //   extra       e.g. QUICK_PROMPT for a quick-answer retry
 //   flavor      the occasional personality line, already chosen or ''
-function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, extra = '', flavor = '' }) {
+function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, speaker = '', extra = '', flavor = '' }) {
   return basePrompt(config) + ' ' + todayLine(timeZone, now) +
     (expressive ? ' ' + expressive : '') +
     (search ? ' ' + SEARCH_PROMPT : '') +
+    (speaker ? ' ' + speakerLine(speaker) : '') +
     (extra ? ' ' + extra : '') +
     (flavor ? ' ' + flavor : '');
 }
 
-module.exports = { basePrompt, todayLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
+module.exports = { basePrompt, todayLine, speakerLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
