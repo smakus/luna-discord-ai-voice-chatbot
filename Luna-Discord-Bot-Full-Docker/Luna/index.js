@@ -2217,7 +2217,18 @@ async function playTTS(passThrough, connection) {
       };
 
       const timer = setTimeout(() => finish('playback timed out after 30s'), 30000);
-      player.on(AudioPlayerStatus.Idle, () => finish());
+      player.on(AudioPlayerStatus.Idle, () => {
+        // Idle while the audio has not ended: Discord's player stops a sentence
+        // when no audio has arrived for 100 ms, so the rest of it is lost.
+        // That happens when TTS renders slower than playback (it was streamed
+        // Chatterbox while the LLM was writing). An interruption is not this:
+        // interruptOwnPlayback() lets go of currentPlayer first.
+        if (currentPlayer === player && resource.playStream && !resource.playStream.readableEnded) {
+          console.warn(`[audio] sentence cut short after ${(resource.playbackDuration / 1000).toFixed(1)}s — ` +
+            'the audio stopped arriving in time (TTS rendering slower than playback?)');
+        }
+        finish();
+      });
       player.on('error', err => finish(err.message));
     });
   } catch (err) {
