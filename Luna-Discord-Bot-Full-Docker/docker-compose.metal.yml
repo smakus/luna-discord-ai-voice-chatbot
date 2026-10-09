@@ -25,6 +25,10 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Luna's own MCP server (the LLM's music tools), for LM Studio on this
+    # Mac only: see README → MusicBot integration.
+    ports:
+      - "127.0.0.1:8895:8895"
     env_file:
       - ./Luna/.env
     environment:

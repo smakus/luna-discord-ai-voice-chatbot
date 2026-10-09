@@ -239,6 +239,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
 | `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
+| `MUSIC_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)); needs `"luna"` in LM Studio's `mcp.json` |
+| `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the music tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
 | `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
 | `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
@@ -474,6 +476,14 @@ Below the table, each model's problems are listed by question. The answers are s
 ## MusicBot integration
 
 Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`.
+
+Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves three tools for it, `play_music`, `skip_song` and `stop_music`, from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+
+```json
+"luna": { "url": "http://127.0.0.1:8895/mcp" }
+```
+
+When the model calls a tool, Luna posts the smakbot command (`!summon` first for play) and the model confirms out loud. A `[music] the LLM called …` line in the log shows each call. LM Studio only connects to local MCP servers listed in `mcp.json`, which is why this step is needed. If it can't reach them, Luna answers without them and logs a warning. `MUSIC_TOOLS=false` turns them off.
 
 MusicBot normally ignores messages from other bots, so whitelist Luna in its config. In `config/options.ini`:
 
