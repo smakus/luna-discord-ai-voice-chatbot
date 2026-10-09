@@ -17,7 +17,7 @@ const { takeSentences } = require('./sentences');
 const { systemPrompt, SEARCH_PROMPT, QUICK_PROMPT } = require('./prompt');
 const {
   stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
-  decideWake, confirmWake, decideSilentSpeaker,
+  decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 } = require('./voice-input');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -78,6 +78,11 @@ const OWW_GRACE_MS = config.OWW_GRACE_MS;
 // never triggered is a candidate: it is transcribed, and kept only if Whisper
 // heard "Luna" in it. 0 disables (only full detections count).
 const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
+// After a bare "hey Luna" and a pause, how long to wait for the question
+// before answering the greeting (decideUtteranceEnd in voice-input.js). She
+// waits silently: the chime always means "got it", once the question is in.
+// 0 disables (the utterance ends after SILENCE_MS, as before).
+const WAKE_LISTEN_MS = config.WAKE_LISTEN_MS;
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
 const OWW_DEBUG_SCORE = config.OWW_DEBUG_SCORE;
 // 'auto' normalises quiet speech up toward a target level before detection,
@@ -805,6 +810,8 @@ function continuousCapture(connection, userId, channel) {
   let flushStartedAt = 0;
   let lastDataTime   = Date.now();
   let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
+  let listening      = false;   // waiting for the question after a bare "hey Luna"
+  let listenTimer    = null;    // ends that wait if no question comes
 
   const segmenter = createSegmenter({
     energyThreshold: ENERGY_THRESHOLD,
@@ -902,6 +909,29 @@ function continuousCapture(connection, userId, channel) {
     }
 
     if (segmenter.buffered === 0) return;
+
+    // Only the wake phrase so far, then a pause: wait for the question rather
+    // than answering "hey Luna" on its own. The question, once spoken, ends
+    // the utterance as usual (silence after it); if none comes, the timer
+    // ends the wait and the greeting is answered. The timer stands down once
+    // the question has begun: firing mid-question cut it off ("…will be like
+    // on." — "Saturday" then arrived as an utterance with no wake word).
+    const quietMs = Date.now() - segmenter.lastSpeechAt;
+    if (wakeStream && decideUtteranceEnd({ quietMs, lastSpeechAt: segmenter.lastSpeechAt,
+        wakeAt: lastWakeAt, listenMs: WAKE_LISTEN_MS }) === 'listen') {
+      if (!listening) {
+        listening = true;
+        console.log(`[${userId}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
+      }
+      clearTimeout(listenTimer);
+      listenTimer = setTimeout(() => {
+        if (Date.now() - segmenter.lastSpeechAt >= SILENCE_MS) flushUtterance();
+      }, WAKE_LISTEN_MS - quietMs + 20);
+      return;
+    }
+    listening = false;
+    clearTimeout(listenTimer);
+
     flushing = true;
     flushStartedAt = Date.now();
     const { pcm, durationMs, speechMs, speechStartedAt } = segmenter.take();
@@ -1012,6 +1042,7 @@ function continuousCapture(connection, userId, channel) {
   audioStream.once('close', () => {
     console.log(`[${userId}] capture stream closed — will resume on next speech`);
     clearInterval(dataWatchdog);
+    clearTimeout(listenTimer);
     segmenter.close();
     if (wakeStream) {
       userGainState.set(userId, wakeStream.exportGainState());
@@ -1025,6 +1056,7 @@ function continuousCapture(connection, userId, channel) {
   audioStream.once('error', err => {
     console.error(`[${userId}] capture stream error:`, err);
     clearInterval(dataWatchdog);
+    clearTimeout(listenTimer);
     segmenter.close();
     if (wakeStream) wakeStream.close();
     captureStates.delete(userId);

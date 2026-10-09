@@ -14,6 +14,9 @@
 //                    │ detection time, peak score             ▼ utterance
 //                    └──────────────────────► decideWake: detected / candidate / discard
 //                                                             │
+//                                                             ▲ end of utterance:
+//                                          decideUtteranceEnd (wait for the question
+//                                          after a bare "hey Luna"?)
 //                                                             ▼ (transcribed)
 //                                                 confirmWake: the question, or nothing
 //
@@ -32,6 +35,9 @@
 const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona)\b[\s,.]*/i;
 // The same phrase anywhere in a transcript ("so anyway, hey Luna, what's…").
 const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
+// Mid-sentence, only the full "hey Luna": "Luna" alone there is more likely
+// part of the question ("what does luna mean in Spanish").
+const WAKE_PHRASE_RE = /\b(?:hey|hay|hi)[\s,.]*(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
 
 // Removes a leading wake phrase; a no-op when there is none.
 const stripWakeWord = text => text.replace(WAKE_RE, '').trim();
@@ -105,6 +111,7 @@ function createSegmenter({ energyThreshold, prerollFrames, frameMs = 20, maxFram
   let prerollMs = 0;          // how much of the current utterance is lead-in
   let speaking = false;
   let speechStartedAt = 0;
+  let lastSpeechAt = 0;
   let silenceTimer = null;
 
   const loud = frame => {
@@ -117,6 +124,7 @@ function createSegmenter({ energyThreshold, prerollFrames, frameMs = 20, maxFram
   return {
     get speaking() { return speaking; },
     get speechStartedAt() { return speechStartedAt; },
+    get lastSpeechAt() { return lastSpeechAt; },
     get buffered() { return frames.length; },
 
     push(frame) {
@@ -130,6 +138,7 @@ function createSegmenter({ energyThreshold, prerollFrames, frameMs = 20, maxFram
           }
         }
         speaking = true;
+        lastSpeechAt = now();
         frames.push(frame);
         stopTimer();
         silenceTimer = setTimer(() => { silenceTimer = null; onSilence(); }, silenceMs);
@@ -195,11 +204,31 @@ function decideWake({ wakeAt, speechStartedAt, now, durationMs, peak, graceMs, c
   return { verdict: 'discard', span };
 }
 
+// ── End of an utterance ──────────────────────────────────────────────────────
+//
+// An utterance normally ends after silenceMs of quiet. "hey Luna … (pause) …
+// what's the weather" was then split in two: a bare "hey Luna", answered as a
+// greeting, and a question without the wake word, thrown away. So when the
+// wake phrase was the last thing said, Luna keeps listening for the question.
+//   listen  quiet after nothing but the wake phrase, for less than listenMs
+//   end     the utterance is complete
+// Called once the speaker has been quiet for silenceMs (quietMs).
+// The model fires as "Luna" ends; speech more than QUERY_MIN_MS after that
+// is the question already under way (even "skip" is longer).
+const QUERY_MIN_MS = 300;
+
+function decideUtteranceEnd({ quietMs, lastSpeechAt, wakeAt, listenMs }) {
+  const onlyWakePhrase = wakeAt > 0 && lastSpeechAt - wakeAt < QUERY_MIN_MS;
+  return listenMs > 0 && onlyWakePhrase && quietMs < listenMs ? 'listen' : 'end';
+}
+
 // ── Wake phrase in the transcript → the question ─────────────────────────────
 //
 //   detected   the model already heard the wake word: the transcript is not
 //              re-checked (Whisper often mangles or drops a leading "hey
-//              Luna"); a leading wake phrase is removed.
+//              Luna"). The question is what follows the wake phrase — at the
+//              start, or "hey Luna" mid-sentence ("Gemma, Gemma. Hey Luna,
+//              what…"); with neither found, the whole transcript.
 //   candidate  "Luna" must appear somewhere; the question is what follows it.
 //   neither    (no wake-word model) the transcript must start with it.
 // A bare "hey Luna" stays as the question, so it is answered as a greeting.
@@ -210,6 +239,10 @@ function confirmWake(transcript, { detected = false, candidate = false } = {}) {
     return { accepted: true, query: transcript.slice(match.index + match[0].length).trim() || transcript };
   }
   if (!detected && !WAKE_RE.test(transcript)) return { accepted: false, reason: 'no wake word' };
+  if (detected && !WAKE_RE.test(transcript)) {
+    const match = WAKE_PHRASE_RE.exec(transcript);
+    if (match) return { accepted: true, query: transcript.slice(match.index + match[0].length).trim() || transcript };
+  }
   return { accepted: true, query: stripWakeWord(transcript) || transcript };
 }
 
@@ -230,5 +263,5 @@ function decideSilentSpeaker({ verdict, now, lastReconnectAt, gapMs }) {
 module.exports = {
   WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord,
   createPacketDecoder, createWakeFeeder, createSegmenter,
-  decideWake, confirmWake, decideSilentSpeaker,
+  decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 };
