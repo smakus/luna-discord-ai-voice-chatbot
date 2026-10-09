@@ -150,7 +150,7 @@ Kokoro is the default. There are three alternatives: Chatterbox Turbo, a local e
 
 #### Chatterbox Turbo (Apple Silicon)
 
-[Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) (Resemble AI, MIT license) runs on the Mac's GPU through MLX and performs audio tags in the text: emotions that set the tone of what follows (`[happy]`, `[sarcastic]`, `[surprised]`, `[whispering]`, `[angry]`, `[fear]`, `[crying]`, `[dramatic]`) and sounds (`[laugh]`, `[chuckle]`, `[sigh]`, `[gasp]`, `[groan]`, `[sniff]`, `[cough]`, `[clear throat]`, `[shush]`). While it is speaking, the LLM is told exactly these tags and uses them wherever they fit (none on plain facts).
+[Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) (Resemble AI, MIT license) runs on the Mac's GPU through MLX and performs audio tags in the text: emotions that set the tone of what follows (`[happy]`, `[sarcastic]`, `[surprised]`, `[whispering]`, `[angry]`, `[fear]`, `[crying]`, `[dramatic]`) and sounds (`[laugh]`, `[chuckle]`, `[sigh]`, `[gasp]`, `[groan]`, `[sniff]`, `[cough]`, `[clear throat]`, `[shush]`). While it is speaking, the LLM is told exactly these tags and uses them wherever they fit: none on plain facts, and laughs only for things that are actually funny.
 
 ```bash
 ./scripts/chatterbox-metal.sh
