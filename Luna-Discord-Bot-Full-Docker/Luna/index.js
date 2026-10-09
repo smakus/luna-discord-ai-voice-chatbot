@@ -128,7 +128,8 @@ const GREET_PHRASES    = config.GREET_PHRASES;
 const FAREWELL_PHRASES = config.FAREWELL_PHRASES;
 
 // Luna introduces herself when she joins a voice channel. INTRO_PHRASES works
-// like the two above, with {wake} for the wake phrase instead of {name}.
+// like the two above, with {wake} for the wake phrase and {names} for the
+// people in the channel ("smakus, joel, and kenbeans") instead of {name}.
 const ANNOUNCE_SELF = config.ANNOUNCE_SELF;
 const INTRO_PHRASES = config.INTRO_PHRASES;
 
@@ -2384,12 +2385,31 @@ function announce(member, connection, text) {
 
 // ─── Self-introduction ────────────────────────────────────────────────────────
 
-// Overridable with INTRO_PHRASES.
+// Overridable with INTRO_PHRASES. Phrases with {names} greet everyone in the
+// channel by name; the others are for an empty channel or a crowd.
 const INTROS = INTRO_PHRASES.length ? INTRO_PHRASES : [
+  "Hey {names}! Luna here. Just say {wake} whenever you need me.",
+  "Hi {names}! It's Luna. Say {wake} if you want anything.",
+  "Hello {names}, Luna has arrived! Say {wake} to get my attention.",
   "Hi everyone, Luna here! Just say {wake} whenever you need me.",
   "Hey all, it's Luna. Say {wake} if you want anything.",
   "Luna has arrived! Say {wake} to get my attention.",
 ];
+// More people than this and a list of names gets long: "everyone" instead.
+const INTRO_MAX_NAMES = 6;
+
+// "smakus", "smakus and joel", "smakus, joel, and kenbeans".
+const NAME_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conjunction' });
+
+// The speakable names of the people in the channel (not bots, not ignored
+// users), or [] when there are none or too many to list.
+function introNames(channel) {
+  const names = [...(channel?.members?.values() ?? [])]
+    .filter(m => !m.user.bot && !IGNORED_USERS.has(m.id))
+    .map(m => speakableName(m.displayName))
+    .filter(Boolean);
+  return names.length <= INTRO_MAX_NAMES ? names : [];
+}
 
 const INTRO_QUEUE_ID = 'luna:intro';
 
@@ -2398,7 +2418,9 @@ const INTRO_QUEUE_ID = 'luna:intro';
 // by accident; whoever speaks first after it is simply answered next.
 function introduceSelf(connection) {
   if (!ANNOUNCE_SELF) return;
-  const text = fillPhrase(INTROS, { wake: WAKE_LABEL });
+  const names = introNames(activeVoiceChannel);
+  const fitting = INTROS.filter(p => p.includes('{names}') === names.length > 0);
+  const text = fillPhrase(fitting.length ? fitting : INTROS, { wake: WAKE_LABEL, names: NAME_LIST.format(names) || 'everyone' });
   console.log(`[intro] "${text}"`);
   const generation = nextGeneration(INTRO_QUEUE_ID);
   queuePlayback(async () => {

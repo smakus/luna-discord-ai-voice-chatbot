@@ -29,11 +29,19 @@ async function inChannel(env = {}) {
     ok(`${Object.keys(cases).length + 1} names: fancy fonts folded, emoji dropped, "_1234" tags removed, capped at 32 chars`); }
 
   console.log('intro');
-  { const H = boot(FAST); await H.start(); H.put('u1', 'A'); await H.luna('u1');
+  { const H = boot(FAST); await H.start(); H.S.names = { u1: 'smakus', u2: 'joel_42', u3: 'kenbeans', smakbot: 'smakbot' };
+    H.S.bots = ['smakbot']; H.put('u1', 'A'); H.put('u2', 'A'); H.put('u3', 'A'); H.put('smakbot', 'A'); await H.luna('u1');
     H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(30);
     const intro = H.S.tts.map(t => t.text)[0];
-    assert.ok(/Luna/.test(intro) && /hey Luna/.test(intro), intro);
-    ok(`Luna introduces herself on joining: "${intro}"`); }
+    assert.ok(/Luna/.test(intro) && /hey Luna/.test(intro) && intro.includes('smakus, joel, and kenbeans'), intro);
+    ok(`Luna introduces herself on joining, greeting everyone by name: "${intro}"`); }
+  { const H = boot(FAST); await H.start(); H.S.names = { u1: 'smakus' }; H.put('u1', 'A'); await H.luna('u1');
+    H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(30);
+    assert.match(H.S.tts[0].text, /(Hey|Hi|Hello) smakus[!,]/); ok('one person → just their name'); }
+  { const H = boot(FAST); await H.start(); const ids = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'];
+    H.S.names = Object.fromEntries(ids.map(id => [id, 'Name' + id.toUpperCase().replace(/\d/, d => 'XYZWVUT'[d])])); ids.forEach(id => H.put(id, 'A')); await H.luna('a1');
+    H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(30);
+    assert.ok(!/Name/.test(H.S.tts[0].text) && /everyone|all|arrived/.test(H.S.tts[0].text), H.S.tts[0].text); ok('more than 6 people → no list of names, "everyone"'); }
   { const H = boot({ ...FAST, ANNOUNCE_SELF: 'false' }); await H.start(); H.put('u1', 'A'); await H.luna('u1');
     H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(30);
     assert.deepStrictEqual(H.S.tts.map(t => t.text), []); ok('ANNOUNCE_SELF=false → no intro'); }
