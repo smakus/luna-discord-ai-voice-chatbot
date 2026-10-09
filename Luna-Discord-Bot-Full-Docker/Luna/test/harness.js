@@ -63,6 +63,8 @@ module.exports = function boot(env = {}) {
     './wakeword': { WakeWordEngine: { load: async () => { await new Promise(r => setTimeout(r, S.wakeLoadMs ?? 0));
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
+    http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
+    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './music-tools': require(path.join(LUNA_DIR, 'music-tools.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
   };
 
@@ -71,10 +73,11 @@ module.exports = function boot(env = {}) {
   const fakeFetch = async (url, init = {}) => {
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
     if (url.endsWith('/api/v1/models')) return { ok: true, json: async () => ({ models: [{ type: 'llm', loaded_instances: [{ id: S.model }] }] }) };
-    const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations });
+    const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations, integrations: body.integrations });
     init.signal.addEventListener('abort', () => { S.aborted = (S.aborted || 0) + 1; }, { once: true });
     if (body.model !== S.model) return { ok: false, status: 404, text: async () => 'model not found' };
     if (S.mcpDown && body.integrations) return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Unable to connect to remote MCP server 'tavily' at url 'https://mcp.tavily.com/mcp/'. Please ensure the provided url is correct and the server is reachable." } }) };
+    if (S.lunaDown && body.integrations?.some(i => i.id === 'mcp/luna')) return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Unable to connect to MCP server 'luna' at url 'http://127.0.0.1:8895/mcp'.", type: 'mcp_connection_error', param: 'integrations' } }) };
     if (S.force400) return { ok: false, status: 400, text: async () => 'max_output_tokens must be positive' };
     S.stored ??= new Set();
     if (body.previous_response_id && !S.stored.has(body.previous_response_id))
@@ -98,7 +101,7 @@ module.exports = function boot(env = {}) {
   const src = fs.readFileSync(path.join(LUNA_DIR, 'index.js'), 'utf8');
   const ctx = {
     require: m => { if (m in mods) return mods[m]; throw new Error('unmocked ' + m); },
-    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
+    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', MUSIC_TOOLS: 'false', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
     console: { log, warn: log, error: log }, fetch: fakeFetch, setTimeout, clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     AbortController, AbortSignal, DOMException, TextDecoder, TextEncoder, Promise, Date, Math, Map, Set, WeakSet, Buffer, FormData, Blob, __dirname: LUNA_DIR,
   };
@@ -120,6 +123,9 @@ module.exports = function boot(env = {}) {
   const text = { send: async (m) => { S.sends.push(m); await new Promise(r => setTimeout(r, S.sendMs ?? 0)); return { delete: async () => { S.sends.push('deleted:' + m); }, edit: async t => { S.sends.push('edit:' + t); } }; } };
   const H = {
     S, T, Status, wait: ms => new Promise(r => setTimeout(r, ms)),
+    // Waits until fn() is true (or ms pass). Tests that feed audio in real
+    // time use it instead of fixed waits: on a busy machine timers run late.
+    until: async (fn, ms = 4000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise(r => setTimeout(r, 20)); },
     put(uid, chan) { for (const m of members.values()) m.delete(uid); if (chan) { if (!members.has(chan)) members.set(chan, new Map()); members.set(chan, members.get(chan)).get(chan).set(uid, member(uid, chan)); } },
     channel,
     async luna(uid) { const m = members.get([...members.keys()].find(k => members.get(k).has(uid)))?.get(uid) || member(uid, null);

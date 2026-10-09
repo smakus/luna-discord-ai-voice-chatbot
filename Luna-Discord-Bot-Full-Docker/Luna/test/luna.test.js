@@ -501,7 +501,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.reasoning), ['low']); ok('LLM_REASONING=low → sent as reasoning: "low"'); }
 
   console.log('barge-in while thinking (real capture path)');
-  { const H = boot({ SILENCE_MS: '150', MIN_SPEECH_MS: '100', ANNOUNCE_THINKING: 'false', ANNOUNCE_SELF: 'false', LLM_THINK_LIMIT_MS: '0' });
+  { const H = boot({ SILENCE_MS: '300', MIN_SPEECH_MS: '100', ANNOUNCE_THINKING: 'false', ANNOUNCE_SELF: 'false', LLM_THINK_LIMIT_MS: '0' });
     await H.start(); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(20);
     const mic = H.S.audio.u1, wake = H.S.wake.u1; assert.ok(mic && wake, 'capture + wake stream created');
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
@@ -509,12 +509,12 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     H.S.tts.length = 0; H.S.llmRequests.length = 0; H.S.aborted = 0;
     H.S.transcripts = ['tell me about camptown races', 'actually never mind, tell me a joke'];
     H.S.llmScripts = [[...reasoningDeltas(60, 50), ...sse('Old long answer.')], sse('Here is a joke.')];
-    wake.onDetect(0.9, Date.now()); await speak(300); await H.wait(300);   // question 1 flushed, LLM "thinking"
+    wake.onDetect(0.9, Date.now()); await speak(300); await H.until(() => H.S.llmRequests.length === 1);   // question 1 flushed, LLM "thinking"
     assert.strictEqual(H.S.llmRequests.length, 1); assert.strictEqual(H.S.llmRequests[0].input, 'tell me about camptown races');
     await H.wait(500);
     wake.onDetect(0.9, Date.now()); await H.wait(20);                     // "hey Luna" during the think
     assert.ok(H.S.logs.some(l => /barge-in — cancelling the previous question/.test(l))); assert.ok(H.S.aborted >= 1);
-    await speak(300); await H.wait(600);
+    await speak(300); await H.until(() => H.S.tts.some(t => t.text === 'Here is a joke.'));
     assert.strictEqual(H.S.llmRequests.length, 2); assert.strictEqual(H.S.llmRequests[1].input, 'actually never mind, tell me a joke');
     const said = H.S.tts.map(t => t.text);
     assert.ok(said.includes('Here is a joke.') && !said.includes('Old long answer.'));
@@ -525,13 +525,18 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
 
   console.log('two-stage wake detection');
   const wakeRig = async (env = {}) => {
-    const H = boot({ SILENCE_MS: '150', MIN_SPEECH_MS: '100', ANNOUNCE_THINKING: 'false', ANNOUNCE_SELF: 'false', LLM_THINK_LIMIT_MS: '0', ...env });
+    const H = boot({ SILENCE_MS: '300', MIN_SPEECH_MS: '100', ANNOUNCE_THINKING: 'false', ANNOUNCE_SELF: 'false', LLM_THINK_LIMIT_MS: '0', ...env });
     await H.start(); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(20);
     const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.utter = async (peak, transcript, detect = false) => {
       H.S.transcripts = [transcript]; (H.S.peaks ??= {}).u1 = peak; if (detect) wake.onDetect(0.9, Date.now());
-      for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } await H.wait(500); };
+      const seen = H.S.logs.length;
+      // Half a second: clearly more than QUERY_MIN_MS (300) of speech after a detection.
+      for (let t = 0; t < 500; t += 20) { mic.write(loud); await H.wait(20); }
+      // The utterance ends after SILENCE_MS; wait for its outcome, then for the LLM request.
+      await H.until(() => H.S.logs.slice(seen).some(l => /Query:|utterance discarded|wake candidate rejected/.test(l)));
+      await H.wait(150); };
     H.S.tts.length = 0; H.S.llmRequests.length = 0; H.S.llmScript = sse('Sunny all day.'); return H; };
   { const H = await wakeRig();
     assert.ok(H.S.logs.some(l => /\[oww\] active — threshold=.*; candidates from 0\.1 confirmed by Whisper/.test(l)));
@@ -556,7 +561,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await wakeRig(); await H.utter(0.9, 'tell me a joke', true);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['tell me a joke']); assert.ok(!H.S.logs.some(l => /wake candidate/.test(l)));
     H.S.peaks.u1 = 0.9; await H.utter(0.9, 'tell me another', true);  // a detection's peak is consumed with it...
-    H.S.transcripts = ['and now a third']; for (let t = 0; t < 300; t += 20) { H.S.audio.u1.write(Buffer.alloc(1920, 7)); await H.wait(20); } await H.wait(500);
+    H.S.transcripts = ['and now a third']; for (let t = 0; t < 300; t += 20) { H.S.audio.u1.write(Buffer.alloc(1920, 7)); await H.wait(20); } await H.wait(900);
     assert.strictEqual(H.S.llmRequests.length, 2, '...so it cannot make a candidate of the next, wake-word-free utterance');
     ok('full detections unchanged (no Whisper check); their peak is consumed, so it never leaks into the next utterance as a candidate'); }
 
@@ -567,31 +572,31 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     const speak = async ms => { for (let t = 0; t < ms; t += 20) { mic.write(loud); await H.wait(20); } };
     H.S.transcripts = ["Hey Luna. What's the weather like?"]; H.S.played.length = 0;
     await speak(300); wake.onDetect(0.9, Date.now());                     // "hey Luna", the model fires as it ends
-    await H.wait(700);                                                     // a pause well past SILENCE_MS (150)
+    await H.until(() => H.S.logs.some(l => /listening for the question/.test(l))); await H.wait(300);   // a pause past SILENCE_MS
     assert.strictEqual(H.S.llmRequests.length, 0, 'not answered as a greeting');
     assert.ok(H.S.logs.some(l => /heard "hey Luna" — listening for the question \(up to 2s\)/.test(l)));
     assert.strictEqual(H.S.played.filter(p => p === undefined).length, 0, 'no chime while she waits');
-    await speak(400); await H.wait(600);                                   // the question
+    await speak(400); await H.until(() => H.S.llmRequests.length > 0);     // the question
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["What's the weather like?"]);
     assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'one chime, once the question is in');
     ok('"hey Luna" … pause … question → one utterance: silent wait, the usual chime after the question, no greeting'); }
-  { const H = await wakeRig({ WAKE_LISTEN_MS: '800' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '1200' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     const speak = async ms => { for (let t = 0; t < ms; t += 20) { mic.write(loud); await H.wait(20); } };
     H.S.transcripts = ["Hey Luna. What will the weather be like on Saturday?"];
     await speak(300); wake.onDetect(0.9, Date.now());
-    await H.wait(500);                                                     // pause; the wait ends 800 ms after "Luna"
-    await speak(900);                                                      // a long question, still going when it ends
+    await H.until(() => H.S.logs.some(l => /listening for the question/.test(l)));   // pause; the wait ends 1.2 s after "Luna"
+    await speak(1100);                                                     // a long question, still going when it ends
     assert.strictEqual(H.S.llmRequests.length, 0, 'not cut off when the wait ends mid-question');
-    await H.wait(600);
+    await H.until(() => H.S.llmRequests.length > 0);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['What will the weather be like on Saturday?']);
     ok('a question still being spoken when the wait runs out is not cut off; it ends on its own silence'); }
-  { const H = await wakeRig({ WAKE_LISTEN_MS: '600' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '1000' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.S.transcripts = ['Hey Luna.'];
     for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now());
-    await H.wait(400); assert.strictEqual(H.S.llmRequests.length, 0);
-    await H.wait(700);
+    await H.until(() => H.S.logs.some(l => /listening for the question/.test(l))); assert.strictEqual(H.S.llmRequests.length, 0);
+    await H.until(() => H.S.llmRequests.length > 0);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']);
     ok('nothing follows within WAKE_LISTEN_MS → the bare "hey Luna" is answered as a greeting'); }
   { const H = await wakeRig(); await H.utter(0.9, "hey Luna what's the weather", true);
@@ -601,8 +606,10 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await wakeRig({ WAKE_LISTEN_MS: '0' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.S.transcripts = ['Hey Luna.'];
-    for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now()); await H.wait(500);
-    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']); ok('WAKE_LISTEN_MS=0 → no waiting, as before'); }
+    for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now());
+    await H.until(() => H.S.llmRequests.length > 0);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']); assert.ok(!H.S.logs.some(l => /listening for/.test(l)));
+    ok('WAKE_LISTEN_MS=0 → no waiting, as before'); }
 
 
   console.log('playback cut short');
@@ -613,6 +620,43 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(H.S.logs.some(l => /\[audio\] sentence cut short after 1\.2s — the audio stopped arriving in time/.test(l)), H.S.logs.slice(-5).join(' | '));
     ok('player stops before the audio ended → "[audio] sentence cut short" warning; a normal ending is not reported'); }
+
+
+  console.log('music tools (LLM → smakbot)');
+  const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
+    [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
+  { const H = await setup({ MUSIC_TOOLS: 'true' });
+    assert.ok(H.S.logs.some(l => /\[music\] play\/skip\/stop tools offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
+    await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
+    assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
+    assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('play_music')));
+    assert.ok(H.S.sends.includes('!summon') && H.S.sends.includes('!play chill lo-fi'), H.S.sends.join(' | '));
+    assert.ok(H.S.sends.indexOf('!summon') < H.S.sends.indexOf('!play chill lo-fi'));
+    const said = H.S.tts.map(t => t.text);
+    assert.deepStrictEqual(said, ['Sure thing!', 'Coming right up.'], 'no search heads-up; what she said before the call is kept');
+    assert.ok(!H.S.sends.some(m => /searching the web/.test(m)));
+    assert.ok(H.S.logs.some(l => /\[u1\] \[music\] the LLM called play_music \{"query":"chill lo-fi"\}/.test(l)));
+    ok('"put on something chill" → the LLM calls play_music → !summon, !play chill lo-fi; no search heads-up; her words around it spoken'); }
+  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.llmScript = [...MUSIC_CALL('skip_song', {}), ...sse('Skipping it.')];
+    await H.T.handleQuery('next one please', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.ok(H.S.sends.includes('!skip') && !H.S.sends.includes('!summon')); ok('skip_song → !skip, no summon'); }
+  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('It is sunny.')];
+    await H.T.handleQuery("what's the weather", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.ok(BUILTIN.includes(H.S.tts[0].text) && H.S.sends.includes('edit:🔍 *Luna is searching the web...*') && !H.S.sends.some(m => m.startsWith('!')));
+    ok('a web search next to the music tools is still announced as a search; no smakbot command'); }
+  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.lunaDown = true; H.S.llmRequests.length = 0; H.S.llmScript = sse('Hello.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Hello.']);
+    assert.ok(H.S.logs.some(l => /\[music\] LM Studio can't use the music tools .* Is "luna" in LM Studio's mcp.json\?/.test(l)));
+    assert.ok(H.S.llmRequests.at(-1).integrations?.every(i => i.id !== 'mcp/luna') ?? true, 'retried without them');
+    H.S.llmRequests.length = 0; await H.T.handleQuery('hi again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.ok(H.S.llmRequests.every(r => !(r.integrations || []).some(i => i.id === 'mcp/luna')), 'left out while paused');
+    ok('LM Studio can\'t reach the music tools → answered without them, warned once, left out for a while'); }
+  { const H = await setup({ MUSIC_TOOLS: 'false' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(!(H.S.llmRequests[0].integrations || []).some(i => i.id === 'mcp/luna') && !H.S.logs.some(l => /\[music\]/.test(l)));
+    ok('MUSIC_TOOLS=false → not offered, no server'); }
 
 
   console.log('undecodable packets');
@@ -686,12 +730,13 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = boot({ ANNOUNCE_SELF: 'false' }); await H.start(); const r = await voicecheck(H);
     assert.ok(/not in a voice channel/.test(r)); ok('voicecheck when not in a channel → says so'); }
   { const H = await daveSetup({ VOICE_RECOVER_MS: '200' }); fakeDave(H.S.lastConnection, { members: ['luna', 'u2'], stats: { u1: { successes: 0, failures: 40 } } });
-    H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.wait(260);
+    H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.logs.some(l => /reconnecting/.test(l)));
     assert.ok(H.S.logs.some(l => /Discord reports u1 speaking, but none of their audio has decrypted in 0s \(encryption: NOT in group, 0 decrypted\/40 failed\) — reconnecting/.test(l)));
     ok('silent-speaker warning carries the definitive verdict'); }
   { const H = await daveSetup({ VOICE_RECOVER_MS: '200' }); const c = H.S.lastConnection;
     fakeDave(c, { members: ['luna', 'u1', 'u2'], stats: { u1: { successes: 661, failures: 9 } } });
-    c.receiver.speaking.emit('start', 'u1'); const before = H.S.audio.u1; await H.wait(260);
+    c.receiver.speaking.emit('start', 'u1'); const before = H.S.audio.u1;
+    await H.until(() => H.S.logs.some(l => /\[u1\] capture stream closed/.test(l)));
     assert.deepStrictEqual(H.S.destroyed, [], 'no reconnect');
     assert.ok(H.S.logs.some(l => /Discord reports u1 speaking and their audio is decrypting \(encryption: in group, 661 decrypted\/9 failed\), but none of it reached Luna — restarting their capture/.test(l)));
     assert.ok(before.destroyed && H.S.logs.some(l => /\[u1\] capture stream closed/.test(l)), 'their capture was restarted');
@@ -701,8 +746,10 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await daveSetup({ VOICE_RECOVER_MS: '0' }); H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.wait(300);
     assert.deepStrictEqual(H.S.destroyed, []); ok('VOICE_RECOVER_MS=0 → disabled'); }
   { const H = await daveSetup({ VOICE_RECOVER_MS: '150' });
-    H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.wait(1800); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(20);
-    H.S.lastConnection.receiver.speaking.emit('start', 'u2'); await H.wait(250);
+    const first = H.S.lastConnection;
+    first.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.lastConnection !== first, 6000);   // rejoined (after 1.5 s)
+    H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(20);
+    H.S.lastConnection.receiver.speaking.emit('start', 'u2'); await H.until(() => H.S.logs.some(l => /already reconnected recently, not retrying yet/.test(l)));
     assert.strictEqual(H.S.destroyed.length, 1); assert.ok(H.S.logs.some(l => /already reconnected recently, not retrying yet/.test(l)));
     ok('a second failure within 5 minutes → logged, not another reconnect (no loops)'); }
 

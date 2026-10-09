@@ -9,7 +9,10 @@ const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
 const { OpusEncoder } = require('@discordjs/opus');
 const path = require('path');
+const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
+const { createMcpServer } = require('./mcp-server');
+const { MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./music-tools');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
@@ -426,6 +429,7 @@ client.on(Events.ClientReady, async () => {
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
   console.log(`[search] web search: ${describeSearch()}`);
+  if (MUSIC_TOOLS_ON) startMusicTools();
   ready = true;
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
@@ -1415,6 +1419,36 @@ function pauseSearch(reason) {
   console.warn(`[search] ${reason} — answering without search; search paused for ${Math.round(SEARCH_PAUSE_MS / 60000)} min`);
 }
 
+// ─── Music tools (LLM → smakbot) ──────────────────────────────────────────────
+//
+// Besides the fixed commands below, the LLM can play, skip and stop music
+// itself (music-tools.js): Luna serves the tools over MCP on LUNA_MCP_PORT,
+// LM Studio knows them from its mcp.json as "luna", and every request offers
+// them as mcp/luna. When a call succeeds, Luna posts the smakbot command
+// (see the tool events in handleQuery). If LM Studio can't reach them, they
+// are left out for SEARCH_PAUSE_MS, like search.
+const MUSIC_TOOLS_ON  = config.MUSIC_TOOLS;
+const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
+const MUSIC_PLUGIN_ID = 'mcp/luna';
+let musicPausedUntil  = 0;
+
+function startMusicTools() {
+  const server = createMcpServer({ tools: MUSIC_TOOLS });
+  http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
+    .on('error', err => console.error(`[music] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — music tools off`))
+    .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
+      `[music] play/skip/stop tools offered to the LLM as ${MUSIC_PLUGIN_ID} ` +
+      `(LM Studio's mcp.json needs "luna": {"url": "http://127.0.0.1:${LUNA_MCP_PORT}/mcp"})`));
+}
+
+function offerMusicTools() {
+  return MUSIC_TOOLS_ON && Date.now() >= musicPausedUntil;
+}
+
+function musicIntegration() {
+  return { type: 'plugin', id: MUSIC_PLUGIN_ID, allowed_tools: [...MUSIC_TOOL_NAMES] };
+}
+
 function offerSearch(query) {
   if (Date.now() < searchPausedUntil) return false;
   return WEB_SEARCH === 'always' || (WEB_SEARCH === 'keywords' && needsWebSearch(query));
@@ -1495,6 +1529,25 @@ function extractSmakbotCommand(query) {
   return null;
 }
 
+// Posts a smakbot command in the text channel, summoning smakbot first when
+// asked to and it isn't in the voice channel. Used by the fixed commands and
+// by the LLM's music tools.
+async function sendSmakbotCommand(channel, commandText, summon) {
+  console.log(`Smakbot command: ${commandText}`);
+  const musicBotPresent = activeVoiceChannel?.members?.some(
+    m => m.user.username.toLowerCase().includes('smakbot')
+  );
+  if (!musicBotPresent && summon) {
+    console.log('smakbot not in channel — summoning first');
+    await channel.send('!summon').catch(err =>
+      console.error('Failed to send summon command:', err.message)
+    );
+  }
+  await channel.send(commandText).catch(err =>
+    console.error(`Failed to send ${commandText}:`, err.message)
+  );
+}
+
 // ─── Query handler ────────────────────────────────────────────────────────────
 
 async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
@@ -1510,23 +1563,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       playSound(CHIME_PATH, connection).catch(() => {});
     }
 
-    const commandText = musicCommand.build(musicCommand.arg);
-    console.log(`Smakbot command: ${commandText}`);
-
-    const musicBotPresent = activeVoiceChannel?.members?.some(
-      m => m.user.username.toLowerCase().includes('smakbot')
-    );
-
-    if (!musicBotPresent && musicCommand.summon) {
-      console.log('smakbot not in channel — summoning first');
-      await channel.send('!summon').catch(err =>
-        console.error('Failed to send summon command:', err.message)
-      );
-    }
-
-    await channel.send(commandText).catch(err =>
-      console.error(`Failed to send ${commandText}:`, err.message)
-    );
+    await sendSmakbotCommand(channel, musicCommand.build(musicCommand.arg), musicCommand.summon);
 
     const ack = musicCommand.ack(musicCommand.arg);
     if (ack) {
@@ -1747,6 +1784,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       let thinkTimer    = null;
       let reasonedMs    = 0;
       let reasoningAt   = 0;
+      let toolPending   = false;
       const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
       // What of the answer gets said is the answer filter's job (see
       // answer-filter.js). Reasoning-off passes that may search hold
@@ -1776,7 +1814,23 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           reasoningAt = 0;
           clearTimeout(thinkTimer);
         } else if (e.type === 'tool_call.start') {
-          announceSearchNow();
+          // Which tool is only known from the next event (its name or
+          // arguments): a search is announced and handled as a search, a
+          // music tool is not.
+          toolPending = true;
+          return;
+        } else if ((e.type === 'tool_call.name' || e.type === 'tool_call.arguments') && toolPending) {
+          toolPending = false;
+          if (!MUSIC_TOOL_NAMES.has(e.tool_name || e.tool)) {
+            announceSearchNow();
+            filter.event({ type: 'tool_call.start' });
+          }
+          return;
+        } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
+          const command = smakbotCommandFor(e.tool, e.arguments);
+          console.log(`[${userId}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
+          if (command) sendSmakbotCommand(channel, command.text, command.summon);
+          return;
         } else if (e.type === 'tool_call.success' && e.output) {
           searchCalls.push({ query: e.arguments?.query || '', output: e.output });
         }
@@ -1961,8 +2015,9 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
     model: lmStudioModel,
     input: context ? `${text}\n\n${context}` : text,
     stream: true,
-    ...(useSearch && { integrations: [searchIntegration()] }),
   };
+  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerMusicTools() ? [musicIntegration()] : [])];
+  if (integrations.length) body.integrations = integrations;
 
   // Sent on EVERY request, not only the first of a chain.
   //
@@ -2024,12 +2079,26 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
 
       const errText = await res.text();
 
+      // Luna's own music tools are unreachable — not in LM Studio's mcp.json,
+      // or its port isn't published. Answer without them and leave them out
+      // for SEARCH_PAUSE_MS.
+      if (body.integrations?.some(i => i.id === MUSIC_PLUGIN_ID) && /MCP|plugin|integration/i.test(errText) &&
+          /\bluna\b/i.test(errText)) {
+        musicPausedUntil = Date.now() + SEARCH_PAUSE_MS;
+        console.warn(`[music] LM Studio can't use the music tools (${errText.replace(/\s+/g, ' ').slice(0, 160)}) — ` +
+          `answering without them for ${Math.round(SEARCH_PAUSE_MS / 60000)} min. Is "luna" in LM Studio's mcp.json?`);
+        body.integrations = body.integrations.filter(i => i.id !== MUSIC_PLUGIN_ID);
+        if (!body.integrations.length) delete body.integrations;
+        continue;
+      }
+
       // The search server is unreachable (LM Studio rejects the whole request,
       // not just the search). Answer without it and pause search.
-      if (!retriedWithoutSearch && body.integrations && /MCP server|plugin|integration/i.test(errText)) {
+      if (!retriedWithoutSearch && useSearch && body.integrations && /MCP server|plugin|integration/i.test(errText)) {
         retriedWithoutSearch = true;
         pauseSearch(`search server unavailable (${errText.replace(/\s+/g, ' ').slice(0, 120)})`);
-        delete body.integrations;
+        body.integrations = body.integrations.filter(i => i.id === MUSIC_PLUGIN_ID);
+        if (!body.integrations.length) delete body.integrations;
         body.system_prompt = body.system_prompt.replace(' ' + SEARCH_PROMPT, '');
         useSearch = false;
         continue;
