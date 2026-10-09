@@ -570,11 +570,11 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.wait(700);                                                     // a pause well past SILENCE_MS (150)
     assert.strictEqual(H.S.llmRequests.length, 0, 'not answered as a greeting');
     assert.ok(H.S.logs.some(l => /heard "hey Luna" — listening for the question \(up to 2s\)/.test(l)));
-    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'chime when she starts listening');
+    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 0, 'no chime while she waits');
     await speak(400); await H.wait(600);                                   // the question
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["What's the weather like?"]);
-    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'no second chime');
-    ok('"hey Luna" … pause … question → one utterance: chime while listening, question answered, no greeting'); }
+    assert.strictEqual(H.S.played.filter(p => p === undefined).length, 1, 'one chime, once the question is in');
+    ok('"hey Luna" … pause … question → one utterance: silent wait, the usual chime after the question, no greeting'); }
   { const H = await wakeRig({ WAKE_LISTEN_MS: '600' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.S.transcripts = ['Hey Luna.'];

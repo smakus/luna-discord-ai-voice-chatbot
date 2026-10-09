@@ -79,8 +79,8 @@ const OWW_GRACE_MS = config.OWW_GRACE_MS;
 // heard "Luna" in it. 0 disables (only full detections count).
 const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
 // After a bare "hey Luna" and a pause, how long to wait for the question
-// before answering the greeting (decideUtteranceEnd in voice-input.js). The
-// chime plays when she starts waiting, so the speaker knows she's listening.
+// before answering the greeting (decideUtteranceEnd in voice-input.js). She
+// waits silently: the chime always means "got it", once the question is in.
 // 0 disables (the utterance ends after SILENCE_MS, as before).
 const WAKE_LISTEN_MS = config.WAKE_LISTEN_MS;
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
@@ -810,7 +810,7 @@ function continuousCapture(connection, userId, channel) {
   let flushStartedAt = 0;
   let lastDataTime   = Date.now();
   let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
-  let listening      = false;   // waiting for the question after a bare "hey Luna" (chime played)
+  let listening      = false;   // waiting for the question after a bare "hey Luna"
   let listenTimer    = null;    // ends that wait if no question comes
 
   const segmenter = createSegmenter({
@@ -920,13 +920,11 @@ function continuousCapture(connection, userId, channel) {
       if (!listening) {
         listening = true;
         console.log(`[${userId}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
-        if (!currentPlayer) playSound(CHIME_PATH, connection).catch(() => {});
       }
       clearTimeout(listenTimer);
       listenTimer = setTimeout(flushUtterance, WAKE_LISTEN_MS - quietMs + 20);
       return;
     }
-    const chimed = listening;
     listening = false;
     clearTimeout(listenTimer);
 
@@ -993,7 +991,7 @@ function continuousCapture(connection, userId, channel) {
     }
 
     console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, wakeStream ? verdict === 'detected' : false, verdict === 'candidate', chimed)
+    processUtterance(pcm, userId, connection, channel, wakeStream ? verdict === 'detected' : false, verdict === 'candidate')
       .finally(() => { flushing = false; });
   }
 
@@ -1249,7 +1247,7 @@ async function transcribeWithWhisper(wavBuffer) {
 
 // ─── Utterance processing ─────────────────────────────────────────────────────
 
-async function processUtterance(pcm, userId, connection, channel, wakeDetected = false, wakeCandidate = false, chimed = false) {
+async function processUtterance(pcm, userId, connection, channel, wakeDetected = false, wakeCandidate = false) {
   if (processingUsers.has(userId)) {
     console.warn(`[${userId}] utterance dropped — previous one still being processed`);
     return;
@@ -1279,7 +1277,7 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
     const query = confirmed.query;
 
     console.log(`[${userId}] Query:`, query);
-    await handleQuery(query, connection, channel, t0, userId, { chimed });
+    await handleQuery(query, connection, channel, t0, userId);
   } catch (err) {
     console.error(`[${userId}] Error processing utterance:`, err);
   } finally {
@@ -1495,8 +1493,7 @@ function extractSmakbotCommand(query) {
 
 // ─── Query handler ────────────────────────────────────────────────────────────
 
-// chimed: the chime already played (Luna was listening for this question).
-async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown', { chimed = false } = {}) {
+async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
   // Check for smakbot commands first
   const musicCommand = extractSmakbotCommand(query);
   if (musicCommand) {
@@ -1505,7 +1502,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     // own player and subscribes — so an unconditional chime detaches whatever
     // sentence is mid-playback, including another speaker's.
     const musicGeneration = interruptOwnPlayback(userId);
-    if (!currentPlayer && !chimed) {
+    if (!currentPlayer) {
       playSound(CHIME_PATH, connection).catch(() => {});
     }
 
@@ -1553,7 +1550,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // the tool is asked again with it (see the pass loop).
   let useSearch = offerSearch(query);
 
-  if (!currentPlayer && !chimed) {
+  if (!currentPlayer) {
     playSound(CHIME_PATH, connection).catch(() => {});
   }
 
