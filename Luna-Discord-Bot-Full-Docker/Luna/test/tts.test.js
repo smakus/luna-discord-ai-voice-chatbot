@@ -19,7 +19,7 @@ global.fetch = async (url, init) => {
 };
 const read = async s => { let out = ''; for await (const c of s) out += Buffer.from(c).toString(); return out; };
 function load(env, s = {}) {
-  for (const k of Object.keys(process.env)) if (/^(TTS_|ELEVENLABS_|KOKORO_|QWEN3_|CHATTERBOX_)/.test(k)) delete process.env[k];
+  for (const k of Object.keys(process.env)) if (/^(TTS_|ELEVENLABS_|KOKORO_|QWEN3_|CHATTERBOX_|NAME_PRONUNCIATIONS)/.test(k)) delete process.env[k];
   Object.assign(process.env, env);
   calls = []; logs = []; script = { kokoro: [res(200, '', 'KOKORO-AUDIO')], el: [res(200, '', 'EL-AUDIO')], qw: [res(200, '', 'QW-AUDIO')], cb: [res(200, '', 'CB-AUDIO')], ...s };
   console.error = console.warn = console.log = (...a) => logs.push(a.join(' '));
@@ -209,6 +209,16 @@ const keepAlive = setInterval(() => {}, 1000);
   for (const [i, o] of [['[laughs] Hi.', 'Hi.'], ['Wait [whispers] here.', 'Wait here.'], ['[low, gravelly voice] Ok.', 'Ok.'], ['No tags.', 'No tags.'], ['Array [1, 2] stays?', 'Array stays?']])
     assert.strictEqual(t.stripAudioTags(i), o, i);
   say('5 cases');
+  real('NAME_PRONUNCIATIONS');
+  t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus=smack-us|Jo.el=Jo-ell' });
+  for (const [i, o] of [['Hey smakus!', 'Hey smack-us!'], ['SMAKUS, welcome back.', 'smack-us, welcome back.'], ["That's Smakus's song.", "That's smack-us's song."],
+    ['smakusbot and asmakus stay.', 'smakusbot and asmakus stay.'], ['Hi Jo.el and Joxel.', 'Hi Jo-ell and Joxel.']])
+    assert.strictEqual(t.pronounce(i), o, i);
+  await t.fetchTTS('Hi smakus.'); assert.strictEqual(calls[0].text, 'Hi smack-us.');
+  say('whole words, any capitalisation, regex characters in names taken literally; applied to what the voice gets');
+  t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus|=x|ok=fine' });
+  assert.strictEqual(t.pronounce('ok smakus'), 'fine smakus');
+  assert.strictEqual(logs.filter(l => /NAME_PRONUNCIATIONS entry .* ignored/.test(l)).length, 2); say('malformed entries → warned and ignored, the rest still apply');
   real('ALL PASS');
   clearInterval(keepAlive);
 })().catch(e => { realErr('FAIL:', e.stack); process.exit(1); });
