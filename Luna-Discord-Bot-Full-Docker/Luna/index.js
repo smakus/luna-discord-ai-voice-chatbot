@@ -913,7 +913,9 @@ function continuousCapture(connection, userId, channel) {
     // Only the wake phrase so far, then a pause: wait for the question rather
     // than answering "hey Luna" on its own. The question, once spoken, ends
     // the utterance as usual (silence after it); if none comes, the timer
-    // ends the wait and the greeting is answered.
+    // ends the wait and the greeting is answered. The timer stands down once
+    // the question has begun: firing mid-question cut it off ("…will be like
+    // on." — "Saturday" then arrived as an utterance with no wake word).
     const quietMs = Date.now() - segmenter.lastSpeechAt;
     if (wakeStream && decideUtteranceEnd({ quietMs, lastSpeechAt: segmenter.lastSpeechAt,
         wakeAt: lastWakeAt, listenMs: WAKE_LISTEN_MS }) === 'listen') {
@@ -922,7 +924,9 @@ function continuousCapture(connection, userId, channel) {
         console.log(`[${userId}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
       }
       clearTimeout(listenTimer);
-      listenTimer = setTimeout(flushUtterance, WAKE_LISTEN_MS - quietMs + 20);
+      listenTimer = setTimeout(() => {
+        if (Date.now() - segmenter.lastSpeechAt >= SILENCE_MS) flushUtterance();
+      }, WAKE_LISTEN_MS - quietMs + 20);
       return;
     }
     listening = false;
