@@ -668,8 +668,8 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   console.log('music tools (LLM → smakbot)');
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
-  { const H = await setup({ MUSIC_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[music\] play\/skip\/stop tools offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+  { const H = await setup({ LLM_TOOLS: 'true' });
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, skip_song, stop_music, leave_channel offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -681,25 +681,49 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(!H.S.sends.some(m => /searching the web/.test(m)));
     assert.ok(H.S.logs.some(l => /\[u1\] \[music\] the LLM called play_music \{"query":"chill lo-fi"\}/.test(l)));
     ok('"put on something chill" → the LLM calls play_music → !summon, !play chill lo-fi; no search heads-up; her words around it spoken'); }
-  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.llmScript = [...MUSIC_CALL('skip_song', {}), ...sse('Skipping it.')];
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmScript = [...MUSIC_CALL('skip_song', {}), ...sse('Skipping it.')];
     await H.T.handleQuery('next one please', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(H.S.sends.includes('!skip') && !H.S.sends.includes('!summon')); ok('skip_song → !skip, no summon'); }
-  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('It is sunny.')];
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('It is sunny.')];
     await H.T.handleQuery("what's the weather", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(BUILTIN.includes(H.S.tts[0].text) && H.S.sends.includes('edit:🔍 *Luna is searching the web...*') && !H.S.sends.some(m => m.startsWith('!')));
     ok('a web search next to the music tools is still announced as a search; no smakbot command'); }
-  { const H = await setup({ MUSIC_TOOLS: 'true' }); H.S.lunaDown = true; H.S.llmRequests.length = 0; H.S.llmScript = sse('Hello.');
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.lunaDown = true; H.S.llmRequests.length = 0; H.S.llmScript = sse('Hello.');
     await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Hello.']);
-    assert.ok(H.S.logs.some(l => /\[music\] LM Studio can't use the music tools .* Is "luna" in LM Studio's mcp.json\?/.test(l)));
+    assert.ok(H.S.logs.some(l => /\[tools\] LM Studio can't use Luna's tools .* Is "luna" in LM Studio's mcp.json\?/.test(l)));
     assert.ok(H.S.llmRequests.at(-1).integrations?.every(i => i.id !== 'mcp/luna') ?? true, 'retried without them');
     H.S.llmRequests.length = 0; await H.T.handleQuery('hi again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(H.S.llmRequests.every(r => !(r.integrations || []).some(i => i.id === 'mcp/luna')), 'left out while paused');
     ok('LM Studio can\'t reach the music tools → answered without them, warned once, left out for a while'); }
-  { const H = await setup({ MUSIC_TOOLS: 'false' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+  { const H = await setup({ LLM_TOOLS: 'false' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
     await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
-    assert.ok(!(H.S.llmRequests[0].integrations || []).some(i => i.id === 'mcp/luna') && !H.S.logs.some(l => /\[music\]/.test(l)));
-    ok('MUSIC_TOOLS=false → not offered, no server'); }
+    assert.ok(!(H.S.llmRequests[0].integrations || []).some(i => i.id === 'mcp/luna') && !H.S.logs.some(l => /\[tools\]|\[music\]/.test(l)));
+    ok('LLM_TOOLS=false → not offered, no server'); }
+
+
+  console.log('leaving on request');
+  { const H = await setup({}); H.S.llmRequests.length = 0;
+    await H.T.handleQuery('Okay, leave the channel.', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.destroyed.length > 0);
+    assert.strictEqual(H.S.llmRequests.length, 0, 'no LLM');
+    assert.ok(['Okay, bye everyone!', "Alright, I'm heading out. Bye!", 'Okay, see you later!'].includes(H.S.tts[0]?.text), H.S.tts[0]?.text);
+    assert.ok(H.S.logs.some(l => /asked to leave by .* — disconnecting/.test(l)));
+    ok('"leave the channel" → a goodbye, then she leaves (no LLM)'); }
+  { const H = await setup({}); H.S.llmScript = sse('Sure.');
+    for (const q of ['bye', 'go away', 'you can go now', 'Goodbye!']) assert.ok(H.T.LEAVE_RE.test(q), q);
+    for (const q of ['leave the light on', 'bye bye birdie lyrics', 'how do I leave a server', 'go']) assert.ok(!H.T.LEAVE_RE.test(q), q);
+    ok('the leave commands are whole utterances: "bye", "go away"…; "leave the light on" is a question'); }
+  { const H = await setup({ LLM_TOOLS: 'true' });
+    H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'leave_channel' }], [5, { type: 'tool_call.arguments', tool: 'leave_channel', arguments: {} }],
+      [5, { type: 'tool_call.success', tool: 'leave_channel', arguments: {}, output: '[]' }], ...sse('Have a great night, everyone!')];
+    await H.T.handleQuery("we're done for tonight, you can head out", H.S.lastConnection, H.text, Date.now(), 'u1');
+    await H.until(() => H.S.destroyed.length > 0);
+    assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Have a great night, everyone!'], 'her goodbye is spoken, no search heads-up');
+    assert.ok(H.S.played.includes('Have a great night, everyone!'), 'played before she left');
+    assert.ok(H.S.logs.some(l => /the LLM called leave_channel/.test(l)));
+    ok('wordier request → the LLM calls leave_channel → her goodbye plays, then she leaves'); }
+  { const H = await setup({}); H.T.client.emit('messageCreate', { content: '!luna leave', author: { id: 'u1' }, member: null, guild: { id: 'g' }, channel: H.text, reply: async r => { H.S.replies.push(r); } });
+    await H.wait(20); assert.strictEqual(H.S.destroyed.length, 1); assert.ok(H.S.replies.includes('Bye!')); ok('!luna leave → leaves'); }
 
 
   console.log('undecodable packets');

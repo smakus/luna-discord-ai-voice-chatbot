@@ -34,6 +34,17 @@ const DELAY = 2300;   // AUTO_JOIN_DELAY_MS (2 s) + margin
     assert.ok(H.S.logs.some(l => /Last real user left — disconnecting/.test(l)));
     const conn = H.S.lastConnection; H.move('u1', null, 'Lounge'); await H.until(() => H.S.lastConnection !== conn, DELAY + 1000);
     assert.notStrictEqual(H.S.lastConnection, conn); ok('leaves when the last person goes, comes back when someone returns'); }
+  { const H = boot({ ...FAST, AUTO_JOIN_CHANNELS: 'Lounge' }); H.put('u1', 'Lounge'); H.put('u2', 'Lounge'); await H.start();
+    await H.until(() => H.S.lastConnection, DELAY + 1000); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50);
+    await H.T.handleQuery('bye', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.destroyed.length > 0);
+    const first = H.S.lastConnection;
+    H.move('u3', null, 'Lounge'); await H.wait(DELAY);
+    assert.strictEqual(H.S.lastConnection, first, 'asked to leave: not back just because someone joins');
+    H.move('u1', 'Lounge', null); H.move('u2', 'Lounge', null); H.move('u3', 'Lounge', null);
+    assert.ok(H.S.logs.some(l => /auto-join channels empty — auto-join resumes/.test(l)));
+    H.move('u1', null, 'Lounge'); await H.until(() => H.S.lastConnection !== first, DELAY + 1000);
+    assert.notStrictEqual(H.S.lastConnection, first);
+    ok('asked to leave → stays out while people remain; once the channel has emptied, auto-join resumes'); }
   { const H = boot({ ...FAST, AUTO_JOIN_CHANNELS: 'Loungee', AUTO_JOIN_TEXT_CHANNEL: 'musik' }); H.S.textChannels = ['general', 'music']; H.put('u1', 'Lounge'); await H.start();
     assert.ok(H.S.logs.some(l => /AUTO_JOIN_CHANNELS: no voice channel "Loungee" — voice channels: Lounge/.test(l)));
     assert.ok(H.S.logs.some(l => /AUTO_JOIN_TEXT_CHANNEL "musik" not found .* Text channels: general, music/.test(l)));

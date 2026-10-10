@@ -96,7 +96,7 @@ const SETTINGS = [
   { name: 'WEB_SEARCH', type: 'enum', default: 'always', choices: ['always', 'keywords', 'off'] },
   { name: 'SEARCH_MCP_PLUGIN', type: 'string' },
   { name: 'SEARCH_TOOLS', type: 'string', default: 'tavily_search' },
-  { name: 'MUSIC_TOOLS', type: 'bool', default: true },
+  { name: 'LLM_TOOLS', type: 'bool', default: true },
   { name: 'LUNA_MCP_PORT', type: 'int', default: 8895, min: 1, max: 65535 },
   { name: 'TAVILY_API_KEY', type: 'secret' },
   { name: 'SEARCH_PAUSE_MS', type: 'int', default: 300000, min: 0 },

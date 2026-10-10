@@ -1,10 +1,10 @@
-// Luna's MCP server (mcp-server.js) and the music tools it serves (music-tools.js).
+// Luna's MCP server (mcp-server.js) and the tools it serves (llm-tools.js).
 // Run: npm test   (see README → Development)
 const { describe, it } = require('node:test');
 const assert = require('assert');
 const { Readable } = require('stream');
 const { createMcpServer } = require('../mcp-server');
-const { MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('../music-tools');
+const { LLM_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('../llm-tools');
 
 // One HTTP exchange with the server, without a socket.
 async function exchange(server, { method = 'POST', url = '/mcp', body } = {}) {
@@ -17,7 +17,7 @@ async function exchange(server, { method = 'POST', url = '/mcp', body } = {}) {
 }
 
 describe('MCP server', () => {
-  const server = createMcpServer({ tools: MUSIC_TOOLS });
+  const server = createMcpServer({ tools: LLM_TOOLS });
   it('initialize: tools capability, the client\'s protocol version', async () => {
     const r = await exchange(server, { body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } } });
     assert.strictEqual(r.status, 200);
@@ -28,9 +28,9 @@ describe('MCP server', () => {
     const r = await exchange(server, { body: { jsonrpc: '2.0', method: 'notifications/initialized' } });
     assert.strictEqual(r.status, 202); assert.strictEqual(r.json, null);
   });
-  it('tools/list: the three music tools, without their run()', async () => {
+  it('tools/list: the music tools and leave_channel, without their run()', async () => {
     const r = await exchange(server, { body: { jsonrpc: '2.0', id: 2, method: 'tools/list' } });
-    assert.deepStrictEqual(r.json.result.tools.map(t => t.name), ['play_music', 'skip_song', 'stop_music']);
+    assert.deepStrictEqual(r.json.result.tools.map(t => t.name), ['play_music', 'skip_song', 'stop_music', 'leave_channel']);
     assert.ok(r.json.result.tools.every(t => t.description && t.inputSchema && !t.run));
   });
   it('tools/call: the tool\'s answer for the model', async () => {

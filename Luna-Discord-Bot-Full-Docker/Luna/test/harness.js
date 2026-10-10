@@ -70,7 +70,7 @@ module.exports = function boot(env = {}) {
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
-    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './music-tools': require(path.join(LUNA_DIR, 'music-tools.js')),
+    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
   };
 
@@ -107,13 +107,13 @@ module.exports = function boot(env = {}) {
   const src = fs.readFileSync(path.join(LUNA_DIR, 'index.js'), 'utf8');
   const ctx = {
     require: m => { if (m in mods) return mods[m]; throw new Error('unmocked ' + m); },
-    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', MUSIC_TOOLS: 'false', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
+    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', LLM_TOOLS: 'false', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
     console: { log, warn: log, error: log }, fetch: fakeFetch, setTimeout, clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     AbortController, AbortSignal, DOMException, TextDecoder, TextEncoder, Promise, Date, Math, Map, Set, WeakSet, Buffer, FormData, Blob, __dirname: LUNA_DIR,
   };
   vm.createContext(ctx);
   vm.runInContext(src + `
-;globalThis.__t = { client, handleQuery, condenseSearchResults, speakableName, nextGeneration, interruptOwnPlayback, spokenResponses,
+;globalThis.__t = { client, handleQuery, LEAVE_RE, condenseSearchResults, speakableName, nextGeneration, interruptOwnPlayback, spokenResponses,
   get activeConnection() { return activeConnection; }, get activeVoiceChannel() { return activeVoiceChannel; }, get ready() { return ready; },
   get model() { return lmStudioModel; }, THINKING: { waits: THINKING_WAITS, cap: THINKING_MAX }, LLM: { reasoning: LLM_REASONING, thinkLimit: LLM_THINK_LIMIT_MS } };`, ctx);
   const T = ctx.__t;
