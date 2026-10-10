@@ -690,7 +690,12 @@ function noteAudio(userId) {
 
 function checkSilentSpeaker(userId) {
   const since = silentSpeakers.get(userId);
-  if (!since || Date.now() - since < VOICE_RECOVER_MS || !activeConnection) return;
+  if (!since || !activeConnection) return;
+  // Timers can fire a millisecond early. Returning then left the speaker in
+  // silentSpeakers, so noteSpeaking never scheduled another check and
+  // recovery for them silently never ran: check again when it is time.
+  const early = VOICE_RECOVER_MS - (Date.now() - since);
+  if (early > 0) { setTimeout(() => checkSilentSpeaker(userId), early + 1); return; }
   silentSpeakers.delete(userId);
   const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
   const verdict = cryptoVerdict(voiceCryptoState(), userId);
