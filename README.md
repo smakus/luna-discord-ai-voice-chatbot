@@ -109,7 +109,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 ## Usage
 
 1. Join a voice channel and type `!luna` in any text channel. Luna joins and introduces herself.
-2. Say **"hey Luna"** followed by your request. You can run it straight into the question, or pause after "hey Luna": she waits up to 4 seconds for the question (`WAKE_LISTEN_MS`). Either way, the chime means she has the question. It works mid-sentence too ("…anyway, hey Luna, what's the weather?"): only what follows the wake phrase is the question. Keep "hey Luna" itself as one phrase; "hey… Luna" is harder to detect.
+2. Say **"hey Luna"** followed by your request. You can run it straight into the question, or pause after "hey Luna": she waits up to 4 seconds for the question (`WAKE_LISTEN_MS`). Either way, the chime means she has the question. If nothing follows, she asks "did you mean to ask me something?" and listens for your answer (no wake word needed). It works mid-sentence too ("…anyway, hey Luna, what's the weather?"): only what follows the wake phrase is the question. Keep "hey Luna" itself as one phrase; "hey… Luna" is harder to detect.
 
 | Say | What happens |
 | --- | ------------ |
@@ -260,6 +260,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
 | `OWW_CANDIDATE_THRESHOLD` | `0.1` | Two-stage detection: an utterance that peaks at or above this but never reaches `OWW_THRESHOLD` is transcribed anyway, and kept only if Whisper hears "Luna" in it. Catches "hey Luna" run straight into the question, which the model scores low. `0` turns it off; it has no effect when it isn't below `OWW_THRESHOLD` |
 | `WAKE_LISTEN_MS` | `4000` | After a bare "hey Luna" and a pause, how long she waits for the question before answering the greeting. `0` ends the utterance after `SILENCE_MS`, as before |
+| `WAKE_FOLLOWUP_MS` | `8000` | After a bare "hey Luna" with no question even after `WAKE_LISTEN_MS`, she asks "did you mean to ask me something?" and that person's next words, if they start within this long of her finishing, are taken as the question without the wake word. `0` answers the bare "hey Luna" as a greeting instead |
+| `WAKE_REPROMPT_PHRASES` | built-in | What she says then, separated by a pipe character; `{name}` is the speaker |
 | `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
 | `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
 | `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |

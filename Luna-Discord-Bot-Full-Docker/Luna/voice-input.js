@@ -42,6 +42,9 @@ const WAKE_PHRASE_RE = /\b(?:hey|hay|hi)[\s,.]*(?:luna|loona|runa|roona)\b[\s,.!
 // Removes a leading wake phrase; a no-op when there is none.
 const stripWakeWord = text => text.replace(WAKE_RE, '').trim();
 
+// Nothing but the wake phrase: "Hey Luna.", "Luna?"
+const isBareWake = text => WAKE_RE.test(text) && !/[\p{L}\p{N}]/u.test(stripWakeWord(text));
+
 // ── Packet decoder ───────────────────────────────────────────────────────────
 //
 // Decodes packet by packet and drops only the packets that cannot be decoded.
@@ -261,7 +264,7 @@ function decideSilentSpeaker({ verdict, now, lastReconnectAt, gapMs }) {
 }
 
 module.exports = {
-  WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord,
+  WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord, isBareWake,
   createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 };

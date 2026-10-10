@@ -19,7 +19,7 @@ const { loadConfig, parseWaits } = require('./config');
 const { takeSentences } = require('./sentences');
 const { systemPrompt, SEARCH_PROMPT, QUICK_PROMPT } = require('./prompt');
 const {
-  stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
+  stripWakeWord, isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 } = require('./voice-input');
 
@@ -86,6 +86,16 @@ const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
 // waits silently: the chime always means "got it", once the question is in.
 // 0 disables (the utterance ends after SILENCE_MS, as before).
 const WAKE_LISTEN_MS = config.WAKE_LISTEN_MS;
+// A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
+// what they wanted (WAKE_REPROMPT_PHRASES) instead of answering a greeting,
+// then that speaker has WAKE_FOLLOWUP_MS after she finishes to start the
+// question, without the wake word. 0 answers the greeting, as before.
+const WAKE_FOLLOWUP_MS = config.WAKE_FOLLOWUP_MS;
+const REPROMPTS = config.WAKE_REPROMPT_PHRASES.length ? config.WAKE_REPROMPT_PHRASES : [
+  "Hey {name}, I didn't catch that. Did you mean to ask me something?",
+  "Sorry {name}, I missed that. What did you want to ask?",
+  "Hey, I didn't catch that. Did you mean to ask me something?",
+];
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
 const OWW_DEBUG_SCORE = config.OWW_DEBUG_SCORE;
 // 'auto' normalises quiet speech up toward a target level before detection,
@@ -817,6 +827,7 @@ function continuousCapture(connection, userId, channel) {
   let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
   let listening      = false;   // waiting for the question after a bare "hey Luna"
   let listenTimer    = null;    // ends that wait if no question comes
+  let followUpUntil  = 0;       // after "did you mean to ask me something?": answer without the wake word until then
 
   const segmenter = createSegmenter({
     energyThreshold: ENERGY_THRESHOLD,
@@ -872,6 +883,7 @@ function continuousCapture(connection, userId, channel) {
 
   captureStates.set(userId, {
     wakeStream,
+    expectQuestion(ms) { followUpUntil = Date.now() + ms; },
     get flushing() { return flushing; },
     get buffered() { return segmenter.buffered; },
     get lastData() { return lastDataTime; },
@@ -960,8 +972,16 @@ function continuousCapture(connection, userId, channel) {
       return;
     }
 
+    // The answer to "did you mean to ask me something?": no wake word needed.
+    const followUp = Date.now() < followUpUntil;
+    followUpUntil = 0;
+    if (followUp) {
+      wakeStream?.takePeak();
+      console.log(`[${userId}] the question after "did you mean to ask me something?" — no wake word needed`);
+    }
+
     let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
-    if (wakeStream) {
+    if (wakeStream && !followUp) {
       const now = Date.now();
       // The peak is read (and reset) once per utterance, whatever the verdict,
       // so a good score cannot leak into a later utterance.
@@ -1000,7 +1020,7 @@ function continuousCapture(connection, userId, channel) {
     }
 
     console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, wakeStream ? verdict === 'detected' : false, verdict === 'candidate')
+    processUtterance(pcm, userId, connection, channel, followUp || (wakeStream ? verdict === 'detected' : false), verdict === 'candidate' && !followUp)
       .finally(() => { flushing = false; });
   }
 
@@ -1285,6 +1305,12 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
     if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
     const query = confirmed.query;
 
+    // Only "hey Luna", even after waiting for more: ask what they wanted.
+    if (WAKE_FOLLOWUP_MS > 0 && isBareWake(transcript)) {
+      askForQuestion(userId, connection);
+      return;
+    }
+
     console.log(`[${userId}] Query:`, query);
     await handleQuery(query, connection, channel, t0, userId);
   } catch (err) {
@@ -1292,6 +1318,25 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
   } finally {
     processingUsers.delete(userId);
   }
+}
+
+// "Hey smakus, I didn't catch that. Did you mean to ask me something?" — then
+// that speaker's next words, if they start within WAKE_FOLLOWUP_MS of her
+// finishing, are taken as the question without the wake word. (Until she has
+// finished, the window stays open, so an early answer still counts.)
+function askForQuestion(userId, connection) {
+  const name = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
+  const fitting = REPROMPTS.filter(p => p.includes('{name}') === Boolean(name));
+  const text = fillPhrase(fitting.length ? fitting : REPROMPTS, { name });
+  console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
+  const expect = ms => captureStates.get(userId)?.expectQuestion(ms);
+  expect(60000);
+  const generation = interruptOwnPlayback(userId);
+  queuePlayback(async () => {
+    const pt = await fetchTTS(text);
+    if (pt) await playTTS(pt, connection);
+    expect(WAKE_FOLLOWUP_MS);
+  }, userId, generation);
 }
 
 // ─── Sound effect ─────────────────────────────────────────────────────────────

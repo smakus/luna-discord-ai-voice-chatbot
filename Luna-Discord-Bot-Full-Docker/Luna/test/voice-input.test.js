@@ -159,6 +159,10 @@ describe('confirmWake', () => {
   it('no model, phrase not at the start → rejected', () => {
     assert.strictEqual(v.confirmWake('tell me a joke luna', {}).accepted, false);
   });
+  it('isBareWake: nothing but the wake phrase', () => {
+    for (const t of ['Hey Luna.', 'hey luna', 'Luna?', 'Hi, Loona!']) assert.strictEqual(v.isBareWake(t), true, t);
+    for (const t of ["Hey Luna, what's up?", 'what is the weather', 'Lunar eclipse.', '']) assert.strictEqual(v.isBareWake(t), false, t);
+  });
   it('stripWakeWord leaves "lunar" alone', () => assert.strictEqual(v.stripWakeWord('lunar eclipse tonight'), 'lunar eclipse tonight'));
 });
 

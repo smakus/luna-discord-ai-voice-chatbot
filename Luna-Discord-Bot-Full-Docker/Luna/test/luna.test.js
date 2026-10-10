@@ -591,19 +591,19 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.until(() => H.S.llmRequests.length > 0);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['What will the weather be like on Saturday?']);
     ok('a question still being spoken when the wait runs out is not cut off; it ends on its own silence'); }
-  { const H = await wakeRig({ WAKE_LISTEN_MS: '1000' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '1000', WAKE_FOLLOWUP_MS: '0' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.S.transcripts = ['Hey Luna.'];
     for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now());
     await H.until(() => H.S.logs.some(l => /listening for the question/.test(l))); assert.strictEqual(H.S.llmRequests.length, 0);
     await H.until(() => H.S.llmRequests.length > 0);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['Hey Luna.']);
-    ok('nothing follows within WAKE_LISTEN_MS → the bare "hey Luna" is answered as a greeting'); }
+    ok('nothing follows within WAKE_LISTEN_MS (WAKE_FOLLOWUP_MS=0) → the bare "hey Luna" is answered as a greeting'); }
   { const H = await wakeRig(); await H.utter(0.9, "hey Luna what's the weather", true);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["what's the weather"]);
     assert.ok(!H.S.logs.some(l => /listening for the question/.test(l)));
     ok('run-on "hey Luna what\'s the weather" → no waiting, answered as before'); }
-  { const H = await wakeRig({ WAKE_LISTEN_MS: '0' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
+  { const H = await wakeRig({ WAKE_LISTEN_MS: '0', WAKE_FOLLOWUP_MS: '0' }); const mic = H.S.audio.u1, wake = H.S.wake.u1;
     const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
     H.S.transcripts = ['Hey Luna.'];
     for (let t = 0; t < 300; t += 20) { mic.write(loud); await H.wait(20); } wake.onDetect(0.9, Date.now());
@@ -620,6 +620,36 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(H.S.logs.some(l => /\[audio\] sentence cut short after 1\.2s — the audio stopped arriving in time/.test(l)), H.S.logs.slice(-5).join(' | '));
     ok('player stops before the audio ended → "[audio] sentence cut short" warning; a normal ending is not reported'); }
+
+
+  console.log('"did you mean to ask me something?"');
+  const bareRig = async (env = {}) => {
+    const H = await wakeRig({ WAKE_LISTEN_MS: '600', ...env }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
+    const mic = H.S.audio.u1, wake = H.S.wake.u1;
+    const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
+    H.speak = async ms => { for (let t = 0; t < ms; t += 20) { mic.write(loud); await H.wait(20); } };
+    H.bareWake = async () => { H.S.transcripts = ['Hey Luna.']; await H.speak(300); wake.onDetect(0.9, Date.now());
+      await H.until(() => H.S.tts.some(t => /didn't catch that|missed that/.test(t.text))); await H.wait(100); };
+    return H; };
+  { const H = await bareRig(); await H.bareWake();
+    assert.strictEqual(H.S.llmRequests.length, 0, 'no greeting from the LLM');
+    const asked = H.S.tts.find(t => /didn't catch that|missed that/.test(t.text)).text;
+    assert.ok(asked.includes('smakus'), asked); assert.ok(H.S.logs.some(l => /only "hey Luna" — asking/.test(l)));
+    H.S.transcripts = ["what's the weather tomorrow"]; (H.S.peaks ??= {}).u1 = 0;      // no wake word this time
+    await H.speak(500); await H.until(() => H.S.llmRequests.length > 0);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["what's the weather tomorrow"]);
+    assert.ok(H.S.logs.some(l => /the question after "did you mean to ask me something\?" — no wake word needed/.test(l)));
+    H.S.transcripts = ['and some other chatter']; await H.speak(500); await H.wait(900);
+    assert.strictEqual(H.S.llmRequests.length, 1, 'only the next utterance counts; then the wake word is needed again');
+    ok('bare "hey Luna" → "Hey smakus, I didn\'t catch that…" (no LLM); the next words, without the wake word, are answered; after that the wake word is needed again'); }
+  { const H = await bareRig({ WAKE_FOLLOWUP_MS: '300' }); await H.bareWake();
+    await H.wait(800); H.S.transcripts = ["what's the weather"]; await H.speak(500); await H.wait(900);
+    assert.strictEqual(H.S.llmRequests.length, 0); assert.ok(H.S.logs.some(l => /utterance discarded — no wake word/.test(l)));
+    ok('no answer within WAKE_FOLLOWUP_MS → dropped quietly; later words need the wake word'); }
+  { const H = await bareRig(); H.S.transcripts = ["What's the weather, hey Luna."]; await H.speak(300); H.S.wake.u1.onDetect(0.9, Date.now());
+    await H.until(() => H.S.llmRequests.length > 0);
+    assert.ok(!H.S.tts.some(t => /didn't catch that/.test(t.text)) && H.S.llmRequests.length === 1);
+    ok('a question before the wake phrase is answered, not re-prompted'); }
 
 
   console.log('the asker\'s name');
