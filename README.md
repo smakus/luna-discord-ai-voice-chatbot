@@ -108,7 +108,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 
 ## Usage
 
-1. Join a voice channel and type `!luna` in any text channel. Luna joins and introduces herself.
+1. Join a voice channel and type `!luna` in any text channel. Luna joins and introduces herself. With `AUTO_JOIN_CHANNELS` set, she joins those channels by herself when someone is there.
 2. Say **"hey Luna"** followed by your request. You can run it straight into the question, or pause after "hey Luna": she waits up to 4 seconds for the question (`WAKE_LISTEN_MS`). Either way, the chime means she has the question. If nothing follows, she asks "did you mean to ask me something?" and listens for your answer (no wake word needed). It works mid-sentence too ("…anyway, hey Luna, what's the weather?"): only what follows the wake phrase is the question. Keep "hey Luna" itself as one phrase; "hey… Luna" is harder to detect.
 
 | Say | What happens |
@@ -286,6 +286,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `LM_CONCISE` | `true` | Ask for concise answers. `false` lets her talk more |
 | `LM_USE_NAMES` | `true` | Tell the model who is asking (their Discord display name, made speakable) so she can use their name now and then |
 | `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
+| `AUTO_JOIN_CHANNELS` | | Voice channels (names or IDs, comma-separated) Luna joins by herself when someone is in one and she isn't in a channel: at startup, or when someone joins. With people in several, the busiest. She still leaves when the last person does |
+| `AUTO_JOIN_TEXT_CHANNEL` | | Text channel (name or ID) she posts in after auto-joining: status messages and smakbot commands. Unset: the voice channel's own chat. Names that match nothing are logged at startup with the channels that do exist |
 | `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
 
 ### Voices, TTS and timeouts

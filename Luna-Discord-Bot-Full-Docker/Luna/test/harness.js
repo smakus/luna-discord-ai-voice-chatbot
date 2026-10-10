@@ -41,7 +41,13 @@ module.exports = function boot(env = {}) {
   };
 
   // ── discord.js ──
-  class Client extends EventEmitter { constructor() { super(); this.user = { id: 'luna' }; } login() {} }
+  class Client extends EventEmitter { constructor() { super(); this.user = { id: 'luna' };
+    // One guild, "g": its voice channels are those anyone is in (plus S.voiceChannels), and the text channels in S.textChannels.
+    const guild = { id: 'g', voiceAdapterCreator: {}, channels: { cache: { values: () => [
+      ...new Set([...members.keys(), ...(S.voiceChannels || [])])].map(id => channel(id)).concat((S.textChannels || []).map(name => ({
+        id: 't-' + name, name, isVoiceBased: () => false, isTextBased: () => true,
+        send: async m => { S.sends.push(`#${name}: ${m}`); return { delete: async () => {}, edit: async () => {} }; } }))) } } };
+    this.guilds = { cache: new Map([['g', guild]]) }; } login() {} }
   const discord = { Events: { ClientReady: 'ready', MessageCreate: 'messageCreate', VoiceStateUpdate: 'voiceStateUpdate', Error: 'error' }, Client };
 
   // ── tts.js ──
@@ -114,7 +120,7 @@ module.exports = function boot(env = {}) {
 
   // helpers
   const members = new Map(); // channelId -> Map(userId -> member)
-  const channel = (id) => ({ id, name: id, members: { get: uid => (members.get(id) || new Map()).get(uid), filter: f => { const arr = [...(members.get(id) || new Map()).values()].filter(f); return { size: arr.length }; }, forEach: f => (members.get(id) || new Map()).forEach(f), some: f => [...(members.get(id) || new Map()).values()].some(f), values: () => (members.get(id) || new Map()).values() } });
+  const channel = (id) => ({ id, name: id, isVoiceBased: () => true, isTextBased: () => true, send: async m => { S.sends.push(`#${id}: ${m}`); return { delete: async () => {}, edit: async () => {} }; }, members: { get: uid => (members.get(id) || new Map()).get(uid), filter: f => { const arr = [...(members.get(id) || new Map()).values()].filter(f); return { size: arr.length }; }, forEach: f => (members.get(id) || new Map()).forEach(f), some: f => [...(members.get(id) || new Map()).values()].some(f), values: () => (members.get(id) || new Map()).values() } });
   // Like discord.js, member.voice is live: it reports where the user is now, not
   // where they were when the object was created.
   const currentChannel = uid => { for (const [cid, m] of members) if (m.has(uid)) return cid; return null; };

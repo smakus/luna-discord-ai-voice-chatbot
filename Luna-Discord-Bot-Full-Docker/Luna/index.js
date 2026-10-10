@@ -442,6 +442,8 @@ client.on(Events.ClientReady, async () => {
   console.log(`[search] web search: ${describeSearch()}`);
   if (MUSIC_TOOLS_ON) startMusicTools();
   ready = true;
+  checkAutoJoin();
+  scheduleAutoJoin();
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
@@ -2558,8 +2560,70 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   onVoiceJoin(oldState, newState);
   onVoiceLeave(oldState, newState);
 
+  // Someone joined a voice channel while Luna is in none: maybe one to
+  // auto-join (scheduleAutoJoin checks).
+  if (!activeConnection && newState.channelId && newState.channelId !== oldState.channelId) scheduleAutoJoin();
+
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
-  if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Last real user left');
+  if (getRealMemberCount(activeVoiceChannel) === 0) {
+    leaveVoice('Last real user left');
+    scheduleAutoJoin();   // people may be waiting in another auto-join channel
+  }
 });
+
+// ─── Auto-join ────────────────────────────────────────────────────────────────
+//
+// AUTO_JOIN_CHANNELS: voice channels (names or IDs) Luna joins by herself when
+// someone is in one and she is in no channel — at startup, or when someone
+// joins. With people in several, the busiest. She posts (status messages,
+// smakbot commands) in AUTO_JOIN_TEXT_CHANNEL. She still leaves when the last
+// person does, and a kick is respected: she comes back only when someone next
+// joins. A short delay lets someone who pops in and straight out not summon her.
+const AUTO_JOIN_CHANNELS     = config.AUTO_JOIN_CHANNELS;
+const AUTO_JOIN_TEXT_CHANNEL = config.AUTO_JOIN_TEXT_CHANNEL;
+const AUTO_JOIN_DELAY_MS     = 2000;
+let autoJoinTimer = null;
+let autoJoiningUntil = 0;   // a join in progress (not Ready yet): don't start another
+
+const named = (channel, wanted) => wanted.some(w => w === channel.id || w.toLowerCase() === String(channel.name).toLowerCase());
+const guildChannels = guild => [...(guild.channels?.cache?.values() ?? [])];
+const textChannelFor = guild => AUTO_JOIN_TEXT_CHANNEL
+  ? guildChannels(guild).find(c => !c.isVoiceBased?.() && c.isTextBased?.() && named(c, [AUTO_JOIN_TEXT_CHANNEL])) : null;
+
+// At startup: say which settings match nothing, and what does exist.
+function checkAutoJoin() {
+  if (!AUTO_JOIN_CHANNELS.length) return;
+  const guilds = [...(client.guilds?.cache?.values() ?? [])];
+  const all = guilds.flatMap(guildChannels);
+  const voices = all.filter(c => c.isVoiceBased?.()), texts = all.filter(c => !c.isVoiceBased?.() && c.isTextBased?.());
+  const missing = AUTO_JOIN_CHANNELS.filter(w => !voices.some(c => named(c, [w])));
+  if (missing.length) console.warn(`[voice] AUTO_JOIN_CHANNELS: no voice channel ${missing.map(m => `"${m}"`).join(', ')} — ` +
+    `voice channels: ${voices.map(c => c.name).join(', ') || 'none'}`);
+  if (!guilds.some(textChannelFor)) console.warn(`[voice] AUTO_JOIN_TEXT_CHANNEL ${AUTO_JOIN_TEXT_CHANNEL ? `"${AUTO_JOIN_TEXT_CHANNEL}" not found` : 'not set'} — ` +
+    `she will post in the voice channel's own chat. Text channels: ${texts.map(c => c.name).join(', ') || 'none'}`);
+  console.log(`[voice] auto-join: ${AUTO_JOIN_CHANNELS.join(', ')}`);
+}
+
+function scheduleAutoJoin() {
+  if (!AUTO_JOIN_CHANNELS.length) return;
+  clearTimeout(autoJoinTimer);
+  autoJoinTimer = setTimeout(autoJoin, AUTO_JOIN_DELAY_MS);
+}
+
+function autoJoin() {
+  if (!ready || activeConnection || Date.now() < autoJoiningUntil) return;
+  const candidates = [...(client.guilds?.cache?.values() ?? [])].flatMap(guild => guildChannels(guild)
+    .filter(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS))
+    .map(channel => ({ guild, channel, people: getRealMemberCount(channel) })))
+    .filter(c => c.people > 0)
+    .sort((a, b) => b.people - a.people);
+  if (!candidates.length) return;
+  const { guild, channel, people } = candidates[0];
+  const g = { id: guild.id, adapterCreator: guild.voiceAdapterCreator };
+  console.log(`[voice] auto-joining ${channel.name} (${people} ${people === 1 ? 'person' : 'people'} there)`);
+  autoJoiningUntil = Date.now() + 15000;
+  const connection = joinVoice(channel, g);
+  attachVoice(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; introduceSelf(connection); });
+}
 
 void client.login(config.DISCORD_TOKEN || undefined);
