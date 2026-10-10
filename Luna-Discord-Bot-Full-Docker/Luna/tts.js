@@ -98,9 +98,9 @@ function stripAudioTags(text) {
 const ELEVENLABS_TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
 const ELEVENLABS_PROMPT =
   'Your voice can perform audio tags written in square brackets, such as ' +
-  '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Where ' +
-  'one genuinely fits the moment, put it right before the words it applies to; ' +
-  'use at most one per reply, and none at all for plain factual answers.';
+  '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Put one ' +
+  'right before the words it applies to, wherever it genuinely fits the moment, ' +
+  'and none at all for plain factual answers.';
 
 // Chatterbox Turbo performs exactly the tags it was trained on (the server's
 // /health lists them). The LLM is told all of them; ElevenLabs-style spellings

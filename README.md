@@ -210,7 +210,7 @@ ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
 - **Fallback:** keep Kokoro running, because it's the fallback.
   - When ElevenLabs runs out of credits, Luna switches to Kokoro for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
   - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
-- **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add one audio tag where it fits, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro and Qwen3-TTS never get that instruction, and any tag that does reach them is removed, so they never read "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
+- **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add audio tags wherever they fit, such as `[laughs]`, `[sighs]` or `[whispers]`. Kokoro and Qwen3-TTS never get that instruction, and any tag that does reach them is removed, so they never read "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
 
 To fall back to Chatterbox or Qwen3-TTS before Kokoro, add `TTS_FALLBACK=chatterbox` or `TTS_FALLBACK=qwen3`. Luna then tries ElevenLabs, then that voice, then Kokoro.
