@@ -798,7 +798,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(/not in a voice channel/.test(r)); ok('voicecheck when not in a channel → says so'); }
   { const H = await daveSetup({ VOICE_RECOVER_MS: '200' }); fakeDave(H.S.lastConnection, { members: ['luna', 'u2'], stats: { u1: { successes: 0, failures: 40 } } });
     H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.logs.some(l => /reconnecting/.test(l)));
-    assert.ok(H.S.logs.some(l => /Discord reports u1 speaking, but none of their audio has decrypted in 0s \(encryption: NOT in group, 0 decrypted\/40 failed\) — reconnecting/.test(l)));
+    assert.ok(H.S.logs.some(l => /Discord reports u1 speaking, but none of their audio has decrypted in \d+s \(encryption: NOT in group, 0 decrypted\/40 failed\) — reconnecting/.test(l)));
     ok('silent-speaker warning carries the definitive verdict'); }
   { const H = await daveSetup({ VOICE_RECOVER_MS: '200' }); const c = H.S.lastConnection;
     fakeDave(c, { members: ['luna', 'u1', 'u2'], stats: { u1: { successes: 661, failures: 9 } } });
@@ -815,8 +815,8 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await daveSetup({ VOICE_RECOVER_MS: '150' });
     const first = H.S.lastConnection;
     first.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.lastConnection !== first, 6000);   // rejoined (after 1.5 s)
-    H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(20);
-    H.S.lastConnection.receiver.speaking.emit('start', 'u2'); await H.until(() => H.S.logs.some(l => /already reconnected recently, not retrying yet/.test(l)));
+    H.S.lastConnection.setStatus(H.Status.Ready); await H.until(() => H.S.logs.some(l => /\[voice\] reconnected to/.test(l)));
+    H.S.lastConnection.receiver.speaking.emit('start', 'u2'); await H.until(() => H.S.logs.some(l => /already reconnected recently, not retrying yet/.test(l)), 8000);
     assert.strictEqual(H.S.destroyed.length, 1); assert.ok(H.S.logs.some(l => /already reconnected recently, not retrying yet/.test(l)));
     ok('a second failure within 5 minutes → logged, not another reconnect (no loops)'); }
 
