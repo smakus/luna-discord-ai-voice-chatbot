@@ -12,14 +12,14 @@ const path = require('path');
 const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
-const { MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./music-tools');
+const { LLM_TOOLS, LLM_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { takeSentences } = require('./sentences');
 const { systemPrompt, SEARCH_PROMPT, QUICK_PROMPT } = require('./prompt');
 const {
-  stripWakeWord, createPacketDecoder, createWakeFeeder, createSegmenter,
+  stripWakeWord, isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 } = require('./voice-input');
 
@@ -86,6 +86,16 @@ const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
 // waits silently: the chime always means "got it", once the question is in.
 // 0 disables (the utterance ends after SILENCE_MS, as before).
 const WAKE_LISTEN_MS = config.WAKE_LISTEN_MS;
+// A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
+// what they wanted (WAKE_REPROMPT_PHRASES) instead of answering a greeting,
+// then that speaker has WAKE_FOLLOWUP_MS after she finishes to start the
+// question, without the wake word. 0 answers the greeting, as before.
+const WAKE_FOLLOWUP_MS = config.WAKE_FOLLOWUP_MS;
+const REPROMPTS = config.WAKE_REPROMPT_PHRASES.length ? config.WAKE_REPROMPT_PHRASES : [
+  "Hey {name}, I didn't catch that. Did you mean to ask me something?",
+  "Sorry {name}, I missed that. What did you want to ask?",
+  "Hey, I didn't catch that. Did you mean to ask me something?",
+];
 // Log every score above this value — useful for tuning OWW_THRESHOLD.
 const OWW_DEBUG_SCORE = config.OWW_DEBUG_SCORE;
 // 'auto' normalises quiet speech up toward a target level before detection,
@@ -430,8 +440,10 @@ client.on(Events.ClientReady, async () => {
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
   console.log(`[search] web search: ${describeSearch()}`);
-  if (MUSIC_TOOLS_ON) startMusicTools();
+  if (LLM_TOOLS_ON) startLlmTools();
   ready = true;
+  checkAutoJoin();
+  scheduleAutoJoin();
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
@@ -445,6 +457,11 @@ const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
+  if (message.content.toLowerCase().trim() === `${BOT_COMMAND} leave`) {
+    if (!activeConnection) return message.reply("I'm not in a voice channel.").catch(() => {});
+    message.reply('Bye!').catch(() => {});
+    return leaveOnRequest(message.author?.id);
+  }
   if (message.content.toLowerCase().trim() !== BOT_COMMAND) return;
   // .catch: a rejected reply (e.g. no send permission) in an async listener is
   // an unhandled rejection, which terminates Node.
@@ -453,6 +470,7 @@ client.on(Events.MessageCreate, async message => {
   const channel = message.member?.voice?.channel;
   if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
 
+  autoJoinPaused = false;   // asked to join: auto-join may follow people again
   const guild = { id: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator };
   // Returns the guild's existing connection if there is one, moving it to
   // `channel` when that differs.
@@ -817,6 +835,7 @@ function continuousCapture(connection, userId, channel) {
   let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
   let listening      = false;   // waiting for the question after a bare "hey Luna"
   let listenTimer    = null;    // ends that wait if no question comes
+  let followUpUntil  = 0;       // after "did you mean to ask me something?": answer without the wake word until then
 
   const segmenter = createSegmenter({
     energyThreshold: ENERGY_THRESHOLD,
@@ -872,6 +891,7 @@ function continuousCapture(connection, userId, channel) {
 
   captureStates.set(userId, {
     wakeStream,
+    expectQuestion(ms) { followUpUntil = Date.now() + ms; },
     get flushing() { return flushing; },
     get buffered() { return segmenter.buffered; },
     get lastData() { return lastDataTime; },
@@ -960,8 +980,16 @@ function continuousCapture(connection, userId, channel) {
       return;
     }
 
+    // The answer to "did you mean to ask me something?": no wake word needed.
+    const followUp = Date.now() < followUpUntil;
+    followUpUntil = 0;
+    if (followUp) {
+      wakeStream?.takePeak();
+      console.log(`[${userId}] the question after "did you mean to ask me something?" — no wake word needed`);
+    }
+
     let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
-    if (wakeStream) {
+    if (wakeStream && !followUp) {
       const now = Date.now();
       // The peak is read (and reset) once per utterance, whatever the verdict,
       // so a good score cannot leak into a later utterance.
@@ -1000,7 +1028,7 @@ function continuousCapture(connection, userId, channel) {
     }
 
     console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, wakeStream ? verdict === 'detected' : false, verdict === 'candidate')
+    processUtterance(pcm, userId, connection, channel, followUp || (wakeStream ? verdict === 'detected' : false), verdict === 'candidate' && !followUp)
       .finally(() => { flushing = false; });
   }
 
@@ -1285,6 +1313,12 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
     if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
     const query = confirmed.query;
 
+    // Only "hey Luna", even after waiting for more: ask what they wanted.
+    if (WAKE_FOLLOWUP_MS > 0 && isBareWake(transcript)) {
+      askForQuestion(userId, connection);
+      return;
+    }
+
     console.log(`[${userId}] Query:`, query);
     await handleQuery(query, connection, channel, t0, userId);
   } catch (err) {
@@ -1292,6 +1326,25 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
   } finally {
     processingUsers.delete(userId);
   }
+}
+
+// "Hey smakus, I didn't catch that. Did you mean to ask me something?" — then
+// that speaker's next words, if they start within WAKE_FOLLOWUP_MS of her
+// finishing, are taken as the question without the wake word. (Until she has
+// finished, the window stays open, so an early answer still counts.)
+function askForQuestion(userId, connection) {
+  const name = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
+  const fitting = REPROMPTS.filter(p => p.includes('{name}') === Boolean(name));
+  const text = fillPhrase(fitting.length ? fitting : REPROMPTS, { name });
+  console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
+  const expect = ms => captureStates.get(userId)?.expectQuestion(ms);
+  expect(60000);
+  const generation = interruptOwnPlayback(userId);
+  queuePlayback(async () => {
+    const pt = await fetchTTS(text);
+    if (pt) await playTTS(pt, connection);
+    expect(WAKE_FOLLOWUP_MS);
+  }, userId, generation);
 }
 
 // ─── Sound effect ─────────────────────────────────────────────────────────────
@@ -1420,34 +1473,34 @@ function pauseSearch(reason) {
   console.warn(`[search] ${reason} — answering without search; search paused for ${Math.round(SEARCH_PAUSE_MS / 60000)} min`);
 }
 
-// ─── Music tools (LLM → smakbot) ──────────────────────────────────────────────
+// ─── Tools for the LLM (music, leaving) ───────────────────────────────────────
 //
-// Besides the fixed commands below, the LLM can play, skip and stop music
-// itself (music-tools.js): Luna serves the tools over MCP on LUNA_MCP_PORT,
-// LM Studio knows them from its mcp.json as "luna", and every request offers
-// them as mcp/luna. When a call succeeds, Luna posts the smakbot command
-// (see the tool events in handleQuery). If LM Studio can't reach them, they
-// are left out for SEARCH_PAUSE_MS, like search.
-const MUSIC_TOOLS_ON  = config.MUSIC_TOOLS;
+// Besides the fixed commands below, the LLM can play, skip and stop music and
+// leave the channel itself (llm-tools.js): Luna serves the tools over MCP on
+// LUNA_MCP_PORT, LM Studio knows them from its mcp.json as "luna", and every
+// request offers them as mcp/luna. When a call succeeds, Luna acts on it (see
+// the tool events in handleQuery). If LM Studio can't reach them, they are
+// left out for SEARCH_PAUSE_MS, like search.
+const LLM_TOOLS_ON    = config.LLM_TOOLS;
 const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
-const MUSIC_PLUGIN_ID = 'mcp/luna';
-let musicPausedUntil  = 0;
+const TOOLS_PLUGIN_ID = 'mcp/luna';
+let toolsPausedUntil  = 0;
 
-function startMusicTools() {
-  const server = createMcpServer({ tools: MUSIC_TOOLS });
+function startLlmTools() {
+  const server = createMcpServer({ tools: LLM_TOOLS });
   http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
-    .on('error', err => console.error(`[music] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — music tools off`))
+    .on('error', err => console.error(`[tools] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — LLM tools off`))
     .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
-      `[music] play/skip/stop tools offered to the LLM as ${MUSIC_PLUGIN_ID} ` +
+      `[tools] ${[...LLM_TOOL_NAMES].join(', ')} offered to the LLM as ${TOOLS_PLUGIN_ID} ` +
       `(LM Studio's mcp.json needs "luna": {"url": "http://127.0.0.1:${LUNA_MCP_PORT}/mcp"})`));
 }
 
-function offerMusicTools() {
-  return MUSIC_TOOLS_ON && Date.now() >= musicPausedUntil;
+function offerLlmTools() {
+  return LLM_TOOLS_ON && Date.now() >= toolsPausedUntil;
 }
 
-function musicIntegration() {
-  return { type: 'plugin', id: MUSIC_PLUGIN_ID, allowed_tools: [...MUSIC_TOOL_NAMES] };
+function toolsIntegration() {
+  return { type: 'plugin', id: TOOLS_PLUGIN_ID, allowed_tools: [...LLM_TOOL_NAMES] };
 }
 
 function offerSearch(query) {
@@ -1530,6 +1583,24 @@ function extractSmakbotCommand(query) {
   return null;
 }
 
+// ─── Leaving on request ───────────────────────────────────────────────────────
+
+// Anchored at both ends, like the smakbot patterns: "leave" and "bye" are
+// commands, "leave the light on" and "bye bye birdie lyrics" are questions.
+const LEAVE_RE = /^(?:please\s+|ok(?:ay)?[\s,]+|alright[\s,]+)?(?:leave|go away|get out|disconnect|log off|head out|you can (?:go|leave)|bye(?: bye)?|goodbye)(?:\s+(?:the\s+)?(?:voice\s+)?(?:channel|call|now|please|for now))*[\s,.!?]*$/i;
+const LEAVE_PHRASES = ['Okay, bye everyone!', "Alright, I'm heading out. Bye!", 'Okay, see you later!'];
+
+// After being asked to leave, auto-join waits until the channel has emptied
+// once (or someone types !luna), so she doesn't pop straight back in.
+let autoJoinPaused = false;
+
+function leaveOnRequest(userId) {
+  if (!activeConnection) return;
+  const who = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) || userId;
+  if (AUTO_JOIN_CHANNELS.length) autoJoinPaused = true;
+  leaveVoice(`asked to leave by ${who}`);
+}
+
 // Posts a smakbot command in the text channel, summoning smakbot first when
 // asked to and it isn't in the voice channel. Used by the fixed commands and
 // by the LLM's music tools.
@@ -1573,6 +1644,19 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         if (pt) await playTTS(pt, connection);
       }, userId, musicGeneration);
     }
+    return;
+  }
+
+  // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
+  // music commands. (Wordier requests reach the LLM's leave_channel tool.)
+  if (LEAVE_RE.test(stripWakeWord(query))) {
+    const generation = interruptOwnPlayback(userId);
+    const goodbye = fillPhrase(LEAVE_PHRASES, {});
+    queuePlayback(async () => {
+      const pt = await fetchTTS(goodbye);
+      if (pt) await playTTS(pt, connection);
+      leaveOnRequest(userId);
+    }, userId, generation);
     return;
   }
 
@@ -1758,6 +1842,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // can answer from them instead of searching all over again.
   const searchCalls = [];
   let context = '';
+  let leaveAfterAnswer = false;   // the LLM called leave_channel
 
   const speak = sentence => {
     console.log('Luna sentence:', sentence);
@@ -1822,10 +1907,14 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           return;
         } else if ((e.type === 'tool_call.name' || e.type === 'tool_call.arguments') && toolPending) {
           toolPending = false;
-          if (!MUSIC_TOOL_NAMES.has(e.tool_name || e.tool)) {
+          if (!LLM_TOOL_NAMES.has(e.tool_name || e.tool)) {
             announceSearchNow();
             filter.event({ type: 'tool_call.start' });
           }
+          return;
+        } else if (e.type === 'tool_call.success' && e.tool === 'leave_channel') {
+          console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
+          leaveAfterAnswer = true;
           return;
         } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
           const command = smakbotCommandFor(e.tool, e.arguments);
@@ -1926,6 +2015,8 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     signal();
     // Never queued (no sentence, or superseded first): nothing will consume it.
     if (!queued && spokenResponses.get(userId) === response) spokenResponses.delete(userId);
+    // Queued behind the answer, so she leaves once her goodbye has played.
+    if (leaveAfterAnswer && !superseded()) queuePlayback(async () => leaveOnRequest(userId), userId, myGeneration);
   }
 }
 
@@ -2017,7 +2108,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
     input: context ? `${text}\n\n${context}` : text,
     stream: true,
   };
-  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerMusicTools() ? [musicIntegration()] : [])];
+  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() ? [toolsIntegration()] : [])];
   if (integrations.length) body.integrations = integrations;
 
   // Sent on EVERY request, not only the first of a chain.
@@ -2086,12 +2177,12 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       // Luna's own music tools are unreachable — not in LM Studio's mcp.json,
       // or its port isn't published. Answer without them and leave them out
       // for SEARCH_PAUSE_MS.
-      if (body.integrations?.some(i => i.id === MUSIC_PLUGIN_ID) && /MCP|plugin|integration/i.test(errText) &&
+      if (body.integrations?.some(i => i.id === TOOLS_PLUGIN_ID) && /MCP|plugin|integration/i.test(errText) &&
           /\bluna\b/i.test(errText)) {
-        musicPausedUntil = Date.now() + SEARCH_PAUSE_MS;
-        console.warn(`[music] LM Studio can't use the music tools (${errText.replace(/\s+/g, ' ').slice(0, 160)}) — ` +
+        toolsPausedUntil = Date.now() + SEARCH_PAUSE_MS;
+        console.warn(`[tools] LM Studio can't use Luna's tools (${errText.replace(/\s+/g, ' ').slice(0, 160)}) — ` +
           `answering without them for ${Math.round(SEARCH_PAUSE_MS / 60000)} min. Is "luna" in LM Studio's mcp.json?`);
-        body.integrations = body.integrations.filter(i => i.id !== MUSIC_PLUGIN_ID);
+        body.integrations = body.integrations.filter(i => i.id !== TOOLS_PLUGIN_ID);
         if (!body.integrations.length) delete body.integrations;
         continue;
       }
@@ -2101,7 +2192,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       if (!retriedWithoutSearch && useSearch && body.integrations && /MCP server|plugin|integration/i.test(errText)) {
         retriedWithoutSearch = true;
         pauseSearch(`search server unavailable (${errText.replace(/\s+/g, ' ').slice(0, 120)})`);
-        body.integrations = body.integrations.filter(i => i.id === MUSIC_PLUGIN_ID);
+        body.integrations = body.integrations.filter(i => i.id === TOOLS_PLUGIN_ID);
         if (!body.integrations.length) delete body.integrations;
         body.system_prompt = body.system_prompt.replace(' ' + SEARCH_PROMPT, '');
         useSearch = false;
@@ -2513,8 +2604,81 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   onVoiceJoin(oldState, newState);
   onVoiceLeave(oldState, newState);
 
+  // Asked to leave: auto-join resumes once the auto-join channels have emptied.
+  if (autoJoinPaused && !autoJoinChannelsOccupied()) {
+    autoJoinPaused = false;
+    console.log('[voice] auto-join channels empty — auto-join resumes');
+  }
+
+  // Someone joined a voice channel while Luna is in none: maybe one to
+  // auto-join (scheduleAutoJoin checks).
+  if (!activeConnection && newState.channelId && newState.channelId !== oldState.channelId) scheduleAutoJoin();
+
   if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
-  if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Last real user left');
+  if (getRealMemberCount(activeVoiceChannel) === 0) {
+    leaveVoice('Last real user left');
+    scheduleAutoJoin();   // people may be waiting in another auto-join channel
+  }
 });
+
+// ─── Auto-join ────────────────────────────────────────────────────────────────
+//
+// AUTO_JOIN_CHANNELS: voice channels (names or IDs) Luna joins by herself when
+// someone is in one and she is in no channel — at startup, or when someone
+// joins. With people in several, the busiest. She posts (status messages,
+// smakbot commands) in AUTO_JOIN_TEXT_CHANNEL. She still leaves when the last
+// person does, and a kick is respected: she comes back only when someone next
+// joins. A short delay lets someone who pops in and straight out not summon her.
+const AUTO_JOIN_CHANNELS     = config.AUTO_JOIN_CHANNELS;
+const AUTO_JOIN_TEXT_CHANNEL = config.AUTO_JOIN_TEXT_CHANNEL;
+const AUTO_JOIN_DELAY_MS     = 2000;
+let autoJoinTimer = null;
+let autoJoiningUntil = 0;   // a join in progress (not Ready yet): don't start another
+
+const named = (channel, wanted) => wanted.some(w => w === channel.id || w.toLowerCase() === String(channel.name).toLowerCase());
+const guildChannels = guild => [...(guild.channels?.cache?.values() ?? [])];
+const textChannelFor = guild => AUTO_JOIN_TEXT_CHANNEL
+  ? guildChannels(guild).find(c => !c.isVoiceBased?.() && c.isTextBased?.() && named(c, [AUTO_JOIN_TEXT_CHANNEL])) : null;
+
+// At startup: say which settings match nothing, and what does exist.
+function checkAutoJoin() {
+  if (!AUTO_JOIN_CHANNELS.length) return;
+  const guilds = [...(client.guilds?.cache?.values() ?? [])];
+  const all = guilds.flatMap(guildChannels);
+  const voices = all.filter(c => c.isVoiceBased?.()), texts = all.filter(c => !c.isVoiceBased?.() && c.isTextBased?.());
+  const missing = AUTO_JOIN_CHANNELS.filter(w => !voices.some(c => named(c, [w])));
+  if (missing.length) console.warn(`[voice] AUTO_JOIN_CHANNELS: no voice channel ${missing.map(m => `"${m}"`).join(', ')} — ` +
+    `voice channels: ${voices.map(c => c.name).join(', ') || 'none'}`);
+  if (!guilds.some(textChannelFor)) console.warn(`[voice] AUTO_JOIN_TEXT_CHANNEL ${AUTO_JOIN_TEXT_CHANNEL ? `"${AUTO_JOIN_TEXT_CHANNEL}" not found` : 'not set'} — ` +
+    `she will post in the voice channel's own chat. Text channels: ${texts.map(c => c.name).join(', ') || 'none'}`);
+  console.log(`[voice] auto-join: ${AUTO_JOIN_CHANNELS.join(', ')}`);
+}
+
+function autoJoinChannelsOccupied() {
+  return [...(client.guilds?.cache?.values() ?? [])].some(guild => guildChannels(guild)
+    .some(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS) && getRealMemberCount(c) > 0));
+}
+
+function scheduleAutoJoin() {
+  if (!AUTO_JOIN_CHANNELS.length) return;
+  clearTimeout(autoJoinTimer);
+  autoJoinTimer = setTimeout(autoJoin, AUTO_JOIN_DELAY_MS);
+}
+
+function autoJoin() {
+  if (!ready || activeConnection || autoJoinPaused || Date.now() < autoJoiningUntil) return;
+  const candidates = [...(client.guilds?.cache?.values() ?? [])].flatMap(guild => guildChannels(guild)
+    .filter(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS))
+    .map(channel => ({ guild, channel, people: getRealMemberCount(channel) })))
+    .filter(c => c.people > 0)
+    .sort((a, b) => b.people - a.people);
+  if (!candidates.length) return;
+  const { guild, channel, people } = candidates[0];
+  const g = { id: guild.id, adapterCreator: guild.voiceAdapterCreator };
+  console.log(`[voice] auto-joining ${channel.name} (${people} ${people === 1 ? 'person' : 'people'} there)`);
+  autoJoiningUntil = Date.now() + 15000;
+  const connection = joinVoice(channel, g);
+  attachVoice(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; introduceSelf(connection); });
+}
 
 void client.login(config.DISCORD_TOKEN || undefined);
