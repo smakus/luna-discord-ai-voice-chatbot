@@ -127,6 +127,7 @@ const SETTINGS = [
   { name: 'ELEVENLABS_OUTPUT_FORMAT', type: 'string', default: 'mp3_44100_128' },
   { name: 'ELEVENLABS_BASE_URL', type: 'string', default: 'https://api.elevenlabs.io' },
   { name: 'ELEVENLABS_TIMEOUT_MS', type: 'int', default: 10000, min: 1 },
+  { name: 'ELEVENLABS_MAX_CONCURRENCY', type: 'int', default: 3, min: 1 },
 ];
 
 // Settings of the other programs (Kokoro, Whisper, the MLX voice servers) that

@@ -73,6 +73,11 @@ const ELEVENLABS_BASE_URL = config.ELEVENLABS_BASE_URL.replace(/\/+$/, '');
 // Shorter than Kokoro's: a slow cloud response should fall back to Kokoro
 // while there is still time for the sentence to play promptly.
 const ELEVENLABS_TIMEOUT_MS = config.ELEVENLABS_TIMEOUT_MS;
+// ElevenLabs plans cap requests in progress at once (3 on the lower tiers);
+// one over is rejected with 429 and that sentence fell back to the other
+// voice. Luna has several open at a time (TTS_LOOKAHEAD sentences ahead, the
+// search heads-up, other speakers' answers), so extra ones wait for a slot.
+const ELEVENLABS_MAX_CONCURRENCY = config.ELEVENLABS_MAX_CONCURRENCY;
 
 const PROVIDER_RETRY_MS = config.TTS_PROVIDER_RETRY_MS;
 const CREDITS_RETRY_MS  = config.TTS_CREDITS_RETRY_MS;
@@ -168,8 +173,42 @@ class TTSError extends Error {
   }
 }
 
+// At most `max` at once; the rest wait their turn, in order. acquire()
+// resolves to a release function (safe to call more than once), or rejects
+// with a TTSError when the wait is cancelled or takes longer than waitMs.
+function createLimiter(max, label) {
+  let active = 0;
+  const waiting = [];
+  const next = () => {
+    while (active < max && waiting.length) {
+      const entry = waiting.shift();
+      entry.cleanup();
+      active++;
+      let released = false;
+      entry.resolve(() => { if (!released) { released = true; active--; next(); } });
+    }
+  };
+  return {
+    get active() { return active; },
+    acquire(cancel, waitMs) {
+      return new Promise((resolve, reject) => {
+        if (cancel?.aborted) return reject(new TTSError(`${label} request cancelled`, 'cancelled'));
+        const entry = { resolve };
+        const drop = err => { const i = waiting.indexOf(entry); if (i >= 0) { waiting.splice(i, 1); entry.cleanup(); reject(err); } };
+        const timer = setTimeout(() => drop(new TTSError(`${label} busy: no free slot after ${waitMs}ms`, 'transient')), waitMs);
+        const onCancel = () => drop(new TTSError(`${label} request cancelled`, 'cancelled'));
+        cancel?.addEventListener('abort', onCancel, { once: true });
+        entry.cleanup = () => { clearTimeout(timer); cancel?.removeEventListener('abort', onCancel); };
+        waiting.push(entry);
+        next();
+      });
+    },
+  };
+}
+
 // Turns a fetch Response body into a PassThrough that playTTS can consume.
-function pipeBody(res, label) {
+// onDone runs once the whole body has been read, or reading stopped.
+function pipeBody(res, label, onDone = () => {}) {
   const passThrough = new PassThrough();
 
   // Load-bearing. destroy(err) below emits 'error', and an 'error' event with
@@ -181,7 +220,7 @@ function pipeBody(res, label) {
   const reader = res.body.getReader();
   // Destroying the stream (a superseded sentence) stops the download instead
   // of reading the rest of the body into a stream nobody will play.
-  passThrough.once('close', () => { reader.cancel().catch(() => {}); });
+  passThrough.once('close', () => { reader.cancel().catch(() => {}); onDone(); });
   (async () => {
     try {
       while (true) {
@@ -196,6 +235,8 @@ function pipeBody(res, label) {
         console.error(`${label} stream aborted:`, err.message);
         passThrough.destroy(err);
       }
+    } finally {
+      onDone();
     }
   })();
   return passThrough;
@@ -268,6 +309,9 @@ function classifyElevenLabs(status, detail) {
 }
 
 const ELEVENLABS_TAGS = ELEVENLABS_TAG_MODELS.has(ELEVENLABS_MODEL);
+const elevenlabsSlots = createLimiter(ELEVENLABS_MAX_CONCURRENCY, 'ElevenLabs');
+const isConcurrencyLimit = (status, detail) => status === 429 &&
+  /concurren/i.test(`${detail?.code || ''} ${detail?.status || ''} ${detail?.message || ''}`);
 const elevenlabs = {
   name: 'ElevenLabs',
   tagPrompt: ELEVENLABS_TAGS ? ELEVENLABS_PROMPT : '',
@@ -276,19 +320,36 @@ const elevenlabs = {
   async synthesize(text, signal) {
     const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}` +
       `/stream?output_format=${encodeURIComponent(ELEVENLABS_FORMAT)}`;
-    const res = await request('ElevenLabs', url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'xi-api-key': ELEVENLABS_API_KEY },
-      body: JSON.stringify({ text, model_id: ELEVENLABS_MODEL }),
-    }, ELEVENLABS_TIMEOUT_MS, signal);
-    if (!res.ok) {
+    // A slot is held until ElevenLabs has sent the whole sentence: that is
+    // what it counts as "in progress".
+    for (let attempt = 1; ; attempt++) {
+      const release = await elevenlabsSlots.acquire(signal, ELEVENLABS_TIMEOUT_MS);
+      let res;
+      try {
+        res = await request('ElevenLabs', url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'xi-api-key': ELEVENLABS_API_KEY },
+          body: JSON.stringify({ text, model_id: ELEVENLABS_MODEL }),
+        }, ELEVENLABS_TIMEOUT_MS, signal);
+      } catch (err) {
+        release();
+        throw err;
+      }
+      if (res.ok) return pipeBody(res, 'ElevenLabs', release);
+      release();
       const body = await res.text();
       let detail = null;
       try { detail = JSON.parse(body).detail; } catch (_) {}
+      // Something else using the same key took a slot: try once more shortly
+      // before letting this sentence go to the fallback voice.
+      if (attempt === 1 && isConcurrencyLimit(res.status, detail)) {
+        await new Promise(r => setTimeout(r, 500));
+        if (signal?.aborted) throw new TTSError('ElevenLabs request cancelled', 'cancelled');
+        continue;
+      }
       const message = (detail && (detail.message || detail.code || detail.status)) || body.slice(0, 200);
       throw new TTSError(`ElevenLabs error ${res.status}: ${message}`, classifyElevenLabs(res.status, detail));
     }
-    return pipeBody(res, 'ElevenLabs');
   },
 };
 
@@ -384,4 +445,4 @@ async function fetchTTS(text, { signal } = {}) {
   return null;
 }
 
-module.exports = { fetchTTS, describeTTS, expressivePrompt, stripAudioTags, pronounce };
+module.exports = { fetchTTS, describeTTS, expressivePrompt, stripAudioTags, pronounce, createLimiter };
