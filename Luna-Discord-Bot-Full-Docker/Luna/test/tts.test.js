@@ -89,7 +89,7 @@ const keepAlive = setInterval(() => {}, 1000);
   real('other ElevenLabs failures');
   for (const [label, r, benched] of [['401 invalid_api_key', res(401, { detail: { code: 'invalid_api_key', message: 'bad key' } }), true],
       ['404 voice_not_found', res(404, { detail: { code: 'voice_not_found' } }), true],
-      ['429 concurrent_limit_exceeded', res(429, { detail: { code: 'concurrent_limit_exceeded' } }), false],
+      ['429 rate limit', res(429, { detail: { code: 'rate_limit_exceeded' } }), false],
       ['503 service_unavailable', res(503, 'oops'), false],
       ['network error', 'neterr', false]]) {
     t = load(EL, { el: [r, res(200, '', 'EL-AUDIO')] });
@@ -209,6 +209,30 @@ const keepAlive = setInterval(() => {}, 1000);
   for (const [i, o] of [['[laughs] Hi.', 'Hi.'], ['Wait [whispers] here.', 'Wait here.'], ['[low, gravelly voice] Ok.', 'Ok.'], ['No tags.', 'No tags.'], ['Array [1, 2] stays?', 'Array stays?']])
     assert.strictEqual(t.stripAudioTags(i), o, i);
   say('5 cases');
+  real('ElevenLabs concurrency limit');
+  t = load(BASE);
+  { const lim = t.createLimiter(2, 'X'); const r1 = await lim.acquire(null, 1000), r2 = await lim.acquire(null, 1000);
+    let third = null; const p3 = lim.acquire(null, 1000).then(r => { third = r; });
+    await wait(20); assert.strictEqual(third, null, 'third waits'); r1(); r1(); await p3; assert.ok(third);
+    assert.strictEqual(lim.active, 2, 'double release counted once');
+    const c = new AbortController(); const p4 = lim.acquire(c.signal, 1000); c.abort();
+    await assert.rejects(p4, e => e.kind === 'cancelled');
+    await assert.rejects(lim.acquire(null, 30), e => e.kind === 'transient' && /no free slot after 30ms/.test(e.message));
+    say('limiter: waits in turn, release is idempotent, cancel and wait timeout reject'); }
+  { let inflight = 0, most = 0;
+    const slow = () => { inflight++; most = Math.max(most, inflight);
+      return { ok: true, status: 200, text: async () => '', body: new ReadableStream({ start(c) { setTimeout(() => { c.enqueue(new TextEncoder().encode('EL-AUDIO')); c.close(); inflight--; }, 120); } }) }; };
+    t = load({ ...EL, ELEVENLABS_MAX_CONCURRENCY: '2' }, { el: [slow] });
+    const results = await Promise.all(['One.', 'Two.', 'Three.', 'Four.'].map(s => t.fetchTTS(s).then(read)));
+    assert.deepStrictEqual(results, ['EL-AUDIO', 'EL-AUDIO', 'EL-AUDIO', 'EL-AUDIO']);
+    assert.strictEqual(most, 2, `at most 2 at once (saw ${most})`); assert.ok(!calls.some(c => c.who === 'kokoro'));
+    say('4 sentences at once with ELEVENLABS_MAX_CONCURRENCY=2 → never more than 2 in progress, all in the ElevenLabs voice'); }
+  { const busy = res(429, { detail: { status: 'concurrent_limit_exceeded', message: 'Too many concurrent requests. Your current subscription is associated with a maximum of 3 concurrent requests' } });
+    t = load(EL, { el: [busy, res(200, '', 'EL-AUDIO')] });
+    assert.strictEqual(await read(await t.fetchTTS('Hi.')), 'EL-AUDIO');
+    assert.deepStrictEqual(calls.map(c => c.who), ['el', 'el']); say('429 "too many concurrent requests" (another client on the key) → retried once, no fallback');
+    t = load(EL, { el: [busy, busy] });
+    assert.strictEqual(await read(await t.fetchTTS('Hi.')), 'KOKORO-AUDIO'); say('…still busy after the retry → that sentence falls back'); }
   real('NAME_PRONUNCIATIONS');
   t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus=smack-us|Jo.el=Jo-ell' });
   for (const [i, o] of [['Hey smakus!', 'Hey smack-us!'], ['SMAKUS, welcome back.', 'smack-us, welcome back.'], ["That's Smakus's song.", "That's smack-us's song."],

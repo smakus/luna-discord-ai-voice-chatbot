@@ -305,6 +305,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
 | `ELEVENLABS_TIMEOUT_MS` | `10000` | Falls back to Kokoro after this |
+| `ELEVENLABS_MAX_CONCURRENCY` | `3` | ElevenLabs requests in progress at once. Plans cap this (3 on the lower tiers); a request over the cap is rejected and that sentence would go to the fallback voice, so extra sentences wait for a free slot instead. Match it to your plan |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API address |
 | `NAME_PRONUNCIATIONS` | | Names the voice says wrong, respelled the way they sound, separated by a pipe character: `smakus=smack-us\|appa=ah-pah`. Applied to everything she says (whole words, any capitalisation); the LLM still sees the real name |
 | `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
