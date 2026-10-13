@@ -1,7 +1,7 @@
 // ─── Tools for the LLM ────────────────────────────────────────────────────────
 //
 // Things the LLM can make Luna do: play, skip and stop music through smakbot,
-// and leave the voice channel. The fixed patterns in index.js ("play …",
+// leave the voice channel, and (from text chat) say something in it. The fixed patterns in index.js ("play …",
 // "skip", "stop", "leave") handle the plain commands instantly, before the
 // LLM; these tools cover everything else ("put on something chill", "we're
 // done for tonight, you can head out").
@@ -54,8 +54,29 @@ const LEAVE_TOOL = {
   run: () => 'You will leave the voice channel right after your reply has been spoken.',
 };
 
-const LLM_TOOLS = [...MUSIC_TOOLS, LEAVE_TOOL];
+// From text chat: say something out loud in the voice channel ("say hello in
+// Chinese in the voice channel"). index.js replaces run() with one that knows
+// whether Luna is in a voice channel, and speaks the line.
+const SAY_TOOL = {
+  name: 'say_in_voice',
+  description: 'Say something out loud in the voice channel you are in, in your voice. Use it when ' +
+    'someone typing asks you to say something in the voice channel. Pass exactly the words to speak, ' +
+    'in the language asked for (e.g. "你好!" for hello in Chinese), at most a few sentences. Then ' +
+    'confirm in your text reply what you said.',
+  inputSchema: {
+    type: 'object',
+    properties: { text: { type: 'string', description: 'Exactly what to say out loud' } },
+    required: ['text'],
+  },
+  run: () => 'Said in the voice channel.',
+};
+
+const LLM_TOOLS = [...MUSIC_TOOLS, LEAVE_TOOL, SAY_TOOL];
 const LLM_TOOL_NAMES = new Set(LLM_TOOLS.map(t => t.name));
+// Which are offered where: leaving makes sense only by voice, saying
+// something in voice only from text.
+const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), LEAVE_TOOL.name]);
+const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), SAY_TOOL.name]);
 const MUSIC_TOOL_NAMES = new Set(MUSIC_TOOLS.map(t => t.name));
 
 // The smakbot command for a tool call: { text, summon }, or null.
@@ -69,4 +90,4 @@ function smakbotCommandFor(tool, args = {}) {
   return null;
 }
 
-module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor };
+module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor };

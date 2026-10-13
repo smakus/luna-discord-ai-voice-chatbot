@@ -12,7 +12,8 @@ const path = require('path');
 const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
-const { LLM_TOOLS, LLM_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
+const { textQuestion, splitMessage, isSayRequest } = require('./text-chat');
+const { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
@@ -456,7 +457,19 @@ let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
+  if (onTextMessage(message)) return;
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
+  // "!luna say <text>": exactly those words, out loud, no LLM.
+  const sayMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+say\\s+([\\s\\S]+)$`, 'i'));
+  if (sayMatch && !message.author?.bot) {
+    const who = message.member?.displayName || message.author?.username || 'someone';
+    if (!sayInVoice(sayMatch[1], message.author?.id || 'text', who)) {
+      message.reply("I'm not in a voice channel.").catch(() => {});
+    } else {
+      message.react('🔊').catch(() => {});
+    }
+    return;
+  }
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} leave`) {
     if (!activeConnection) return message.reply("I'm not in a voice channel.").catch(() => {});
     message.reply('Bye!').catch(() => {});
@@ -1492,7 +1505,11 @@ const TOOLS_PLUGIN_ID = 'mcp/luna';
 let toolsPausedUntil  = 0;
 
 function startLlmTools() {
-  const server = createMcpServer({ tools: LLM_TOOLS });
+  // say_in_voice tells the model the truth about whether anything was said.
+  const tools = LLM_TOOLS.map(t => t.name !== 'say_in_voice' ? t : { ...t, run: () => activeConnection
+    ? `Said in ${activeVoiceChannel?.name || 'the voice channel'}.`
+    : 'You are not in a voice channel, so nothing was said. Tell them that.' });
+  const server = createMcpServer({ tools });
   http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
     .on('error', err => console.error(`[tools] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — LLM tools off`))
     .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
@@ -1504,8 +1521,8 @@ function offerLlmTools() {
   return LLM_TOOLS_ON && Date.now() >= toolsPausedUntil;
 }
 
-function toolsIntegration() {
-  return { type: 'plugin', id: TOOLS_PLUGIN_ID, allowed_tools: [...LLM_TOOL_NAMES] };
+function toolsIntegration(names = LLM_TOOL_NAMES) {
+  return { type: 'plugin', id: TOOLS_PLUGIN_ID, allowed_tools: [...names] };
 }
 
 function offerSearch(query) {
@@ -2080,11 +2097,11 @@ function logLLMPhase(userId, e, phase) {
 // One line per answer from LM Studio's own accounting: what is needed to tell
 // whether a slow answer was spent reasoning, prefilling a long prompt
 // (conversation memory, stored web-search results) or just generating slowly.
-function logLLMStats(userId, stats) {
+function logLLMStats(userId, stats, memoryKey = userId) {
   if (!stats) return;
   const n = v => (typeof v === 'number' ? v.toLocaleString('en-US') : '?');
   const f = v => (typeof v === 'number' ? v.toFixed(1) : '?');
-  const turn = (conversations.get(userId)?.turns || 0) + 1;
+  const turn = (conversations.get(memoryKey)?.turns || 0) + 1;
   console.log(
     `[${userId}] [LLM] stats: memory turn ${turn}, prompt ${n(stats.input_tokens)} tokens, ` +
     `reasoning ${n(stats.reasoning_output_tokens)}, output ${n(stats.total_output_tokens)}, ` +
@@ -2105,15 +2122,20 @@ function logLLMStats(userId, stats) {
 
 // `reasoning` overrides LLM_REASONING for this request; aborting `signal`
 // cancels it (thinking limit, barge-in, supersede).
+// Typed questions (see "Text chat") use the same path with textMode: the
+// text-channel prompt, the channel's shared memory (memoryKey), only the
+// tools that make sense there (toolNames), and the answer yielded as it
+// arrives (raw pieces, line breaks and formatting kept) instead of sentences.
 async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
                                              { reasoning = LLM_REASONING, signal = null, onEvent = null,
-                                               context = '', extraSystem = '' } = {}) {
+                                               context = '', extraSystem = '', memoryKey = userId,
+                                               textMode = false, toolNames = VOICE_TOOL_NAMES, flavorOk = true } = {}) {
   const body = {
     model: lmStudioModel,
     input: context ? `${text}\n\n${context}` : text,
     stream: true,
   };
-  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() ? [toolsIntegration()] : [])];
+  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() && toolNames.size ? [toolsIntegration(toolNames)] : [])];
   if (integrations.length) body.integrations = integrations;
 
   // Sent on EVERY request, not only the first of a chain.
@@ -2131,17 +2153,18 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // "occasionally" reliably becomes "every single time". Deciding here — and
   // simply omitting the line most of the time — is the only way to get a rate
   // that is actually a rate.
-  const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
+  const flavor = flavorOk && LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
-  const expressive = expressivePrompt();
+  const expressive = textMode ? '' : expressivePrompt();
   // The asker's name, so she can use it (LM_USE_NAMES); left out when they
   // aren't in her voice channel or their name has nothing speakable.
-  const speaker = config.LM_USE_NAMES ? speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) : '';
+  // (In text, each message carries its writer's name instead.)
+  const speaker = config.LM_USE_NAMES && !textMode ? speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) : '';
   body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
-    search: useSearch && ANNOUNCE_SEARCH, speaker, extra: extraSystem, flavor });
+    search: useSearch && ANNOUNCE_SEARCH, speaker, extra: extraSystem, flavor, text: textMode });
 
-  const priorId = getConversationId(userId);
+  const priorId = getConversationId(memoryKey);
   if (priorId) body.previous_response_id = priorId;
 
   // Idle timeout: aborts only when LM Studio has sent nothing at all for
@@ -2211,7 +2234,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       if (!retriedConversation && body.previous_response_id && /previous_response_id/i.test(errText)) {
         retriedConversation = true;
         console.warn(`[${userId}] [LLM] conversation memory not found in LM Studio — starting a fresh one`);
-        conversations.delete(userId);
+        conversations.delete(memoryKey);
         delete body.previous_response_id;
         continue;
       }
@@ -2277,7 +2300,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
 
             // response_id lives inside chat.end result
             if (parsed.type === 'chat.end') {
-              logLLMStats(userId, parsed.result?.stats);
+              logLLMStats(userId, parsed.result?.stats, memoryKey);
               if (parsed.result?.output) {
                 const msg = parsed.result.output.filter(o => o.type === 'message').pop();
                 if (msg?.content) responseId = parsed.result?.response_id ?? null;
@@ -2300,6 +2323,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
             const delta = parsed.type === 'message.delta' ? (parsed.content ?? '') : '';
 
             if (!delta) continue;
+            if (textMode) { yield delta; continue; }
             buffer += delta;
 
             const split = takeSentences(buffer);
@@ -2317,7 +2341,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
 
       const remainder = buffer.trim();
       if (remainder) yield remainder;
-      rememberConversation(userId, responseId);
+      rememberConversation(memoryKey, responseId);
 
     // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
     } else {
@@ -2327,8 +2351,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       clearTimeout(idleTimer);
       const data = await res.json();
 
-      logLLMStats(userId, data.stats);
-      rememberConversation(userId, data.response_id);
+      logLLMStats(userId, data.stats, memoryKey);
+      rememberConversation(memoryKey, data.response_id);
 
       // Extract full reply text from responses API format
       const messageItem = data.output?.filter(o => o.type === 'message').pop();
@@ -2340,6 +2364,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
       }
 
       // Split into sentences and yield each one so TTS starts immediately
+      if (textMode) { yield fullText; return; }
       const split = takeSentences(fullText);
       for (const sentence of split.sentences) yield sentence;
       if (split.rest.trim()) yield split.rest.trim();
@@ -2625,6 +2650,135 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     scheduleAutoJoin();   // people may be waiting in another auto-join channel
   }
 });
+
+// ─── Text chat ────────────────────────────────────────────────────────────────
+//
+// Typing to Luna in TEXT_CHAT_CHANNELS: a message that @mentions her or starts
+// with "Luna" gets a written answer there, through the same LLM path as voice
+// (search, music tools) with the text-channel prompt. Everyone in a channel
+// shares one conversation (memory "text:<channel>", LM_MEMORY_TTL_MS), each
+// message prefixed with its writer's name; answers in a channel go one at a
+// time so they don't tangle that memory. The voice channel isn't needed.
+const TEXT_CHAT_CHANNELS = config.TEXT_CHAT_CHANNELS;
+const textQueues = new Map();   // channel id -> the answer in progress
+
+// No pings from the model's text: no @everyone, roles or users.
+const NO_PINGS = { parse: [], repliedUser: false };
+
+function onTextMessage(message) {
+  if (!TEXT_CHAT_CHANNELS.length || message.author?.bot || !message.channel) return false;
+  if (!named(message.channel, TEXT_CHAT_CHANNELS)) return false;
+  const question = textQuestion(message.content, client.user.id, BOT_COMMAND);
+  if (!question) return false;
+  if (!ready) { message.reply('Still starting up — try again in a few seconds.').catch(() => {}); return true; }
+  const key = message.channel.id;
+  const answer = (textQueues.get(key) || Promise.resolve())
+    .then(() => answerInText(message, question))
+    .catch(err => console.error(`[text] ${err.message}`));
+  textQueues.set(key, answer);
+  return true;
+}
+
+async function answerInText(message, question) {
+  const channel = message.channel;
+  const name = message.member?.displayName || message.author?.username || 'Someone';
+  console.log(`[text] ${name}: ${question}`);
+
+  // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
+  const music = extractSmakbotCommand(question);
+  if (music) {
+    await sendSmakbotCommand(channel, music.build(music.arg), music.summon);
+    const ack = music.ack(music.arg);
+    if (ack) await message.reply({ content: ack, allowedMentions: NO_PINGS }).catch(() => {});
+    return;
+  }
+
+  // "Say … in the voice channel": the model only writes the line; Luna speaks
+  // it and confirms herself, so the confirmation is always true.
+  if (isSayRequest(question)) return sayFromText(message, question, name);
+
+  // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
+  const typing = () => channel.sendTyping?.().catch(() => {});
+  typing();
+  const typingTimer = setInterval(typing, 8000);
+  let text = '', failed = false, searched = false;
+  try {
+    const onEvent = e => {
+      if (e.type === 'tool_call.success' && e.tool === 'say_in_voice') {
+        sayInVoice(e.arguments?.text, message.author?.id || 'text', name);
+      } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
+        const command = smakbotCommandFor(e.tool, e.arguments);
+        console.log(`[text] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
+        if (command) sendSmakbotCommand(channel, command.text, command.summon);
+      } else if (e.type === 'tool_call.arguments' && !LLM_TOOL_NAMES.has(e.tool) && !searched) {
+        searched = true;
+        message.react('🔍').catch(() => {});
+      }
+    };
+    for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text',
+      offerSearch(question), { textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onEvent })) {
+      text += piece;
+    }
+  } catch (err) {
+    failed = true;
+    console.error(`[text] answer failed: ${err.message}`);
+  } finally {
+    clearInterval(typingTimer);
+  }
+
+  const answer = text.replace(/<\/?think>/gi, '').trim() ||
+    (failed ? 'Sorry, I had trouble with that.' : 'Sorry, I lost my train of thought.');
+  const [first, ...rest] = splitMessage(answer);
+  await message.reply({ content: first, allowedMentions: NO_PINGS }).catch(err => console.error(`[text] reply failed: ${err.message}`));
+  for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
+}
+
+const SAY_PROMPT = 'Reply with only the exact words to say out loud in the voice channel, in the ' +
+  'language asked for, and nothing else: no quotation marks, no explanation, no pronunciation guide.';
+
+async function sayFromText(message, question, name) {
+  const channel = message.channel;
+  if (!activeConnection) {
+    await message.reply({ content: "I'm not in a voice channel right now.", allowedMentions: NO_PINGS }).catch(() => {});
+    return;
+  }
+  channel.sendTyping?.().catch(() => {});
+  let line = '';
+  try {
+    for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text', false,
+      { textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
+      line += piece;
+    }
+  } catch (err) {
+    console.error(`[text] say failed: ${err.message}`);
+  }
+  line = line.replace(/<\/?think>/gi, '').trim().replace(/^["“'‘]+|["”'’]+$/g, '').trim();
+  if (!line || !sayInVoice(line, message.author?.id || 'text', name)) {
+    await message.reply({ content: 'Sorry, I couldn\'t work out what to say.', allowedMentions: NO_PINGS }).catch(() => {});
+    return;
+  }
+  await message.reply({ content: `🔊 Said in ${activeVoiceChannel?.name || 'the voice channel'}: ${line.slice(0, SAY_MAX_CHARS)}`,
+    allowedMentions: NO_PINGS }).catch(() => {});
+}
+
+// Speaks a line in the voice channel on someone's behalf (say_in_voice, or
+// "!luna say …"). Queued like their own answer — after whatever is playing,
+// superseded if they then ask something by voice — not interrupting anyone.
+// Returns false when she isn't in a voice channel.
+const SAY_MAX_CHARS = 400;
+function sayInVoice(text, userId, who) {
+  const connection = activeConnection;
+  const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
+  if (!connection || !line) return false;
+  console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
+  const generation = userGeneration.get(userId) ?? nextGeneration(userId);
+  queuePlayback(async () => {
+    if (activeConnection !== connection) return;
+    const pt = await fetchTTS(line);
+    if (pt) await playTTS(pt, connection);
+  }, userId, generation);
+  return true;
+}
 
 // ─── Auto-join ────────────────────────────────────────────────────────────────
 //

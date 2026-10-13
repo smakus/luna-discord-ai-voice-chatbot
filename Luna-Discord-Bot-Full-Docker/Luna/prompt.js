@@ -21,6 +21,20 @@ function basePrompt({ LM_PERSONALITY, LM_CONCISE }) {
     'about current events, prices, weather, news, scores, or anything time-sensitive.';
 }
 
+// The same character in the text channel: people type to her, several in one
+// shared conversation, and Discord shows formatting, so it is allowed.
+function textBasePrompt({ LM_PERSONALITY, LM_CONCISE }) {
+  return `You are Luna, a ${LM_PERSONALITY} assistant in a Discord server, answering in a text channel. ` +
+    'People write to you by mentioning you or starting their message with "Luna". Several people ' +
+    'may talk to you in the same conversation; each of their messages starts with their name ' +
+    '("Sam: ..."), so you know who said what. Do not start your reply with your own name. ' +
+    `Keep replies ${LM_CONCISE ? 'concise and ' : ''}conversational, short enough to read in a chat. ` +
+    'Discord formatting is fine (bold, italics, a short list, links), but no headings or tables. ' +
+    'Do not ask follow-up questions unless necessary for data. You have access to the internet via ' +
+    'a web search tool and should use it whenever asked about current events, prices, weather, news, ' +
+    'scores, or anything time-sensitive.';
+}
+
 // Today's date. The model otherwise guesses: it has searched for "today" as
 // June 2026 in October, and called October "a December day". Date only, not
 // the time, on purpose: LM Studio reuses its cached copy of an identical
@@ -60,8 +74,9 @@ function speakerLine(name) {
 //               parts every request shares, so they stay a cached prefix
 //   extra       e.g. QUICK_PROMPT for a quick-answer retry
 //   flavor      the occasional personality line, already chosen or ''
-function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, speaker = '', extra = '', flavor = '' }) {
-  return basePrompt(config) + ' ' + todayLine(timeZone, now) +
+//   text        the text-channel version of her (textBasePrompt) instead of voice
+function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, speaker = '', extra = '', flavor = '', text = false }) {
+  return (text ? textBasePrompt(config) : basePrompt(config)) + ' ' + todayLine(timeZone, now) +
     (expressive ? ' ' + expressive : '') +
     (search ? ' ' + SEARCH_PROMPT : '') +
     (speaker ? ' ' + speakerLine(speaker) : '') +
@@ -69,4 +84,4 @@ function systemPrompt({ config, timeZone, now = new Date(), expressive = '', sea
     (flavor ? ' ' + flavor : '');
 }
 
-module.exports = { basePrompt, todayLine, speakerLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
+module.exports = { basePrompt, textBasePrompt, todayLine, speakerLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
