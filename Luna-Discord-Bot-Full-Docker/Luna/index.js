@@ -13,7 +13,7 @@ const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
 const { textQuestion, splitMessage } = require('./text-chat');
-const { LLM_TOOLS, LLM_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
+const { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
@@ -459,6 +459,17 @@ const listeningUsers   = new Set();
 client.on(Events.MessageCreate, async message => {
   if (onTextMessage(message)) return;
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
+  // "!luna say <text>": exactly those words, out loud, no LLM.
+  const sayMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+say\\s+([\\s\\S]+)$`, 'i'));
+  if (sayMatch && !message.author?.bot) {
+    const who = message.member?.displayName || message.author?.username || 'someone';
+    if (!sayInVoice(sayMatch[1], message.author?.id || 'text', who)) {
+      message.reply("I'm not in a voice channel.").catch(() => {});
+    } else {
+      message.react('🔊').catch(() => {});
+    }
+    return;
+  }
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} leave`) {
     if (!activeConnection) return message.reply("I'm not in a voice channel.").catch(() => {});
     message.reply('Bye!').catch(() => {});
@@ -1494,7 +1505,11 @@ const TOOLS_PLUGIN_ID = 'mcp/luna';
 let toolsPausedUntil  = 0;
 
 function startLlmTools() {
-  const server = createMcpServer({ tools: LLM_TOOLS });
+  // say_in_voice tells the model the truth about whether anything was said.
+  const tools = LLM_TOOLS.map(t => t.name !== 'say_in_voice' ? t : { ...t, run: () => activeConnection
+    ? `Said in ${activeVoiceChannel?.name || 'the voice channel'}.`
+    : 'You are not in a voice channel, so nothing was said. Tell them that.' });
+  const server = createMcpServer({ tools });
   http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
     .on('error', err => console.error(`[tools] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — LLM tools off`))
     .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
@@ -2114,7 +2129,7 @@ function logLLMStats(userId, stats, memoryKey = userId) {
 async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
                                              { reasoning = LLM_REASONING, signal = null, onEvent = null,
                                                context = '', extraSystem = '', memoryKey = userId,
-                                               textMode = false, toolNames = LLM_TOOL_NAMES } = {}) {
+                                               textMode = false, toolNames = VOICE_TOOL_NAMES } = {}) {
   const body = {
     model: lmStudioModel,
     input: context ? `${text}\n\n${context}` : text,
@@ -2685,7 +2700,9 @@ async function answerInText(message, question) {
   let text = '', failed = false, searched = false;
   try {
     const onEvent = e => {
-      if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
+      if (e.type === 'tool_call.success' && e.tool === 'say_in_voice') {
+        sayInVoice(e.arguments?.text, message.author?.id || 'text', name);
+      } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
         const command = smakbotCommandFor(e.tool, e.arguments);
         console.log(`[text] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
         if (command) sendSmakbotCommand(channel, command.text, command.summon);
@@ -2695,7 +2712,7 @@ async function answerInText(message, question) {
       }
     };
     for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text',
-      offerSearch(question), { textMode: true, memoryKey: `text:${channel.id}`, toolNames: MUSIC_TOOL_NAMES, onEvent })) {
+      offerSearch(question), { textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onEvent })) {
       text += piece;
     }
   } catch (err) {
@@ -2710,6 +2727,25 @@ async function answerInText(message, question) {
   const [first, ...rest] = splitMessage(answer);
   await message.reply({ content: first, allowedMentions: NO_PINGS }).catch(err => console.error(`[text] reply failed: ${err.message}`));
   for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
+}
+
+// Speaks a line in the voice channel on someone's behalf (say_in_voice, or
+// "!luna say …"). Queued like their own answer — after whatever is playing,
+// superseded if they then ask something by voice — not interrupting anyone.
+// Returns false when she isn't in a voice channel.
+const SAY_MAX_CHARS = 400;
+function sayInVoice(text, userId, who) {
+  const connection = activeConnection;
+  const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
+  if (!connection || !line) return false;
+  console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
+  const generation = userGeneration.get(userId) ?? nextGeneration(userId);
+  queuePlayback(async () => {
+    if (activeConnection !== connection) return;
+    const pt = await fetchTTS(line);
+    if (pt) await playTTS(pt, connection);
+  }, userId, generation);
+  return true;
 }
 
 // ─── Auto-join ────────────────────────────────────────────────────────────────

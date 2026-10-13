@@ -137,6 +137,7 @@ With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channel
 - Everyone in a channel shares one conversation, each message labelled with its writer's name, so "Luna, and in Newport?" follows on from someone else's question. It's separate from voice, and forgotten after `LM_MEMORY_TTL_MS` of quiet.
 - Answers may use Discord formatting (bold, a short list, links) and are split if longer than Discord's 2,000-character limit. They can't ping anyone.
 - "Luna, play …", "skip" and "stop" go straight to smakbot, and the LLM's music tools work too.
+- She can speak for you in the voice channel she's in: "Luna, say hello in Chinese in the voice channel" (the LLM writes the line and calls its `say_in_voice` tool, then confirms in text). For exact words with no LLM involved, `!luna say <text>` in any channel. Lines are capped at 400 characters and queued behind whatever she's saying; each is logged with who asked. With Chatterbox (English only) as the voice, other languages won't sound right.
 
 ### Announcements
 

@@ -669,7 +669,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
   { const H = await setup({ LLM_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[tools\] play_music, skip_song, stop_music, leave_channel offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, skip_song, stop_music, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -763,8 +763,35 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.say('Luna, put on something chill'); await H.until(() => H.S.replies.length > 0);
     assert.ok(H.S.sends.includes('!play lo-fi'));
     const tools = H.S.llmRequests[0].integrations.find(i => i.id === 'mcp/luna').allowed_tools;
-    assert.ok(tools.includes('play_music') && !tools.includes('leave_channel'));
-    ok('the LLM\'s music tools work from text; leave_channel is not offered there'); }
+    assert.ok(tools.includes('play_music') && tools.includes('say_in_voice') && !tools.includes('leave_channel'));
+    ok('the LLM\'s music tools work from text; say_in_voice is offered there, leave_channel isn\'t'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    const tools = H.S.llmRequests[0].integrations.find(i => i.id === 'mcp/luna').allowed_tools;
+    assert.ok(tools.includes('leave_channel') && !tools.includes('say_in_voice')); ok('by voice: leave_channel offered, say_in_voice not'); }
+  const SAY = text => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'say_in_voice' }],
+    [5, { type: 'tool_call.arguments', tool: 'say_in_voice', arguments: { text } }], [5, { type: 'tool_call.success', tool: 'say_in_voice', arguments: { text }, output: '[]' }]];
+  { const H = await textRig({ LLM_TOOLS: 'true' }); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0;
+    H.S.llmScript = [...SAY('你好!'), ...sse('Done, I said 你好 (nǐ hǎo) in the voice channel.')];
+    await H.say('@Luna say "hello" in Chinese in the voice channel'.replace('@Luna', '<@luna>')); await H.until(() => H.S.replies.length > 0 && H.S.played.includes('你好!'));
+    assert.ok(H.S.tts.some(t => t.text === '你好!'), 'spoken in voice');
+    assert.match(H.S.replies[0].content, /你好/); assert.ok(H.S.logs.some(l => /\[text\] Sam had Luna say: "你好!"/.test(l)));
+    ok('typed "say hello in Chinese in the voice channel" → the LLM calls say_in_voice → 你好! spoken in voice, confirmed in text'); }
+  { const H = await textRig({ LLM_TOOLS: 'true' }); H.S.llmScript = [...SAY('Hello'), ...sse("I'm not in a voice channel right now.")];
+    await H.say('Luna, say hello in the voice channel'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.tts.length, 0); ok('not in a voice channel → nothing spoken'); }
+  { const H = await textRig(); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0;
+    const msg = { content: '!luna say Hey smakus, dinner is ready!', author: { id: 'u2', bot: false }, member: { displayName: 'Joel' }, channel: H.chan(),
+      reply: async r => { H.S.replies.push(r); }, react: async e => { (H.S.reactions ??= []).push(e); } };
+    H.T.client.emit('messageCreate', msg); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Hey smakus, dinner is ready!'); assert.strictEqual(H.S.llmRequests.length, 0);
+    assert.strictEqual(JSON.stringify(H.S.reactions), '["🔊"]');
+    msg.content = '!luna say ' + 'x'.repeat(600); H.T.client.emit('messageCreate', msg); await H.until(() => H.S.tts.length > 1);
+    assert.strictEqual(H.S.tts[1].text.length, 400, 'capped');
+    ok('"!luna say …" → those exact words spoken (no LLM), 🔊 reaction; capped at 400 characters'); }
+  { const H = await textRig(); const msg = { content: '!luna say hi', author: { id: 'u2', bot: false }, member: null, channel: H.chan(), reply: async r => { H.S.replies.push(r); }, react: async () => {} };
+    H.T.client.emit('messageCreate', msg); await H.wait(50);
+    assert.deepStrictEqual(H.S.replies, ["I'm not in a voice channel."]); ok('"!luna say" when not in a voice channel → says so'); }
   { const H = await textRig(); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('Sunny.')];
     await H.say('Luna, weather in Irvine?'); await H.until(() => H.S.replies.length > 0);
     assert.strictEqual(JSON.stringify(H.S.reactions), '["🔍"]'); assert.strictEqual(H.S.tts.length, 0); ok('a web search → 🔍 reaction on the question, no spoken heads-up'); }
