@@ -129,6 +129,26 @@ If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARC
 
 Luna leaves the voice channel automatically when the last person does.
 
+### Custom greetings
+
+A few people can get their own join greeting, optionally in their own ElevenLabs voice. Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
+
+```json
+{
+  "371034505349169152": {
+    "name": "User X",
+    "voice": "OUBnvvuqEKdDWtapoJFn",
+    "phrases": ["Oh my, look who is here, {user}. [excited] Welcome in!"]
+  }
+}
+```
+
+- Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
+- `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
+- `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). Leave it out to use Luna's normal voice.
+- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down, out of credits, unknown voice), they get the normal greeting in the normal voice.
+- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voice IDs ElevenLabs doesn't know (checking costs no credits).
+
 ### Typing to Luna
 
 With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channels, a message that @mentions her or starts with "Luna" ("Luna, what's the weather in Irvine?") gets a written answer as a reply. She doesn't need to be in a voice channel for it.
@@ -248,6 +268,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+| `GREETINGS_FILE` | `local/greetings.json` | Per-person join greetings and voices (see [Custom greetings](#custom-greetings)) |
 | `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
 | `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |

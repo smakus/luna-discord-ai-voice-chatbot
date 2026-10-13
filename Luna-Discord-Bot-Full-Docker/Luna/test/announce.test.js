@@ -49,6 +49,33 @@ async function inChannel(env = {}) {
     H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(30);
     assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Luna online. Say hey Luna.']); ok('INTRO_PHRASES with {wake}'); }
 
+  console.log('custom greetings');
+  const fs = require('fs'), os = require('os'), pathm = require('path');
+  const greetFile = obj => { const f = pathm.join(fs.mkdtempSync(pathm.join(os.tmpdir(), 'greet-')), 'g.json'); fs.writeFileSync(f, typeof obj === 'string' ? obj : JSON.stringify(obj)); return f; };
+  const X = { '371034505349169152': { name: 'User X', voice: 'VOICE1', phrases: ['Oh my, look who is here, {user}. [excited] Welcome in {name}!'] } };
+  { const H = await inChannel({ GREETINGS_FILE: greetFile(X) }); H.S.names = { '371034505349169152': 'User X', u2: 'Sam' };
+    assert.ok(H.S.logs.some(l => /\[greet\] custom greetings for User X/.test(l)));
+    H.move('371034505349169152', null, 'A'); await H.wait(80);
+    assert.deepStrictEqual(H.S.voiceTts.map(v => [v.text, v.voice]), [['Oh my, look who is here, User X. [excited] Welcome in User X!', 'VOICE1']]);
+    assert.deepStrictEqual(H.said(), ['[voice VOICE1] Oh my, look who is here, User X. [excited] Welcome in User X!']);
+    H.move('u2', null, 'A'); await H.wait(80);
+    assert.ok(/Sam/.test(H.said()[1]) && !/voice/.test(H.said()[1]));
+    ok('a listed person joins → their own line in their own ElevenLabs voice ({user} = {name}); everyone else the normal greeting'); }
+  { const H = await inChannel({ GREETINGS_FILE: greetFile(X) }); H.S.names = { '371034505349169152': 'User X' }; H.S.voiceDown = true;
+    H.move('371034505349169152', null, 'A'); await H.wait(80);
+    assert.strictEqual(H.said().length, 1); assert.ok(/User X/.test(H.said()[0]) && !/look who is here/.test(H.said()[0]), H.said()[0]);
+    assert.ok(H.S.logs.some(l => /custom voice unavailable .* normal greeting instead/.test(l)));
+    ok('their voice unavailable (ElevenLabs down, out of credits, bad voice) → the normal greeting in the normal voice'); }
+  { const H = await inChannel({ GREETINGS_FILE: greetFile({ '371034505349169152': { phrases: ['Hi {user}, no special voice.'] } }) }); H.S.names = { '371034505349169152': 'User X' };
+    H.move('371034505349169152', null, 'A'); await H.wait(80);
+    assert.deepStrictEqual(H.said(), ['Hi User X, no special voice.']); ok('no voice in the entry → their line in Luna\'s voice'); }
+  { const H = await inChannel({ GREETINGS_FILE: greetFile({ 'User X': { phrases: ['x'] }, '371034505349169152': { voice: 'V' } }) });
+    assert.ok(H.S.logs.some(l => /"User X" is not a Discord user ID — skipped/.test(l)) && H.S.logs.some(l => /371034505349169152: no phrases — skipped/.test(l)));
+    const H2 = await inChannel({ GREETINGS_FILE: greetFile('{ not json') }); assert.ok(H2.S.logs.some(l => /is not valid JSON .* no custom greetings/.test(l)));
+    ok('bad entries and a broken file → reported at startup, skipped (normal greetings)'); }
+  { const H = boot({ ...FAST, GREETINGS_FILE: greetFile(X) }); H.S.badVoices = ['VOICE1']; await H.start(); await H.wait(20);
+    assert.ok(H.S.logs.some(l => /User X: ElevenLabs voice VOICE1 unavailable \(ElevenLabs says 404\)/.test(l))); ok('a voice ID ElevenLabs doesn\'t know → warned at startup'); }
+
   console.log('join greetings');
   { const H = await inChannel();
     H.move('u2', null, 'A'); await H.wait(80);

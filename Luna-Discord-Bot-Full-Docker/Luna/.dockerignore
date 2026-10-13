@@ -19,3 +19,6 @@ test
 
 # The LLM benchmark runs from the source checkout, never inside the image.
 bench
+
+# Server-specific files (custom greetings): mounted at runtime instead.
+local

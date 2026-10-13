@@ -233,6 +233,14 @@ const keepAlive = setInterval(() => {}, 1000);
     assert.deepStrictEqual(calls.map(c => c.who), ['el', 'el']); say('429 "too many concurrent requests" (another client on the key) → retried once, no fallback');
     t = load(EL, { el: [busy, busy] });
     assert.strictEqual(await read(await t.fetchTTS('Hi.')), 'KOKORO-AUDIO'); say('…still busy after the retry → that sentence falls back'); }
+  real('a specific ElevenLabs voice (custom greetings)');
+  t = load(EL); assert.strictEqual(await read(await t.fetchTTSInVoice('[excited] Hi smakus.', 'VOICE9')), 'EL-AUDIO');
+  assert.ok(calls[0].url.includes('/text-to-speech/VOICE9/') && calls[0].text === '[excited] Hi smakus.'); say('requests that voice, tags kept');
+  t = load(EL, { el: [res(404, { detail: { code: 'voice_not_found' } })] }); assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'NOPE'), null);
+  assert.ok(!calls.some(c => c.who !== 'el'), 'no other voice tried'); say('voice not found → null, no fallback voice (the caller plays its normal line)');
+  t = load(BASE); assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'V'), null); assert.strictEqual(calls.length, 0); say('ElevenLabs not configured → null');
+  t = load(EL, { el: [res(402, { detail: { code: 'insufficient_credits' } }), res(200, '', 'EL-AUDIO')] }); await t.fetchTTS('One.');
+  calls = []; assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'V'), null); assert.strictEqual(calls.length, 0); say('ElevenLabs benched (out of credits) → null, no request');
   real('NAME_PRONUNCIATIONS');
   t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus=smack-us|Jo.el=Jo-ell' });
   for (const [i, o] of [['Hey smakus!', 'Hey smack-us!'], ['SMAKUS, welcome back.', 'smack-us, welcome back.'], ["That's Smakus's song.", "That's smack-us's song."],
