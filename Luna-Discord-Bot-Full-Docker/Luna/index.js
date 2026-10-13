@@ -2484,8 +2484,10 @@ function speakableName(raw) {
 // Per-person greetings (greetings.js): their own phrases, in their own
 // ElevenLabs voice if they have one. Same cooldown and switches as the normal
 // greeting; on any problem with the custom voice, the normal greeting plays.
-const CUSTOM_GREETINGS = loadCustomGreetings(path.resolve(__dirname, config.GREETINGS_FILE),
-  { warn: message => console.warn(message) });
+// GREET_ON_JOIN=regular: everyone gets the regular greeting; the file stays.
+const CUSTOM_GREETINGS = GREET_ON_JOIN === 'custom'
+  ? loadCustomGreetings(path.resolve(__dirname, config.GREETINGS_FILE), { warn: message => console.warn(message) })
+  : new Map();
 
 // At startup: who has one, and whether their voices exist (no credits used).
 function describeCustomGreetings() {
@@ -2644,7 +2646,7 @@ function onVoiceLeave(oldState, newState) {
 // another channel. Mute/deafen/stream toggles also emit VoiceStateUpdate but
 // keep the same channelId, so they never match.
 function onVoiceJoin(oldState, newState) {
-  if (!GREET_ON_JOIN || !activeVoiceChannel || !activeConnection) return;
+  if (GREET_ON_JOIN === 'off' || !activeVoiceChannel || !activeConnection) return;
   if (newState.channelId !== activeVoiceChannel.id) return;
   if (oldState.channelId === newState.channelId) return;
 

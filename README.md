@@ -146,6 +146,7 @@ A few people can get their own join greeting, optionally in their own ElevenLabs
 - Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
 - `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
 - `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). Leave it out to use Luna's normal voice.
+- `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
 - Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down, out of credits, unknown voice), they get the normal greeting in the normal voice.
 - `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voice IDs ElevenLabs doesn't know (checking costs no credits).
 
@@ -263,7 +264,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | `ANNOUNCE_SELF` | `true` | Intro when Luna joins |
-| `GREET_ON_JOIN` | `true` | Greet people who join |
+| `GREET_ON_JOIN` | `custom` | Greet people who join: `custom` (custom greetings where set, see [Custom greetings](#custom-greetings), the regular one for everyone else), `regular` (the regular one for everyone) or `off`. `true`/`false` still work and mean `custom`/`off` |
 | `ANNOUNCE_LEAVE` | `true` | Announce people who leave |
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |

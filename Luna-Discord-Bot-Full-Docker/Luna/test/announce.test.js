@@ -73,6 +73,10 @@ async function inChannel(env = {}) {
     assert.ok(H.S.logs.some(l => /"User X" is not a Discord user ID — skipped/.test(l)) && H.S.logs.some(l => /371034505349169152: no phrases — skipped/.test(l)));
     const H2 = await inChannel({ GREETINGS_FILE: greetFile('{ not json') }); assert.ok(H2.S.logs.some(l => /is not valid JSON .* no custom greetings/.test(l)));
     ok('bad entries and a broken file → reported at startup, skipped (normal greetings)'); }
+  { const H = await inChannel({ GREETINGS_FILE: greetFile(X), GREET_ON_JOIN: 'regular' }); H.S.names = { '371034505349169152': 'User X' };
+    H.move('371034505349169152', null, 'A'); await H.wait(80);
+    assert.ok(!H.S.voiceTts && /User X/.test(H.said()[0]) && !/look who is here/.test(H.said()[0]) && !H.S.logs.some(l => /custom greetings for/.test(l)));
+    ok('GREET_ON_JOIN=regular → the regular greeting for everyone, custom file ignored'); }
   { const H = boot({ ...FAST, GREETINGS_FILE: greetFile(X) }); H.S.badVoices = ['VOICE1']; await H.start(); await H.wait(20);
     assert.ok(H.S.logs.some(l => /User X: ElevenLabs voice VOICE1 unavailable \(ElevenLabs says 404\)/.test(l))); ok('a voice ID ElevenLabs doesn\'t know → warned at startup'); }
 

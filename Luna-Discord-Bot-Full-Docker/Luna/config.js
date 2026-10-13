@@ -62,7 +62,10 @@ const SETTINGS = [
   // Announcements
   { name: 'ANNOUNCE_SELF', type: 'bool', default: true },
   { name: 'INTRO_PHRASES', type: 'phrases' },
-  { name: 'GREET_ON_JOIN', type: 'bool', default: true },
+  // custom: custom greetings (GREETINGS_FILE) where set, the regular one for the rest;
+  // regular: the regular one for everyone; off: none. true/false mean custom/off.
+  { name: 'GREET_ON_JOIN', type: 'enum', default: 'custom', choices: ['custom', 'regular', 'off'],
+    aliases: { true: 'custom', on: 'custom', yes: 'custom', 1: 'custom', false: 'off', no: 'off', 0: 'off' } },
   { name: 'GREET_PHRASES', type: 'phrases' },
   { name: 'GREET_COOLDOWN_MS', type: 'int', default: 600000, min: 0 },
   { name: 'GREET_DELAY_MS', type: 'int', default: 1500, min: 0 },
@@ -173,7 +176,7 @@ function parse(s, raw) {
       return { problem: 'expected true or false' };
     }
     case 'enum': {
-      const t = text.toLowerCase();
+      const t = (s.aliases && s.aliases[text.toLowerCase()]) || text.toLowerCase();
       return s.choices.includes(t) ? { value: t } : { problem: `expected one of ${s.choices.join(', ')}` };
     }
     case 'int': case 'float': {
