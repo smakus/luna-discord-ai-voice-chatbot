@@ -771,15 +771,22 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(tools.includes('leave_channel') && !tools.includes('say_in_voice')); ok('by voice: leave_channel offered, say_in_voice not'); }
   const SAY = text => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'say_in_voice' }],
     [5, { type: 'tool_call.arguments', tool: 'say_in_voice', arguments: { text } }], [5, { type: 'tool_call.success', tool: 'say_in_voice', arguments: { text }, output: '[]' }]];
-  { const H = await textRig({ LLM_TOOLS: 'true' }); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0;
-    H.S.llmScript = [...SAY('你好!'), ...sse('Done, I said 你好 (nǐ hǎo) in the voice channel.')];
-    await H.say('@Luna say "hello" in Chinese in the voice channel'.replace('@Luna', '<@luna>')); await H.until(() => H.S.replies.length > 0 && H.S.played.includes('你好!'));
-    assert.ok(H.S.tts.some(t => t.text === '你好!'), 'spoken in voice');
-    assert.match(H.S.replies[0].content, /你好/); assert.ok(H.S.logs.some(l => /\[text\] Sam had Luna say: "你好!"/.test(l)));
-    ok('typed "say hello in Chinese in the voice channel" → the LLM calls say_in_voice → 你好! spoken in voice, confirmed in text'); }
-  { const H = await textRig({ LLM_TOOLS: 'true' }); H.S.llmScript = [...SAY('Hello'), ...sse("I'm not in a voice channel right now.")];
-    await H.say('Luna, say hello in the voice channel'); await H.until(() => H.S.replies.length > 0);
-    assert.strictEqual(H.S.tts.length, 0); ok('not in a voice channel → nothing spoken'); }
+  const inVoice = async H => { H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0; };
+  { const H = await textRig({ LLM_TOOLS: 'true' }); await inVoice(H); H.S.llmScript = sse('"你好!"');
+    await H.say('<@luna> say "hello" in Chinese in the voice channel'); await H.until(() => H.S.replies.length > 0 && H.S.played.includes('你好!'));
+    const req = H.S.llmRequests.at(-1);
+    assert.ok(/Reply with only the exact words to say out loud/.test(req.system) && !(req.integrations || []).length, 'only asked for the line, no tools');
+    assert.ok(!/Del Taco/.test(req.system), 'no flavor line in the line to speak');
+    assert.strictEqual(H.S.replies[0].content, '🔊 Said in A: 你好!');
+    assert.ok(H.S.logs.some(l => /\[text\] Sam had Luna say: "你好!"/.test(l)));
+    ok('"say hello in Chinese in the voice channel" → the model writes only the line → 你好! spoken, and "🔊 Said in A: 你好!" posted (no tool needed)'); }
+  { const H = await textRig(); await H.say('Luna, say hi in the voice channel'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0].content, "I'm not in a voice channel right now."); assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('say request while not in a voice channel → says so, no LLM'); }
+  { const H = await textRig({ LLM_TOOLS: 'true' }); await inVoice(H);
+    H.S.llmScript = [...SAY('Welcome back, Joel!'), ...sse('Done, I welcomed Joel.')];
+    await H.say('Luna, Joel just joined, give him a warm welcome out loud'); await H.until(() => H.S.replies.length > 0 && H.S.played.includes('Welcome back, Joel!'));
+    assert.match(H.S.replies[0].content, /welcomed Joel/); ok('other phrasings → the say_in_voice tool still works'); }
   { const H = await textRig(); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0;
     const msg = { content: '!luna say Hey smakus, dinner is ready!', author: { id: 'u2', bot: false }, member: { displayName: 'Joel' }, channel: H.chan(),
       reply: async r => { H.S.replies.push(r); }, react: async e => { (H.S.reactions ??= []).push(e); } };

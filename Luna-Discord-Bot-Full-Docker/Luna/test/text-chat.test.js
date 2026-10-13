@@ -2,7 +2,7 @@
 // Run: npm test   (see README → Development)
 const { describe, it } = require('node:test');
 const assert = require('assert');
-const { textQuestion, splitMessage } = require('../text-chat');
+const { textQuestion, splitMessage, isSayRequest } = require('../text-chat');
 
 describe('textQuestion', () => {
   const cases = [
@@ -31,5 +31,17 @@ describe('splitMessage', () => {
   it('a single huge word is still cut at the limit', () => {
     const parts = splitMessage('x'.repeat(4500), 2000);
     assert.deepStrictEqual(parts.map(p => p.length), [2000, 2000, 500]);
+  });
+});
+
+describe('isSayRequest', () => {
+  it('asks to say something in voice', () => {
+    for (const q of ['say hello in Chinese in the voice channel', 'say "hello" in chinese in the audio channel', 'tell everyone in vc that dinner is ready',
+      'announce in voice that the game starts', 'whisper goodnight in the voice chat', 'Say hi to Joel in voice'])
+      assert.strictEqual(isSayRequest(q), true, q);
+  });
+  it('ordinary questions are not', () => {
+    for (const q of ['how do you say thank you in Japanese?', 'tell me a joke', 'what is a voice actor', 'say something nice', 'read me the news'])
+      assert.strictEqual(isSayRequest(q), false, q);
   });
 });

@@ -22,6 +22,13 @@ function textQuestion(content, botId, command = '!luna') {
   return text.replace(NAME_RE, '').trim() || null;
 }
 
+// A request to say something out loud in the voice channel: "say hello in
+// Chinese in the voice channel", "tell everyone in vc dinner is ready",
+// "announce in voice that …". Handled without relying on the model to call a
+// tool (some models answer "I said it!" without calling it).
+const SAY_RE = /\b(?:say|tell|announce|speak|shout|whisper|read)\b[\s\S]*?\b(?:in|on|over|to|into)\s+(?:the\s+)?(?:voice(?:\s+(?:channel|chat|call))?|vc|audio(?:\s+channel)?|call)\b/i;
+const isSayRequest = question => SAY_RE.test(String(question || ''));
+
 // Discord's limit is 2,000 characters a message. Cut at a paragraph, then a
 // line, then a sentence, then a space — whichever comes last within the limit.
 function splitMessage(text, max = 2000) {
@@ -38,4 +45,4 @@ function splitMessage(text, max = 2000) {
   return parts;
 }
 
-module.exports = { textQuestion, splitMessage, NAME_RE };
+module.exports = { textQuestion, splitMessage, isSayRequest, NAME_RE };

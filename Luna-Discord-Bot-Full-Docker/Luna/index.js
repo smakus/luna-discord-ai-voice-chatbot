@@ -12,7 +12,7 @@ const path = require('path');
 const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
-const { textQuestion, splitMessage } = require('./text-chat');
+const { textQuestion, splitMessage, isSayRequest } = require('./text-chat');
 const { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
 const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
 const { createAnswerFilter } = require('./answer-filter');
@@ -2129,13 +2129,13 @@ function logLLMStats(userId, stats, memoryKey = userId) {
 async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
                                              { reasoning = LLM_REASONING, signal = null, onEvent = null,
                                                context = '', extraSystem = '', memoryKey = userId,
-                                               textMode = false, toolNames = VOICE_TOOL_NAMES } = {}) {
+                                               textMode = false, toolNames = VOICE_TOOL_NAMES, flavorOk = true } = {}) {
   const body = {
     model: lmStudioModel,
     input: context ? `${text}\n\n${context}` : text,
     stream: true,
   };
-  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() ? [toolsIntegration(toolNames)] : [])];
+  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() && toolNames.size ? [toolsIntegration(toolNames)] : [])];
   if (integrations.length) body.integrations = integrations;
 
   // Sent on EVERY request, not only the first of a chain.
@@ -2153,7 +2153,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // "occasionally" reliably becomes "every single time". Deciding here — and
   // simply omitting the line most of the time — is the only way to get a rate
   // that is actually a rate.
-  const flavor = LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
+  const flavor = flavorOk && LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
   // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
   // the one speaking; empty for Kokoro, so it is never told to use tags.
   const expressive = textMode ? '' : expressivePrompt();
@@ -2693,6 +2693,10 @@ async function answerInText(message, question) {
     return;
   }
 
+  // "Say … in the voice channel": the model only writes the line; Luna speaks
+  // it and confirms herself, so the confirmation is always true.
+  if (isSayRequest(question)) return sayFromText(message, question, name);
+
   // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
   const typing = () => channel.sendTyping?.().catch(() => {});
   typing();
@@ -2727,6 +2731,34 @@ async function answerInText(message, question) {
   const [first, ...rest] = splitMessage(answer);
   await message.reply({ content: first, allowedMentions: NO_PINGS }).catch(err => console.error(`[text] reply failed: ${err.message}`));
   for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
+}
+
+const SAY_PROMPT = 'Reply with only the exact words to say out loud in the voice channel, in the ' +
+  'language asked for, and nothing else: no quotation marks, no explanation, no pronunciation guide.';
+
+async function sayFromText(message, question, name) {
+  const channel = message.channel;
+  if (!activeConnection) {
+    await message.reply({ content: "I'm not in a voice channel right now.", allowedMentions: NO_PINGS }).catch(() => {});
+    return;
+  }
+  channel.sendTyping?.().catch(() => {});
+  let line = '';
+  try {
+    for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text', false,
+      { textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
+      line += piece;
+    }
+  } catch (err) {
+    console.error(`[text] say failed: ${err.message}`);
+  }
+  line = line.replace(/<\/?think>/gi, '').trim().replace(/^["“'‘]+|["”'’]+$/g, '').trim();
+  if (!line || !sayInVoice(line, message.author?.id || 'text', name)) {
+    await message.reply({ content: 'Sorry, I couldn\'t work out what to say.', allowedMentions: NO_PINGS }).catch(() => {});
+    return;
+  }
+  await message.reply({ content: `🔊 Said in ${activeVoiceChannel?.name || 'the voice channel'}: ${line.slice(0, SAY_MAX_CHARS)}`,
+    allowedMentions: NO_PINGS }).catch(() => {});
 }
 
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or
