@@ -70,7 +70,7 @@ module.exports = function boot(env = {}) {
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
-    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')),
+    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
   };
 

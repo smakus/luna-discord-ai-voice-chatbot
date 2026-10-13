@@ -726,6 +726,52 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.wait(20); assert.strictEqual(H.S.destroyed.length, 1); assert.ok(H.S.replies.includes('Bye!')); ok('!luna leave → leaves'); }
 
 
+  console.log('text chat');
+  const textRig = async (env = {}) => {
+    const H = boot({ TEXT_CHAT_CHANNELS: 'textbuffet', ...env }); await H.start();
+    H.chan = (name = 'textbuffet') => ({ id: 'c-' + name, name, typing: 0, sendTyping() { this.typing++; return Promise.resolve(); },
+      send: async m => { H.S.sends.push(m); return {}; } });
+    H.say = async (content, { user = 'u1', name = 'Sam', channel = H.chan() } = {}) => {
+      const msg = { content, author: { id: user, username: user, bot: false }, member: { displayName: name }, channel,
+        reply: async r => { H.S.replies.push(r); }, react: async e => { (H.S.reactions ??= []).push(e); } };
+      H.T.client.emit('messageCreate', msg); return msg; };
+    H.S.llmRequests.length = 0; return H; };
+  { const H = await textRig(); H.S.llmScripts = [sse('Hi Sam!', 'It is noon.'), sse('Sure, Joel.')];
+    const ch = H.chan(); await H.say('Luna, what time is it?', { channel: ch }); await H.until(() => H.S.replies.length === 1);
+    const req = H.S.llmRequests[0];
+    assert.strictEqual(req.input, 'Sam: what time is it?');
+    assert.ok(/answering in a text channel/.test(req.system) && /Discord formatting is fine/.test(req.system) && !/audio tags/.test(req.system));
+    assert.strictEqual(H.S.replies[0].content, 'Hi Sam! It is noon.');
+    assert.strictEqual(JSON.stringify(H.S.replies[0].allowedMentions), '{"parse":[],"repliedUser":false}');
+    assert.ok(ch.typing >= 1, 'typing indicator');
+    await H.say('<@luna> and for me?', { user: 'u2', name: 'Joel', channel: ch }); await H.until(() => H.S.replies.length === 2);
+    assert.strictEqual(H.S.llmRequests[1].input, 'Joel: and for me?');
+    assert.ok(H.S.llmRequests[1].prev && H.S.llmRequests[1].prev === 'resp_' + (H.S.nextRid - 1), 'continues the channel\'s conversation');
+    assert.strictEqual(H.S.tts.length, 0, 'nothing spoken');
+    ok('"Luna, …" or an @mention in textbuffet → written answer as a reply, "typing…", no pings; one shared conversation for the channel, each line with its writer\'s name'); }
+  { const H = await textRig(); H.S.llmScript = sse('Hi.');
+    await H.say('Luna, hi there', { channel: H.chan('general') }); await H.say('what time is it?'); await H.say('the lunar eclipse was cool'); await H.wait(150);
+    assert.strictEqual(H.S.llmRequests.length, 0); assert.strictEqual(H.S.replies.length, 0);
+    ok('other channels, and messages not addressed to her → ignored'); }
+  { const H = await textRig(); H.S.llmScript = sse('x'.repeat(1500) + '.', 'y'.repeat(1500) + '.');
+    await H.say('Luna, write a lot'); await H.until(() => H.S.sends.length > 0);
+    assert.ok(H.S.replies[0].content.length <= 2000 && H.S.sends[0].content.length <= 2000); ok('a long answer → split into messages under 2,000 characters'); }
+  { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
+    assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0); ok('"Luna, play …" in text → smakbot command, no LLM'); }
+  { const H = await textRig({ LLM_TOOLS: 'true' }); H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'play_music' }],
+      [5, { type: 'tool_call.arguments', tool: 'play_music', arguments: { query: 'lo-fi' } }], [5, { type: 'tool_call.success', tool: 'play_music', arguments: { query: 'lo-fi' }, output: '[]' }], ...sse('Queued some lo-fi!')];
+    await H.say('Luna, put on something chill'); await H.until(() => H.S.replies.length > 0);
+    assert.ok(H.S.sends.includes('!play lo-fi'));
+    const tools = H.S.llmRequests[0].integrations.find(i => i.id === 'mcp/luna').allowed_tools;
+    assert.ok(tools.includes('play_music') && !tools.includes('leave_channel'));
+    ok('the LLM\'s music tools work from text; leave_channel is not offered there'); }
+  { const H = await textRig(); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('Sunny.')];
+    await H.say('Luna, weather in Irvine?'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(JSON.stringify(H.S.reactions), '["🔍"]'); assert.strictEqual(H.S.tts.length, 0); ok('a web search → 🔍 reaction on the question, no spoken heads-up'); }
+  { const H = await textRig({ TEXT_CHAT_CHANNELS: '' }); await H.say('Luna, hi'); await H.wait(100);
+    assert.strictEqual(H.S.llmRequests.length, 0); ok('TEXT_CHAT_CHANNELS unset → off'); }
+
+
   console.log('undecodable packets');
   { const H = await wakeRig(); const mic = H.S.audio.u1;
     const bad = Buffer.from([0xBA, 0xD0, 1, 2, 3, 4, 5, 6]);

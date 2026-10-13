@@ -129,6 +129,15 @@ If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARC
 
 Luna leaves the voice channel automatically when the last person does.
 
+### Typing to Luna
+
+With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channels, a message that @mentions her or starts with "Luna" ("Luna, what's the weather in Irvine?") gets a written answer as a reply. She doesn't need to be in a voice channel for it.
+
+- She shows "Luna is typing…" while she works and reacts with 🔍 when she searches the web.
+- Everyone in a channel shares one conversation, each message labelled with its writer's name, so "Luna, and in Newport?" follows on from someone else's question. It's separate from voice, and forgotten after `LM_MEMORY_TTL_MS` of quiet.
+- Answers may use Discord formatting (bold, a short list, links) and are split if longer than Discord's 2,000-character limit. They can't ping anyone.
+- "Luna, play …", "skip" and "stop" go straight to smakbot, and the LLM's music tools work too.
+
 ### Announcements
 
 - **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
@@ -281,13 +290,14 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `MAX_SPEECH_MS` | `15000` | Force-end an utterance after this much unbroken speech |
 | `PREROLL_MS` | `320` | Audio kept from just before speech starts, so first syllables aren't clipped |
 | `MAX_SILENCE_FILL_MS` | `2000` | Longest silence re-inserted for the wake-word model when Discord stops sending audio mid-phrase |
-| `LM_MEMORY_TTL_MS` | `600000` | Forget a speaker's conversation after this much silence |
+| `LM_MEMORY_TTL_MS` | `3600000` | Forget a conversation (a speaker's, or a text channel's) after this much silence: 60 minutes. `LM_MEMORY_MAX_TURNS` still caps how long one grows |
 | `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
 | `LM_PERSONALITY` | `helpful` | How Luna is described to the model: "You are Luna, a *…* voice assistant". E.g. `fun, bubbly, friendly and helpful` |
 | `LM_CONCISE` | `true` | Ask for concise answers. `false` lets her talk more |
 | `LM_USE_NAMES` | `true` | Tell the model who is asking (their Discord display name, made speakable) so she can use their name now and then |
 | `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
 | `AUTO_JOIN_CHANNELS` | | Voice channels (names or IDs, comma-separated) Luna joins by herself when someone is in one and she isn't in a channel: at startup, or when someone joins. With people in several, the busiest. She still leaves when the last person does |
+| `TEXT_CHAT_CHANNELS` | | Text channels (names or IDs, comma-separated) where you can type to Luna: a message that @mentions her or starts with "Luna" gets a written answer. Everyone in a channel shares one conversation |
 | `AUTO_JOIN_TEXT_CHANNEL` | | Text channel (name or ID) she posts in after auto-joining: status messages and smakbot commands. Unset: the voice channel's own chat. Names that match nothing are logged at startup with the channels that do exist |
 | `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
 
