@@ -49,6 +49,11 @@ describe('parsing', () => {
     assert.deepStrictEqual(config.IGNORED_USER_IDS, ['1', '2', '3']);
     assert.deepStrictEqual(config.FAREWELL_PHRASES, ['{name} left.', 'Bye, {name}!']);
   });
+  it('GREET_ON_JOIN: custom/regular/off, and the old true/false', () => {
+    for (const [raw, value] of [['custom', 'custom'], ['Regular', 'regular'], ['off', 'off'], ['true', 'custom'], ['false', 'off']])
+      assert.strictEqual(load({ GREET_ON_JOIN: raw }).config.GREET_ON_JOIN, value, raw);
+    assert.deepStrictEqual(load({ GREET_ON_JOIN: 'false' }).warnings, []);
+  });
   it('THINKING_WAITS windows', () => {
     assert.deepStrictEqual(parseWaits('15-22,30'), [[15000, 22000], [30000, 30000]]);
     assert.strictEqual(parseWaits('soon-ish'), null);
@@ -61,7 +66,7 @@ describe('invalid values', () => {
     ['OWW_THRESHOLD', '1.5', 'expected at most 1', 0.5],
     ['SILENCE_MS', '700.5', 'expected a whole number', 1000],
     ['TTS_LOOKAHEAD', '0', 'expected at least 1', 2],
-    ['GREET_ON_JOIN', 'sometimes', 'expected true or false', true],
+    ['GREET_ON_JOIN', 'sometimes', 'expected one of custom, regular, off', 'custom'],
     ['WEB_SEARCH', 'sometimes', 'expected one of always, keywords, off', 'always'],
     ['OWW_GAIN', 'loud', 'expected auto, off or a number above 0', 'auto'],
     ['THINKING_WAITS', 'soon-ish', 'expected windows in seconds', '15-22,22-30,30-40'],

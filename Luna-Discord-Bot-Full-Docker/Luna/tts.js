@@ -317,8 +317,8 @@ const elevenlabs = {
   tagPrompt: ELEVENLABS_TAGS ? ELEVENLABS_PROMPT : '',
   speakable: text => keepTags(text, ELEVENLABS_TAGS ? 'any' : null),
   configured: () => Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
-  async synthesize(text, signal) {
-    const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}` +
+  async synthesize(text, signal, voiceId = ELEVENLABS_VOICE_ID) {
+    const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(voiceId)}` +
       `/stream?output_format=${encodeURIComponent(ELEVENLABS_FORMAT)}`;
     // A slot is held until ElevenLabs has sent the whole sentence: that is
     // what it counts as "in progress".
@@ -445,4 +445,34 @@ async function fetchTTS(text, { signal } = {}) {
   return null;
 }
 
-module.exports = { fetchTTS, describeTTS, expressivePrompt, stripAudioTags, pronounce, createLimiter };
+// A line in a specific ElevenLabs voice (custom greetings). ElevenLabs only:
+// resolves null on any problem — not configured, benched (out of credits, bad
+// key), the request failing — so the caller can fall back to its normal line
+// in the normal voice instead of this one in the wrong voice.
+async function fetchTTSInVoice(text, voiceId, { signal } = {}) {
+  if (!voiceId || !elevenlabs.configured() || isBenched(elevenlabs)) return null;
+  const spoken = pronounce(TTS_EXPRESSIVE ? elevenlabs.speakable(text) : stripAudioTags(text));
+  if (!spoken) return null;
+  try {
+    return await elevenlabs.synthesize(spoken, signal, voiceId);
+  } catch (err) {
+    if (!(err instanceof TTSError && err.kind === 'cancelled')) console.error(`[tts] voice ${voiceId}: ${err.message}`);
+    return null;
+  }
+}
+
+// Whether an ElevenLabs voice ID exists (no credits used): its name, or null
+// with the reason. Unknown (e.g. no network) resolves { name: null, reason }.
+async function checkElevenLabsVoice(voiceId) {
+  if (!elevenlabs.configured()) return { name: null, reason: 'ElevenLabs is not configured' };
+  try {
+    const res = await request('ElevenLabs', `${ELEVENLABS_BASE_URL}/v1/voices/${encodeURIComponent(voiceId)}`,
+      { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }, ELEVENLABS_TIMEOUT_MS);
+    if (res.ok) return { name: (await res.json()).name || voiceId };
+    return { name: null, reason: `ElevenLabs says ${res.status}` };
+  } catch (err) {
+    return { name: null, reason: err.message };
+  }
+}
+
+module.exports = { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt, stripAudioTags, pronounce, createLimiter };

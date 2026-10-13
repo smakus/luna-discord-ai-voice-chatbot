@@ -53,6 +53,10 @@ module.exports = function boot(env = {}) {
   // ── tts.js ──
   const tts = {
     describeTTS: () => 'Fake', expressivePrompt: () => '',
+    // A specific ElevenLabs voice (custom greetings): S.voiceDown makes it unavailable.
+    fetchTTSInVoice: async (text, voice) => { (S.voiceTts ??= []).push({ text, voice }); if (S.voiceDown) return null;
+      const st = new PassThrough(); st.ttsText = `[voice ${voice}] ${text}`; S.tts.push({ text: st.ttsText }); return st; },
+    checkElevenLabsVoice: async voice => (S.badVoices || []).includes(voice) ? { name: null, reason: 'ElevenLabs says 404' } : { name: 'Some Voice' },
     fetchTTS: (text, opts = {}) => {
       const rec = { text, signal: opts.signal, destroyed: false };
       S.tts.push(rec);
@@ -70,7 +74,7 @@ module.exports = function boot(env = {}) {
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
-    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')),
+    './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
   };
 
@@ -107,7 +111,7 @@ module.exports = function boot(env = {}) {
   const src = fs.readFileSync(path.join(LUNA_DIR, 'index.js'), 'utf8');
   const ctx = {
     require: m => { if (m in mods) return mods[m]; throw new Error('unmocked ' + m); },
-    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', LLM_TOOLS: 'false', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
+    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', LLM_TOOLS: 'false', GREETINGS_FILE: '/nonexistent/greetings.json', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
     console: { log, warn: log, error: log }, fetch: fakeFetch, setTimeout, clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     AbortController, AbortSignal, DOMException, TextDecoder, TextEncoder, Promise, Date, Math, Map, Set, WeakSet, Buffer, FormData, Blob, __dirname: LUNA_DIR,
   };

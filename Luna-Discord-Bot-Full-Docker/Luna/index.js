@@ -14,7 +14,8 @@ const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
 const { textQuestion, splitMessage, isSayRequest } = require('./text-chat');
 const { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
-const { fetchTTS, describeTTS, expressivePrompt } = require('./tts');
+const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } = require('./tts');
+const { loadCustomGreetings } = require('./greetings');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { takeSentences } = require('./sentences');
@@ -440,6 +441,7 @@ client.on(Events.ClientReady, async () => {
   await resolveModel();
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
+  describeCustomGreetings();
   console.log(`[search] web search: ${describeSearch()}`);
   if (LLM_TOOLS_ON) startLlmTools();
   ready = true;
@@ -2479,6 +2481,26 @@ function speakableName(raw) {
   return name.slice(0, 32).trim();
 }
 
+// Per-person greetings (greetings.js): their own phrases, in their own
+// ElevenLabs voice if they have one. Same cooldown and switches as the normal
+// greeting; on any problem with the custom voice, the normal greeting plays.
+// GREET_ON_JOIN=regular: everyone gets the regular greeting; the file stays.
+const CUSTOM_GREETINGS = GREET_ON_JOIN === 'custom'
+  ? loadCustomGreetings(path.resolve(__dirname, config.GREETINGS_FILE), { warn: message => console.warn(message) })
+  : new Map();
+
+// At startup: who has one, and whether their voices exist (no credits used).
+function describeCustomGreetings() {
+  if (!CUSTOM_GREETINGS.size) return;
+  console.log(`[greet] custom greetings for ${[...CUSTOM_GREETINGS].map(([id, g]) => g.name || id).join(', ')}`);
+  for (const [id, g] of CUSTOM_GREETINGS) {
+    if (!g.voice) continue;
+    checkElevenLabsVoice(g.voice).then(({ name, reason }) => {
+      if (!name) console.warn(`[greet] ${g.name || id}: ElevenLabs voice ${g.voice} unavailable (${reason}) — they'll get the normal greeting`);
+    });
+  }
+}
+
 function greetMember(member, connection) {
   const now = Date.now();
   if (now - (lastGreetedAt.get(member.id) || 0) < GREET_COOLDOWN_MS) return;
@@ -2488,8 +2510,30 @@ function greetMember(member, connection) {
   const text = name
     ? fillPhrase(GREETINGS, { name })
     : 'Someone just joined. Hey there, welcome in!';
+  const custom = CUSTOM_GREETINGS.get(member.id);
+  if (custom) {
+    const own = fillPhrase(custom.phrases, { name: name || 'friend', user: name || 'friend' });
+    console.log(`[greet] ${member.user.tag} joined — custom greeting${custom.voice ? ` in voice ${custom.voice}` : ''}: "${own}"`);
+    if (!custom.voice) return announce(member, connection, own);
+    return announceInVoice(member, connection, own, custom.voice, text);
+  }
   console.log(`[greet] ${member.user.tag} joined — "${text}"`);
   announce(member, connection, text);
+}
+
+// Their own line in their own voice; if that voice can't be had, the normal
+// greeting in the normal voice.
+function announceInVoice(member, connection, text, voiceId, fallbackText) {
+  const generation = nextGeneration(member.id);
+  queuePlayback(async () => {
+    if (activeConnection !== connection) return;
+    let pt = await fetchTTSInVoice(text, voiceId);
+    if (!pt) {
+      console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
+      pt = await fetchTTS(fallbackText);
+    }
+    if (pt) await playTTS(pt, connection);
+  }, member.id, generation);
 }
 
 // Queued under the member's own id: if they say the wake word before the
@@ -2602,7 +2646,7 @@ function onVoiceLeave(oldState, newState) {
 // another channel. Mute/deafen/stream toggles also emit VoiceStateUpdate but
 // keep the same channelId, so they never match.
 function onVoiceJoin(oldState, newState) {
-  if (!GREET_ON_JOIN || !activeVoiceChannel || !activeConnection) return;
+  if (GREET_ON_JOIN === 'off' || !activeVoiceChannel || !activeConnection) return;
   if (newState.channelId !== activeVoiceChannel.id) return;
   if (oldState.channelId === newState.channelId) return;
 

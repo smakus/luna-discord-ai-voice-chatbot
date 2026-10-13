@@ -29,6 +29,10 @@ services:
     # Mac only: see README → MusicBot integration.
     ports:
       - "127.0.0.1:8895:8895"
+    # Server-specific files (custom greetings), read at startup: edit, then
+    # restart Luna — no rebuild.
+    volumes:
+      - ./Luna/local:/app/local:ro
     env_file:
       - ./Luna/.env
     environment:
