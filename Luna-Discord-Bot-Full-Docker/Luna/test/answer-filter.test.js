@@ -144,11 +144,13 @@ describe('markdown is not spoken', () => {
     ['- **Census (2024):** about 83,000', 'Census (2024): about 83,000'],
     ['## Weather today', 'Weather today'], ['1. First item', 'First item'], ['> Quoted line', 'Quoted line'],
     ['**Hello.', 'Hello.'],                                          // a sentence split inside a bold phrase
+    ['famously covered in *O Brother, Where Art Thou?', 'famously covered in O Brother, Where Art Thou?'],   // split inside italics
+    ['*, which brought the genre back.', ', which brought the genre back.'],
   ];
   for (const [input, output] of cases) it(`${JSON.stringify(input)} → ${JSON.stringify(output)}`, () => assert.strictEqual(stripMarkdown(input), output));
 
   it('leaves alone what is not markdown: audio tags, snake_case, arithmetic', () => {
-    for (const text of ['[laughs] That is great.', 'Use the snake_case name.', '5 * 3 = 15']) assert.strictEqual(stripMarkdown(text), text);
+    for (const text of ['[laughs] That is great.', 'Use the snake_case name.', '5 * 3 = 15', '2*3 is 6']) assert.strictEqual(stripMarkdown(text), text);
   });
 
   it('applies to everything the filter speaks, held or not; markers alone are not spoken', () => {
@@ -156,6 +158,38 @@ describe('markdown is not spoken', () => {
     filter.text('**Bold** answer.'); filter.text('**');
     TOOL.forEach(filter.event); filter.text('- *Held* item.'); filter.end();
     assert.deepStrictEqual(spoken, ['Bold answer.', 'Held item.']);
+  });
+});
+
+describe('planning written as the answer', () => {
+  const plan = ['[thinking] Okay, the user wants one argument for and one against.', 'I should provide a balanced summary.',
+    'Argument For: prevents fraud.', 'I will formulate these clearly.'];
+  it('a plan at the start is held, then dropped up to its last plan line; the answer after it is spoken', () => {
+    const { filter, spoken, dropped } = rig({ reasoning: false });
+    [...plan, 'One argument for is integrity.', 'One against is turnout.'].forEach(s => filter.text(s));
+    assert.deepStrictEqual(spoken, [], 'held until the end');
+    filter.end();
+    assert.deepStrictEqual(spoken, ['One argument for is integrity.', 'One against is turnout.']);
+    assert.strictEqual(dropped[0][0], 'planning');
+    assert.match(dropped[0][1], /^Okay, the user wants .* I will formulate these clearly\.$/);
+  });
+  it('a plan with no answer after it: its notes are said, the plan lines are not', () => {
+    const { filter, spoken } = rig({ reasoning: false });
+    plan.forEach(s => filter.text(s)); filter.end();
+    assert.deepStrictEqual(spoken, ['Argument For: prevents fraud.']);
+  });
+  it('only the first sentence can start a plan; ordinary answers are spoken at once', () => {
+    const { filter, spoken } = rig({ reasoning: false });
+    filter.text('[laughs] Okay, here is the thing.'); filter.text('The user manual says so.');
+    assert.deepStrictEqual(spoken, ['[laughs] Okay, here is the thing.', 'The user manual says so.']);
+    const r2 = rig({ reasoning: false }); r2.filter.text('The user interface in Mattermost is clean.');
+    assert.deepStrictEqual(r2.spoken, ['The user interface in Mattermost is clean.'], '"the user interface" is not a plan');
+  });
+  it('a search after a plan drops it as narration', () => {
+    const { filter, spoken, dropped } = rig({ reasoning: false });
+    filter.text('Okay, the user is asking about the weather.'); filter.event({ type: 'tool_call.start' });
+    filter.text('It is sunny.'); filter.end();
+    assert.deepStrictEqual(spoken, ['It is sunny.']); assert.strictEqual(dropped[0][0], 'narration');
   });
 });
 
