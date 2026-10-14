@@ -1,0 +1,22 @@
+{
+ "recorded": null,
+ "model": "qwen/qwen3.6-35b-a3b",
+ "reconstructed": "From Luna's log, 2026-10-13: with reasoning off, the model wrote its plan as the answer and Luna read it out. Text as logged; deltas split by sentence.",
+ "question": "can you give me one argument for voter ID and one argument against it?",
+ "reasoning": "off",
+ "search": false,
+ "expectSpoken": "One argument in favor of voter ID laws is that they help ensure election integrity by preventing voter impersonation fraud. One argument against voter ID laws is that they can disproportionately suppress turnout among certain demographic groups.",
+ "events": [
+  { "type": "message.start" },
+  { "type": "message.delta", "content": "[thinking] Okay, the user wants one argument for and one argument against voter ID laws. " },
+  { "type": "message.delta", "content": "I should provide a balanced, neutral summary of the most common arguments used in political discourse.\n\n" },
+  { "type": "message.delta", "content": "Argument For: Prevents voter fraud (specifically impersonation fraud). " },
+  { "type": "message.delta", "content": "Ensures the integrity of elections. " },
+  { "type": "message.delta", "content": "Argument Against: Disproportionately affects certain demographics. " },
+  { "type": "message.delta", "content": "Voter impersonation fraud is extremely rare. " },
+  { "type": "message.delta", "content": "I will formulate these clearly.\n\n" },
+  { "type": "message.delta", "content": "One argument in favor of voter ID laws is that they help ensure election integrity by preventing voter impersonation fraud. " },
+  { "type": "message.delta", "content": "One argument against voter ID laws is that they can disproportionately suppress turnout among certain demographic groups." },
+  { "type": "message.end" }
+ ]
+}
