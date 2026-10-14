@@ -54,6 +54,20 @@ const SEARCH_PROMPT =
   "When you search the web, the user is told automatically, so never say that " +
   "you will search or look anything up; once you have the information, just answer.";
 
+// Added whenever Luna's own tools are offered (llm-tools.js). Without it the
+// model knew the tools only from their descriptions, and Qwen answered "can
+// you play …" with "Playing it now!" without ever calling play_music.
+function toolsLine(names) {
+  const can = [];
+  if (names.has('play_music')) can.push('play, skip or stop music');
+  if (names.has('leave_channel')) can.push('leave the voice channel');
+  if (names.has('say_in_voice')) can.push('say something out loud in the voice channel');
+  if (!can.length) return '';
+  return `You have tools to ${can.join(', ').replace(/, ([^,]*)$/, ' and $1')}. Saying you did something ` +
+    'does not do it: whenever someone asks for one of these, call the tool, then reply. Never say that ' +
+    'you are playing, skipping, stopping, leaving or saying something unless you called its tool.';
+}
+
 // Added to a quick-answer (reasoning off) retry. Without reasoning, the
 // model's planning ends up in the answer — "Keep it natural, conversational,
 // no markdown." was read out loud.
@@ -70,18 +84,20 @@ function speakerLine(name) {
 // The whole prompt for one request.
 //   expressive  the audio-tag / wording instruction for the voice in use ('' for none)
 //   search      the search tool is offered and Luna announces searches herself
+//   tools       names of Luna's own tools offered (a Set), for toolsLine
 //   speaker     the asker's speakable name ('' to leave it out); after the
 //               parts every request shares, so they stay a cached prefix
 //   extra       e.g. QUICK_PROMPT for a quick-answer retry
 //   flavor      the occasional personality line, already chosen or ''
 //   text        the text-channel version of her (textBasePrompt) instead of voice
-function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, speaker = '', extra = '', flavor = '', text = false }) {
+function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, tools = new Set(), speaker = '', extra = '', flavor = '', text = false }) {
   return (text ? textBasePrompt(config) : basePrompt(config)) + ' ' + todayLine(timeZone, now) +
     (expressive ? ' ' + expressive : '') +
     (search ? ' ' + SEARCH_PROMPT : '') +
+    (tools.size && toolsLine(tools) ? ' ' + toolsLine(tools) : '') +
     (speaker ? ' ' + speakerLine(speaker) : '') +
     (extra ? ' ' + extra : '') +
     (flavor ? ' ' + flavor : '');
 }
 
-module.exports = { basePrompt, textBasePrompt, todayLine, speakerLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
+module.exports = { basePrompt, textBasePrompt, todayLine, speakerLine, toolsLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };

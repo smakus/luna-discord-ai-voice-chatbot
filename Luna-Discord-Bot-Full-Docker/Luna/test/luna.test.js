@@ -702,6 +702,28 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('LLM_TOOLS=false → not offered, no server'); }
 
 
+  console.log('polite commands');
+  { const H = await setup({});
+    const cmd = q => { const c = H.T.extractSmakbotCommand(q); return c && c.build(c.arg); };
+    assert.strictEqual(cmd("can you play Seal, we're never gonna survive."), "!play Seal, we're never gonna survive");
+    assert.strictEqual(cmd('Could you please play some jazz for me?'), '!play some jazz');
+    assert.strictEqual(cmd('Okay, would you play Bohemian Rhapsody please.'), '!play Bohemian Rhapsody');
+    assert.strictEqual(cmd('play Right Now'), '!play Right Now');
+    assert.strictEqual(cmd('can you skip this song?'), '!skip');
+    assert.strictEqual(cmd('please stop the music, thanks'), '!stop');
+    for (const q of ['do you play guitar?', "let's play a game", 'can you play?', 'can you stop talking']) assert.strictEqual(cmd(q), null, q);
+    for (const q of ['can you leave?', 'could you please head out', 'you can go now, thanks']) assert.ok(H.T.LEAVE_RE.test(H.T.stripPoliteness(q)), q);
+    assert.ok(!H.T.LEAVE_RE.test(H.T.stripPoliteness('can you leave a note?')));
+    ok('"can you play …", "could you skip this song", "please stop the music, thanks", "can you leave" are fixed commands'); }
+  { const H = await setup({}); H.S.llmRequests.length = 0;
+    await H.T.handleQuery('can you play some jazz?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0, H.S.sends.join(' | '));
+    ok('"can you play some jazz?" → smakbot, no LLM'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Sure.');
+    await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music and leave the voice channel\./);
+    ok('the system prompt names the tools offered'); }
+
   console.log('leaving on request');
   { const H = await setup({}); H.S.llmRequests.length = 0;
     await H.T.handleQuery('Okay, leave the channel.', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.destroyed.length > 0);

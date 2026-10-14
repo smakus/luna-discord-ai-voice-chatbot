@@ -117,7 +117,7 @@ module.exports = function boot(env = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(src + `
-;globalThis.__t = { client, handleQuery, LEAVE_RE, condenseSearchResults, speakableName, nextGeneration, interruptOwnPlayback, spokenResponses,
+;globalThis.__t = { client, handleQuery, LEAVE_RE, extractSmakbotCommand, stripPoliteness, condenseSearchResults, speakableName, nextGeneration, interruptOwnPlayback, spokenResponses,
   get activeConnection() { return activeConnection; }, get activeVoiceChannel() { return activeVoiceChannel; }, get ready() { return ready; },
   get model() { return lmStudioModel; }, THINKING: { waits: THINKING_WAITS, cap: THINKING_MAX }, LLM: { reasoning: LLM_REASONING, thinkLimit: LLM_THINK_LIMIT_MS } };`, ctx);
   const T = ctx.__t;
