@@ -5,7 +5,7 @@ const { describe, it } = require('node:test');
 const assert = require('assert');
 const fs = require('fs'), path = require('path');
 const { wordsToDigits, isCorrect, searchOk, voiceIssues, median, mean, rate, isRight, summarize } = require('../bench/score');
-const { systemPrompt, todayLine, speakerLine, SEARCH_PROMPT, QUICK_PROMPT } = require('../prompt');
+const { systemPrompt, todayLine, speakerLine, toolsLine, SEARCH_PROMPT, QUICK_PROMPT } = require('../prompt');
 
 describe('spoken numbers', () => {
   const cases = [
@@ -151,5 +151,15 @@ describe('system prompt (prompt.js)', () => {
     assert.ok(p.endsWith(' FLAVOR.'));
     const plain = systemPrompt({ config, timeZone: 'UTC', now });
     assert.ok(plain.endsWith('(UTC time).') && !plain.includes('  '));
+  });
+  it('the tools offered are named, after search and before the speaker', () => {
+    const voice = new Set(['play_music', 'skip_song', 'stop_music', 'leave_channel']);
+    assert.match(toolsLine(voice), /^You have tools to play, skip or stop music and leave the voice channel\. .*call the tool/);
+    assert.match(toolsLine(new Set(['play_music', 'say_in_voice'])), /play, skip or stop music and say something out loud in the voice channel\./);
+    assert.strictEqual(toolsLine(new Set(['tavily_search'])), '');
+    const p = systemPrompt({ config, timeZone: 'UTC', now, search: true, tools: voice, speaker: 'Sam' });
+    const at = s => p.indexOf(s);
+    assert.ok(at(SEARCH_PROMPT) < at(toolsLine(voice)) && at(toolsLine(voice)) < at(speakerLine('Sam')));
+    assert.ok(!systemPrompt({ config, timeZone: 'UTC', now }).includes('You have tools'));
   });
 });

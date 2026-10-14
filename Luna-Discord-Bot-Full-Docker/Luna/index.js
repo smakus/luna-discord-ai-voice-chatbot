@@ -1580,11 +1580,26 @@ const SMAKBOT_COMMANDS = [
   },
 ];
 
+// Polite wrapping around a command: "can you play …", "Luna, could you please
+// skip this song", "stop the music for me please". Stripped before the
+// patterns are tried, so these are fixed commands too, instead of reaching the
+// LLM (where Qwen has answered "can you play …" with "Playing it now!" and no
+// tool call). Only wrapping that can't change the meaning: "do you play
+// guitar" and "let's play a game" are left alone.
+const POLITE_PREFIX_RE = /^(?:(?:luna|ok(?:ay)?|alright|hey|so|um+|uh+)[\s,]+|(?:can|could|would|will) you(?:\s+please)?[\s,]+|please[\s,]+|go ahead and\s+|i(?:'d| would) like you to\s+|i want you to\s+)+/i;
+// Song titles end in "now" or "thank you" too ("Right Now"), so those need a
+// comma before them to count as politeness.
+const POLITE_SUFFIX_RE = /(?:[\s,]+(?:please|for (?:me|us))|,\s*(?:now|thanks|thank you))+([\s,.!?]*)$/i;
+
+function stripPoliteness(text) {
+  return String(text).trim().replace(POLITE_PREFIX_RE, '').replace(POLITE_SUFFIX_RE, '$1').trim();
+}
+
 // Returns { build, ack, summon, arg } or null. Wake phrase is normally already
 // stripped upstream; stripWakeWord here is a no-op safety net for the path
 // where openWakeWord gated on audio and Whisper still transcribed the phrase.
 function extractSmakbotCommand(query) {
-  const after = stripWakeWord(query);
+  const after = stripPoliteness(stripWakeWord(query));
 
   for (const cmd of SMAKBOT_COMMANDS) {
     const match = after.match(cmd.pattern);
@@ -1673,7 +1688,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
   // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
   // music commands. (Wordier requests reach the LLM's leave_channel tool.)
-  if (LEAVE_RE.test(stripWakeWord(query))) {
+  if (LEAVE_RE.test(stripPoliteness(stripWakeWord(query)))) {
     const generation = interruptOwnPlayback(userId);
     const goodbye = fillPhrase(LEAVE_PHRASES, {});
     queuePlayback(async () => {
@@ -2137,7 +2152,8 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
     input: context ? `${text}\n\n${context}` : text,
     stream: true,
   };
-  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offerLlmTools() && toolNames.size ? [toolsIntegration(toolNames)] : [])];
+  const offeredTools = offerLlmTools() ? toolNames : new Set();
+  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offeredTools.size ? [toolsIntegration(offeredTools)] : [])];
   if (integrations.length) body.integrations = integrations;
 
   // Sent on EVERY request, not only the first of a chain.
@@ -2164,7 +2180,7 @@ async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSear
   // (In text, each message carries its writer's name instead.)
   const speaker = config.LM_USE_NAMES && !textMode ? speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) : '';
   body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
-    search: useSearch && ANNOUNCE_SEARCH, speaker, extra: extraSystem, flavor, text: textMode });
+    search: useSearch && ANNOUNCE_SEARCH, tools: offeredTools, speaker, extra: extraSystem, flavor, text: textMode });
 
   const priorId = getConversationId(memoryKey);
   if (priorId) body.previous_response_id = priorId;

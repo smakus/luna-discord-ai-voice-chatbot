@@ -516,7 +516,7 @@ Below the table, each model's problems are listed by question. The answers are s
 
 ## MusicBot integration
 
-Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`.
+Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave".
 
 Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
