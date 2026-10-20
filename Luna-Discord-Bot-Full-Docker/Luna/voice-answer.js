@@ -86,7 +86,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     ];
   })();
 
-  // Resolved against this file, not the working directory, so `node Luna/index.js`
+  // Resolved against this file, not the working directory, so running Luna
   // from elsewhere still finds it.
   const CHIME_PATH = path.join(__dirname, 'chime.mp3');
 

@@ -1,15 +1,16 @@
 // ─── Tools for the LLM ────────────────────────────────────────────────────────
 //
 // Things the LLM can make Luna do: play, skip and stop music through smakbot,
-// leave the voice channel, and (from text chat) say something in it. The fixed patterns in index.js ("play …",
-// "skip", "stop", "leave") handle the plain commands instantly, before the
-// LLM; these tools cover everything else ("put on something chill", "we're
+// leave the voice channel, and (from text chat) say something in it. The
+// fixed commands in commands.js ("play …", "skip", "stop", "leave") handle the
+// plain requests instantly, before the LLM; these tools cover everything else ("put on something chill", "we're
 // done for tonight, you can head out").
 //
 // Served to LM Studio by mcp-server.js. A tool's run() only answers the LLM
-// (that server cannot tell whose question a call belongs to); index.js acts
-// when it sees the call in the speaker's own answer stream: the smakbot
-// command via smakbotCommandFor(), or leaving once her goodbye has played.
+// (that server cannot tell whose question a call belongs to). Luna acts when
+// she sees the call in the asker's own answer stream (read in answer-llm.js,
+// acted on in voice-answer.js and text-chat.js): the smakbot command via
+// smakbotCommandFor(), or leaving once her goodbye has played.
 //
 // smakbot: !play queues after the current song when music is playing, so
 // there is no separate queue tool.

@@ -2,7 +2,7 @@
 //
 // How one speaker's audio becomes a question for Luna. Each stage is a small
 // piece with one job, wired together per speaker by continuousCapture() in
-// index.js:
+// voice-listen.js:
 //
 //   Opus packets ──► packet decoder ──► PCM (20 ms frames, 48 kHz mono)
 //                                         │
@@ -252,7 +252,7 @@ function confirmWake(transcript, { detected = false, candidate = false } = {}) {
 // ── A speaker who seems to be talking but is never heard ─────────────────────
 //
 // Discord reports them speaking, yet no audio has reached Luna for a while.
-// verdict is their encryption state (cryptoVerdict in index.js) or null.
+// verdict is their encryption state (cryptoVerdict in voice-session.js) or null.
 //   restart-capture  their audio is decrypting, so encryption is fine and it
 //                    is being lost after that: restart just their capture
 //   wait             Luna reconnected recently (at most once per gapMs)

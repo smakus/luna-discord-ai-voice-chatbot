@@ -204,7 +204,7 @@ function voiceCheck(message) {
 // leave the channel itself (llm-tools.js): Luna serves the tools over MCP on
 // LUNA_MCP_PORT, LM Studio knows them from its mcp.json as "luna", and every
 // request offers them as mcp/luna. When a call succeeds, Luna acts on it (the
-// onTool handlers in handleQuery and answerInText). Offering them, and leaving
+// onTool handlers in voice-answer.js and text-chat.js). Offering them, and leaving
 // them out while LM Studio can't reach them, is answer-llm.js's job.
 const LLM_TOOLS_ON    = config.LLM_TOOLS;
 const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
