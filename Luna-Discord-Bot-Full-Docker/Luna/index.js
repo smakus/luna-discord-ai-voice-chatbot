@@ -1,10 +1,7 @@
 require('dotenv').config();
 
-const {
-  joinVoiceChannel, createAudioResource, StreamType,
-  AudioPlayerStatus, VoiceConnectionStatus, createAudioPlayer,
-  EndBehaviorType, entersState,
-} = require('@discordjs/voice');
+const voiceLib = require('@discordjs/voice');
+const { joinVoiceChannel, VoiceConnectionStatus, EndBehaviorType, entersState } = voiceLib;
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
 const { OpusEncoder } = require('@discordjs/opus');
@@ -20,6 +17,7 @@ const { loadCustomGreetings } = require('./greetings');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { QUICK_PROMPT } = require('./prompt');
+const { createPlayback } = require('./voice-playback');
 const { createLlm, condenseSearchResults, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const {
   isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
@@ -33,6 +31,9 @@ const config = loadConfig(process.env, { warn: message => console.warn(message) 
 
 // Talking to LM Studio: model, prompt, memory, search and tool offers (answer-llm.js).
 const llm = createLlm({ config, fetch, console, expressivePrompt });
+
+// Everything said in the voice channel goes through one queue (voice-playback.js).
+const playback = createPlayback({ voice: voiceLib, fetchTTS, console, lookahead: config.TTS_LOOKAHEAD });
 
 // ─── Wake phrase ──────────────────────────────────────────────────────────────
 //
@@ -263,11 +264,6 @@ const QUICK_ANSWER_PHRASES = (() => {
     'Okay, let me give you the short version.',
   ];
 })();
-
-// How many sentences beyond the one playing are synthesised in advance. Enough
-// to keep playback gapless; more only burns TTS work (and ElevenLabs credits)
-// on sentences that a barge-in may never let play.
-const TTS_LOOKAHEAD = config.TTS_LOOKAHEAD;
 
 // Backstop if something still wedges despite the timeouts above. Must exceed
 // the longest legitimate request, or it would release a speaker mid-answer.
@@ -657,14 +653,7 @@ function resetVoiceState() {
   silentSpeakers.clear();
   listeningUsers.clear();
   captureStates.clear();
-  for (const response of spokenResponses.values()) response.cancel();
-  spokenResponses.clear();
-  for (const request of llmRequests.values()) request.abort();
-  llmRequests.clear();
-  userGeneration.clear();
-  playbackQueue      = Promise.resolve();
-  currentPlayer      = null;
-  currentPlayerUser  = null;
+  playback.reset();
   llm.forgetConversations();
 }
 
@@ -792,7 +781,7 @@ function continuousCapture(connection, userId, channel) {
           // during the wait.
           if (flushing) {
             console.log(`[${userId}] barge-in — cancelling the previous question`);
-            interruptOwnPlayback(userId);
+            playback.interrupt(userId);
             segmenter.keepLast(Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS));
           }
         },
@@ -1020,136 +1009,6 @@ function continuousCapture(connection, userId, channel) {
 
 const processingUsers = new Set(); // tracks who is currently being transcribed/responded to
 
-// ─── Playback queue ───────────────────────────────────────────────────────────
-// Serializes TTS sentences within a single response.
-//
-// Responses from different speakers QUEUE and play in order. Sentences within
-// one response are ordered by the same chain.
-//
-// Each sentence closure captures its speaker and that speaker's generation at
-// queue time. On execution it re-checks: if that speaker has since asked
-// something newer, the sentence is skipped. Another speaker asking does not
-// affect it. This preserves barge-in for the person being answered while
-// preventing speakers from cancelling each other.
-
-let playbackQueue     = Promise.resolve();
-let currentPlayer     = null;
-let currentPlayerUser = null;              // who owns the entry currently playing
-const userGeneration  = new Map();         // userId -> that user's latest generation
-
-// Generations are PER USER, not global.
-//
-// Previously a single global counter meant any new query cancelled every
-// pending sentence regardless of who asked. With several people in a channel
-// that silently ate questions: A asks, B asks, only B gets an answer and A
-// never learns why.
-//
-// Now each speaker has their own generation. A new query supersedes only that
-// speaker's own pending sentences; everyone else's stay queued and play in
-// turn.
-function nextGeneration(userId) {
-  const g = (userGeneration.get(userId) || 0) + 1;
-  userGeneration.set(userId, g);
-  // Superseded: stop synthesising sentences of their answer that will now
-  // never play.
-  const superseded = spokenResponses.get(userId);
-  if (superseded) {
-    superseded.cancel();
-    spokenResponses.delete(userId);
-  }
-  // ...and stop the LLM working on a question nobody is waiting for.
-  const request = llmRequests.get(userId);
-  if (request) {
-    request.abort();
-    llmRequests.delete(userId);
-  }
-  return g;
-}
-
-// userId -> AbortController for that speaker's LLM request in flight.
-const llmRequests = new Map();
-
-// ─── Spoken responses ─────────────────────────────────────────────────────────
-//
-// One answer being spoken. Sentences arrive from the LLM; TTS is requested for
-// the sentence about to play plus TTS_LOOKAHEAD after it — enough for gapless
-// playback, without synthesising a whole long answer up front. cancel() aborts
-// requests in flight and discards audio that was fetched but not played: on a
-// barge-in, that work used to run to completion (and, on ElevenLabs, be billed)
-// for sentences nobody would hear.
-const spokenResponses = new Map(); // userId -> their in-progress SpokenResponse
-
-class SpokenResponse {
-  constructor() {
-    this.sentences  = [];
-    this.fetches    = [];   // Promise<stream|null>, by sentence index
-    this.next       = 0;    // index of the next sentence to play
-    this.controller = new AbortController();
-  }
-
-  get size() { return this.sentences.length; }
-
-  add(sentence) {
-    this.sentences.push(sentence);
-    this._fill();
-  }
-
-  // Resolves to the audio stream for sentence `i` (or null if TTS failed) and
-  // moves the lookahead window along.
-  async take(i) {
-    this.next = i + 1;
-    this._fill();
-    return this.fetches[i];
-  }
-
-  _fill() {
-    if (this.controller.signal.aborted) return;
-    const limit = Math.min(this.sentences.length, this.next + 1 + TTS_LOOKAHEAD);
-    for (let i = this.fetches.length; i < limit; i++) {
-      this.fetches.push(fetchTTS(this.sentences[i], { signal: this.controller.signal }));
-    }
-  }
-
-  cancel() {
-    if (this.controller.signal.aborted) return;
-    this.controller.abort();
-    for (let i = this.next; i < this.fetches.length; i++) {
-      this.fetches[i].then(stream => stream?.destroy()).catch(() => {});
-    }
-  }
-}
-
-function queuePlayback(fn, userId, generation) {
-  playbackQueue = playbackQueue.then(async () => {
-    // Stale only if THIS user has since asked something newer.
-    if (userGeneration.get(userId) !== generation) return;
-    currentPlayerUser = userId;
-    try {
-      await fn();
-    } finally {
-      currentPlayerUser = null;
-    }
-  }).catch(() => {});
-}
-
-// Barge-in, scoped to one speaker.
-//
-// Saying the wake word again cuts off *your own* answer — the original intent.
-// It no longer stops someone else mid-sentence. Note this deliberately does
-// NOT reset playbackQueue: doing so would drop other speakers' queued
-// responses, which is the bug this replaces.
-function interruptOwnPlayback(userId) {
-  const generation = nextGeneration(userId);
-
-  if (currentPlayerUser === userId && currentPlayer) {
-    try { currentPlayer.stop(true); } catch (_) {}
-    currentPlayer = null;
-    currentPlayerUser = null;
-  }
-
-  return generation;
-}
-
 // ─── WAV helper ───────────────────────────────────────────────────────────────
 
 function buildWavBuffer(pcmData, sampleRate, channels, bitDepth) {
@@ -1260,32 +1119,12 @@ function askForQuestion(userId, connection) {
   console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
   const expect = ms => captureStates.get(userId)?.expectQuestion(ms);
   expect(60000);
-  const generation = interruptOwnPlayback(userId);
-  queuePlayback(async () => {
+  const generation = playback.interrupt(userId);
+  playback.queue(async () => {
     const pt = await fetchTTS(text);
-    if (pt) await playTTS(pt, connection);
+    if (pt) await playback.play(pt, connection);
     expect(WAKE_FOLLOWUP_MS);
   }, userId, generation);
-}
-
-// ─── Sound effect ─────────────────────────────────────────────────────────────
-
-async function playSound(filePath, connection) {
-  try {
-    const player   = createAudioPlayer();
-    const resource = createAudioResource(filePath, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true,
-    });
-    resource.volume?.setVolume(0.2);
-    connection.subscribe(player);
-    player.play(resource);
-    await new Promise(resolve => {
-      player.on(AudioPlayerStatus.Idle, () => { player.stop(); resolve(); });
-      player.on('error', () => resolve()); // don't block if file missing
-      setTimeout(resolve, 5000);           // safety timeout
-    });
-  } catch (_) {}
 }
 
 // ─── Tools for the LLM (music, leaving) ───────────────────────────────────────
@@ -1339,21 +1178,21 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   const what = route(query, { voice: true });
   if (what.type === 'music') {
     // Supersede this speaker's own pending audio BEFORE the chime. A
-    // VoiceConnection has exactly one subscription, and playSound() creates its
+    // VoiceConnection has exactly one subscription, and playback.playSound() creates its
     // own player and subscribes — so an unconditional chime detaches whatever
     // sentence is mid-playback, including another speaker's.
-    const musicGeneration = interruptOwnPlayback(userId);
-    if (!currentPlayer) {
-      playSound(CHIME_PATH, connection).catch(() => {});
+    const musicGeneration = playback.interrupt(userId);
+    if (!playback.busy) {
+      playback.playSound(CHIME_PATH, connection).catch(() => {});
     }
 
     await sendSmakbotCommand(channel, what.command);
 
     const ack = what.command.ack;
     if (ack) {
-      queuePlayback(async () => {
+      playback.queue(async () => {
         const pt = await fetchTTS(ack);
-        if (pt) await playTTS(pt, connection);
+        if (pt) await playback.play(pt, connection);
       }, userId, musicGeneration);
     }
     return;
@@ -1362,11 +1201,11 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
   // music commands. (Wordier requests reach the LLM's leave_channel tool.)
   if (what.type === 'leave') {
-    const generation = interruptOwnPlayback(userId);
+    const generation = playback.interrupt(userId);
     const goodbye = fillPhrase(LEAVE_PHRASES, {});
-    queuePlayback(async () => {
+    playback.queue(async () => {
       const pt = await fetchTTS(goodbye);
-      if (pt) await playTTS(pt, connection);
+      if (pt) await playback.play(pt, connection);
       leaveOnRequest(userId);
     }, userId, generation);
     return;
@@ -1374,11 +1213,11 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
   // Supersede only this speaker's own pending response. Anyone else's queued
   // sentences survive and play in turn.
-  const myGeneration = interruptOwnPlayback(userId);
+  const myGeneration = playback.interrupt(userId);
 
   // Fire chime (don't await — let it play while we fetch the LLM response).
   //
-  // Skipped while audio is already playing. playSound() creates its own
+  // Skipped while audio is already playing. playback.playSound() creates its own
   // AudioPlayer and calls connection.subscribe(), and a VoiceConnection has
   // exactly one subscription — so an unconditional chime silently detached
   // whichever sentence was mid-playback. With several people in a channel that
@@ -1388,8 +1227,8 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // the tool is asked again with it (see the pass loop).
   let useSearch = llm.offerSearch(query);
 
-  if (!currentPlayer) {
-    playSound(CHIME_PATH, connection).catch(() => {});
+  if (!playback.busy) {
+    playback.playSound(CHIME_PATH, connection).catch(() => {});
   }
 
   // Not awaited: posting (and later deleting) this message are Discord round
@@ -1411,12 +1250,12 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // skips it too, as does `wanted()` turning false while it waits.
   const sayAside = (tag, phrase, wanted = () => true) => {
     console.log(`[${userId}] [${tag}] "${phrase}"`);
-    queuePlayback(async () => {
+    playback.queue(async () => {
       if (!wanted()) return;
       const pt = await fetchTTS(phrase);
       if (!pt) return;
-      if (!wanted() || userGeneration.get(userId) !== myGeneration) { pt.destroy(); return; }
-      await playTTS(pt, connection);
+      if (!wanted() || !playback.isCurrent(userId, myGeneration)) { pt.destroy(); return; }
+      await playback.play(pt, connection);
     }, userId, myGeneration);
   };
 
@@ -1463,7 +1302,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     const [lo, hi] = THINKING_WAITS[Math.min(fillersSaid, THINKING_WAITS.length - 1)];
     const wait = lo + Math.random() * (hi - lo);
     fillerTimer = setTimeout(() => {
-      if (answerStarted || userGeneration.get(userId) !== myGeneration) return;
+      if (answerStarted || !playback.isCurrent(userId, myGeneration)) return;
       fillersSaid++;
       // The wait is in the log tag ("[thinking +17.3s]"), so the spacing can
       // be checked from the logs.
@@ -1481,10 +1320,9 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // — A1, B1, A2, B2 — which is worse than the bug this design replaced.
   //
   // TTS for each sentence is requested as soon as it is within TTS_LOOKAHEAD
-  // of playback (see SpokenResponse), so synthesis still overlaps playback.
+  // of playback (see voice-playback.js), so synthesis still overlaps playback.
   // Only playback order is serialised.
-  const response = new SpokenResponse();
-  spokenResponses.set(userId, response);
+  const response = playback.startResponse(userId);
   let streamDone = false;
   let wake       = null;    // resolver signalling "more sentences available"
 
@@ -1503,20 +1341,20 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     if (queued) return;
     queued = true;
 
-    queuePlayback(async () => {
+    playback.queue(async () => {
       let i = 0;
       let firstAudio = true;
 
       try {
         while (true) {
           if (i < response.size) {
-            if (userGeneration.get(userId) !== myGeneration) return;
+            if (!playback.isCurrent(userId, myGeneration)) return;
 
             const passThrough = await response.take(i++);
 
             // Re-check AFTER the await: a barge-in can land while TTS is still
             // rendering, and without this the superseded sentence plays anyway.
-            if (userGeneration.get(userId) !== myGeneration) {
+            if (!playback.isCurrent(userId, myGeneration)) {
               passThrough?.destroy();
               return;
             }
@@ -1526,7 +1364,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
                 firstAudio = false;
                 console.log(`[${userId}] [timing] First audio start: ${Date.now() - t0}ms`);
               }
-              await playTTS(passThrough, connection);
+              await playback.play(passThrough, connection);
             }
           } else if (streamDone) {
             return;
@@ -1535,7 +1373,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           }
         }
       } finally {
-        if (spokenResponses.get(userId) === response) spokenResponses.delete(userId);
+        playback.finishResponse(userId, response);
       }
     }, userId, myGeneration);
   };
@@ -1546,7 +1384,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   //   - it thought past LLM_THINK_LIMIT_MS without starting an answer, or
   //     finished with no words at all (it has answered "." after 50 s of
   //     reasoning) -> ask again with reasoning off, which answers in seconds.
-  const superseded = () => userGeneration.get(userId) !== myGeneration;
+  const superseded = () => !playback.isCurrent(userId, myGeneration);
   let reasoning     = llm.reasoning;
   let firstSentence = true;
   let reasoningRetried = false;
@@ -1575,7 +1413,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       // Search may have been paused by an earlier pass of this question.
       if (useSearch && llm.searchPaused()) useSearch = false;
       const cancel = new AbortController();
-      llmRequests.set(userId, cancel);
+      playback.trackRequest(userId, cancel);
       // Reasoning clock: runs only between reasoning.start and reasoning.end,
       // so time spent searching and reading results is not counted.
       let thinkLimitHit = false;
@@ -1657,7 +1495,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         if (!thinkLimitHit || superseded()) throw err;
       } finally {
         clearTimeout(thinkTimer);
-        if (llmRequests.get(userId) === cancel) llmRequests.delete(userId);
+        playback.untrackRequest(userId, cancel);
       }
 
       if (superseded()) break;
@@ -1718,69 +1556,12 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     streamDone = true;
     signal();
     // Never queued (no sentence, or superseded first): nothing will consume it.
-    if (!queued && spokenResponses.get(userId) === response) spokenResponses.delete(userId);
+    if (!queued) playback.finishResponse(userId, response);
     // Queued behind the answer, so she leaves once her goodbye has played.
-    if (leaveAfterAnswer && !superseded()) queuePlayback(async () => leaveOnRequest(userId), userId, myGeneration);
+    if (leaveAfterAnswer && !superseded()) playback.queue(async () => leaveOnRequest(userId), userId, myGeneration);
   }
 }
 
-
-// ─── TTS: fetch and play (split for prefetch pipeline) ──────────────────────
-//
-// fetchTTS()  — (tts.js) starts synthesis on the configured provider and
-//               returns a readable audio stream, falling back between providers.
-//               Called as soon as a sentence is ready, even while a previous
-//               sentence is still playing, so audio is ready with zero wait.
-//
-// playTTS()   — subscribes the stream to the Discord player and awaits completion.
-//               Called by the playback queue in order.
-
-async function playTTS(passThrough, connection) {
-  try {
-    const player   = createAudioPlayer();
-    const resource = createAudioResource(passThrough, {
-      inputType: StreamType.Arbitrary,
-    });
-
-    currentPlayer = player; // track so interruptOwnPlayback() can stop it
-    connection.subscribe(player);
-    player.play(resource);
-
-    await new Promise(resolve => {
-      let settled = false;
-
-      const finish = (reason) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);              // else it fires mid-way through a LATER
-                                          // sentence and nulls that player's handle
-        try { player.stop(true); } catch (_) {}
-        // Only release the globals if they still refer to THIS player.
-        if (currentPlayer === player) currentPlayer = null;
-        if (reason) console.error(`playTTS: ${reason}`);
-        resolve();
-      };
-
-      const timer = setTimeout(() => finish('playback timed out after 30s'), 30000);
-      player.on(AudioPlayerStatus.Idle, () => {
-        // Idle while the audio has not ended: Discord's player stops a sentence
-        // when no audio has arrived for 100 ms, so the rest of it is lost.
-        // That happens when TTS renders slower than playback (it was streamed
-        // Chatterbox while the LLM was writing). An interruption is not this:
-        // interruptOwnPlayback() lets go of currentPlayer first.
-        if (currentPlayer === player && resource.playStream && !resource.playStream.readableEnded) {
-          console.warn(`[audio] sentence cut short after ${(resource.playbackDuration / 1000).toFixed(1)}s — ` +
-            'the audio stopped arriving in time (TTS rendering slower than playback?)');
-        }
-        finish();
-      });
-      player.on('error', err => finish(err.message));
-    });
-  } catch (err) {
-    console.error('playTTS error:', err);
-    currentPlayer = null;
-  }
-}
 
 client.on(Events.Error, console.warn);
 
@@ -1873,15 +1654,15 @@ function greetMember(member, connection) {
 // Their own line in their own voice; if that voice can't be had, the normal
 // greeting in the normal voice.
 function announceInVoice(member, connection, text, voiceId, fallbackText) {
-  const generation = nextGeneration(member.id);
-  queuePlayback(async () => {
+  const generation = playback.nextGeneration(member.id);
+  playback.queue(async () => {
     if (activeConnection !== connection) return;
     let pt = await fetchTTSInVoice(text, voiceId);
     if (!pt) {
       console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
       pt = await fetchTTS(fallbackText);
     }
-    if (pt) await playTTS(pt, connection);
+    if (pt) await playback.play(pt, connection);
   }, member.id, generation);
 }
 
@@ -1889,11 +1670,11 @@ function announceInVoice(member, connection, text, voiceId, fallbackText) {
 // greeting plays, their query supersedes it (barge-in), and an announcement
 // never cuts off an answer someone else is already hearing.
 function announce(member, connection, text) {
-  const generation = nextGeneration(member.id);
-  queuePlayback(async () => {
+  const generation = playback.nextGeneration(member.id);
+  playback.queue(async () => {
     if (activeConnection !== connection) return; // Luna left in the meantime
     const pt = await fetchTTS(text);
-    if (pt) await playTTS(pt, connection);
+    if (pt) await playback.play(pt, connection);
   }, member.id, generation);
 }
 
@@ -1936,11 +1717,11 @@ function introduceSelf(connection) {
   const fitting = INTROS.filter(p => p.includes('{names}') === names.length > 0);
   const text = fillPhrase(fitting.length ? fitting : INTROS, { wake: WAKE_LABEL, names: NAME_LIST.format(names) || 'everyone' });
   console.log(`[intro] "${text}"`);
-  const generation = nextGeneration(INTRO_QUEUE_ID);
-  queuePlayback(async () => {
+  const generation = playback.nextGeneration(INTRO_QUEUE_ID);
+  playback.queue(async () => {
     if (activeConnection !== connection) return;
     const pt = await fetchTTS(text);
-    if (pt) await playTTS(pt, connection);
+    if (pt) await playback.play(pt, connection);
   }, INTRO_QUEUE_ID, generation);
 }
 
@@ -2066,11 +1847,11 @@ function sayInVoice(text, userId, who) {
   const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
   if (!connection || !line) return false;
   console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
-  const generation = userGeneration.get(userId) ?? nextGeneration(userId);
-  queuePlayback(async () => {
+  const generation = playback.generationOf(userId) ?? playback.nextGeneration(userId);
+  playback.queue(async () => {
     if (activeConnection !== connection) return;
     const pt = await fetchTTS(line);
-    if (pt) await playTTS(pt, connection);
+    if (pt) await playback.play(pt, connection);
   }, userId, generation);
   return true;
 }
