@@ -12,8 +12,9 @@ const path = require('path');
 const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
-const { textQuestion, splitMessage, isSayRequest } = require('./text-chat');
-const { LLM_TOOLS, LLM_TOOL_NAMES, TEXT_TOOL_NAMES } = require('./llm-tools');
+const { createTextChat, SAY_MAX_CHARS } = require('./text-chat');
+const { route, sendSmakbotCommand: postSmakbotCommand, LEAVE_PHRASES } = require('./commands');
+const { LLM_TOOLS, LLM_TOOL_NAMES } = require('./llm-tools');
 const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } = require('./tts');
 const { loadCustomGreetings } = require('./greetings');
 const { createAnswerFilter } = require('./answer-filter');
@@ -21,7 +22,7 @@ const { loadConfig, parseWaits } = require('./config');
 const { QUICK_PROMPT } = require('./prompt');
 const { createLlm, condenseSearchResults, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const {
-  stripWakeWord, isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
+  isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 } = require('./voice-input');
 
@@ -359,7 +360,7 @@ let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
 const listeningUsers   = new Set();
 
 client.on(Events.MessageCreate, async message => {
-  if (onTextMessage(message)) return;
+  if (textChat.onMessage(message)) return;
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
   // "!luna say <text>": exactly those words, out loud, no LLM.
   const sayMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+say\\s+([\\s\\S]+)$`, 'i'));
@@ -1311,95 +1312,7 @@ function startLlmTools() {
       `(LM Studio's mcp.json needs "luna": {"url": "http://127.0.0.1:${LUNA_MCP_PORT}/mcp"})`));
 }
 
-// ─── Smakbot commands ─────────────────────────────────────────────────────────
-//
-// Spoken form → text command posted in the channel. Tried top-down, so
-// argument-taking patterns must precede bare verbs.
-//
-// Every pattern is anchored at both ends against the wake-stripped transcript.
-// The start anchor stops "I'll stop by later" being a command; the end anchor
-// stops "skip the intro of that song you played" from silently becoming !skip
-// instead of reaching the LLM.
-//
-// The trailing [\s,.!?]* is load-bearing: Whisper punctuates single-word
-// utterances, so a spoken "skip" arrives as "Skip." and matches nothing
-// without it.
-const SMAKBOT_COMMANDS = [
-  {
-    name:        'play',
-    pattern:     /^play(?:\s+(?:the\s+)?(?:song|music|track))?[,.]?\s+(.+)$/i,
-    requiresArg: true,
-    build:       arg => `!play ${arg}`,
-    ack:         arg => `Okay, playing ${arg}.`,
-    // Only play summons. !skip and !stop with no music bot in the channel are
-    // no-ops, and dragging smakbot in to receive them would be surprising.
-    summon:      true,
-  },
-  {
-    name:    'skip',
-    pattern: /^skip(?:\s+(?:this|that|the|it))?(?:\s+(?:song|track|one))?[\s,.!?]*$/i,
-    build:   () => '!skip',
-    ack:     () => 'Skipping.',
-  },
-  {
-    name:    'stop',
-    pattern: /^stop(?:\s+(?:the|this|that))?(?:\s+(?:song|music|track|playing))?[\s,.!?]*$/i,
-    build:   () => '!stop',
-    // Set to () => null if you'd rather "stop" produce silence — some people
-    // say "hey Luna, stop" meaning "stop talking", and answering them with
-    // speech reads as ignoring them.
-    ack:     () => 'Okay, stopping.',
-  },
-];
-
-// Polite wrapping around a command: "can you play …", "Luna, could you please
-// skip this song", "stop the music for me please". Stripped before the
-// patterns are tried, so these are fixed commands too, instead of reaching the
-// LLM (where Qwen has answered "can you play …" with "Playing it now!" and no
-// tool call). Only wrapping that can't change the meaning: "do you play
-// guitar" and "let's play a game" are left alone.
-const POLITE_PREFIX_RE = /^(?:(?:luna|ok(?:ay)?|alright|hey|so|um+|uh+)[\s,]+|(?:can|could|would|will) you(?:\s+please)?[\s,]+|please[\s,]+|go ahead and\s+|i(?:'d| would) like you to\s+|i want you to\s+)+/i;
-// Song titles end in "now" or "thank you" too ("Right Now"), so those need a
-// comma before them to count as politeness.
-const POLITE_SUFFIX_RE = /(?:[\s,]+(?:please|for (?:me|us))|,\s*(?:now|thanks|thank you))+([\s,.!?]*)$/i;
-
-function stripPoliteness(text) {
-  return String(text).trim().replace(POLITE_PREFIX_RE, '').replace(POLITE_SUFFIX_RE, '$1').trim();
-}
-
-// Returns { build, ack, summon, arg } or null. Wake phrase is normally already
-// stripped upstream; stripWakeWord here is a no-op safety net for the path
-// where openWakeWord gated on audio and Whisper still transcribed the phrase.
-function extractSmakbotCommand(query) {
-  const after = stripPoliteness(stripWakeWord(query));
-
-  for (const cmd of SMAKBOT_COMMANDS) {
-    const match = after.match(cmd.pattern);
-    if (!match) continue;
-
-    const arg = match[1]
-      ? match[1]
-          .trim()
-          .replace(/[,.!?]+$/, '')
-          .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')  // strip surrounding quote characters, incl. curly quotes
-          .trim()
-      : null;
-
-    // A bare "play" with nothing after it is a conversational fragment, not a
-    // command — fall through and let the LLM have it.
-    if (cmd.requiresArg && !arg) continue;
-
-    return { ...cmd, arg };
-  }
-  return null;
-}
-
 // ─── Leaving on request ───────────────────────────────────────────────────────
-
-// Anchored at both ends, like the smakbot patterns: "leave" and "bye" are
-// commands, "leave the light on" and "bye bye birdie lyrics" are questions.
-const LEAVE_RE = /^(?:please\s+|ok(?:ay)?[\s,]+|alright[\s,]+)?(?:leave|go away|get out|disconnect|log off|head out|you can (?:go|leave)|bye(?: bye)?|goodbye)(?:\s+(?:the\s+)?(?:voice\s+)?(?:channel|call|now|please|for now))*[\s,.!?]*$/i;
-const LEAVE_PHRASES = ['Okay, bye everyone!', "Alright, I'm heading out. Bye!", 'Okay, see you later!'];
 
 // After being asked to leave, auto-join waits until the channel has emptied
 // once (or someone types !luna), so she doesn't pop straight back in.
@@ -1412,31 +1325,19 @@ function leaveOnRequest(userId) {
   leaveVoice(`asked to leave by ${who}`);
 }
 
-// Posts a smakbot command in the text channel, summoning smakbot first when
-// asked to and it isn't in the voice channel. Used by the fixed commands and
-// by the LLM's music tools.
-async function sendSmakbotCommand(channel, commandText, summon) {
-  console.log(`Smakbot command: ${commandText}`);
-  const musicBotPresent = activeVoiceChannel?.members?.some(
-    m => m.user.username.toLowerCase().includes('smakbot')
-  );
-  if (!musicBotPresent && summon) {
-    console.log('smakbot not in channel — summoning first');
-    await channel.send('!summon').catch(err =>
-      console.error('Failed to send summon command:', err.message)
-    );
-  }
-  await channel.send(commandText).catch(err =>
-    console.error(`Failed to send ${commandText}:`, err.message)
-  );
+// Posts a smakbot command (commands.js) in the text channel, summoning smakbot
+// first if it isn't in the voice channel. Used by the fixed commands and by
+// the LLM's music tools, by voice and by text.
+function sendSmakbotCommand(channel, command) {
+  const musicBotPresent = !!activeVoiceChannel?.members?.some(m => m.user.username.toLowerCase().includes('smakbot'));
+  return postSmakbotCommand(channel, command, { musicBotPresent, console });
 }
 
 // ─── Query handler ────────────────────────────────────────────────────────────
 
 async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
-  // Check for smakbot commands first
-  const musicCommand = extractSmakbotCommand(query);
-  if (musicCommand) {
+  const what = route(query, { voice: true });
+  if (what.type === 'music') {
     // Supersede this speaker's own pending audio BEFORE the chime. A
     // VoiceConnection has exactly one subscription, and playSound() creates its
     // own player and subscribes — so an unconditional chime detaches whatever
@@ -1446,9 +1347,9 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       playSound(CHIME_PATH, connection).catch(() => {});
     }
 
-    await sendSmakbotCommand(channel, musicCommand.build(musicCommand.arg), musicCommand.summon);
+    await sendSmakbotCommand(channel, what.command);
 
-    const ack = musicCommand.ack(musicCommand.arg);
+    const ack = what.command.ack;
     if (ack) {
       queuePlayback(async () => {
         const pt = await fetchTTS(ack);
@@ -1460,7 +1361,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
   // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
   // music commands. (Wordier requests reach the LLM's leave_channel tool.)
-  if (LEAVE_RE.test(stripPoliteness(stripWakeWord(query)))) {
+  if (what.type === 'leave') {
     const generation = interruptOwnPlayback(userId);
     const goodbye = fillPhrase(LEAVE_PHRASES, {});
     queuePlayback(async () => {
@@ -1722,7 +1623,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
         } else if (t.type === 'search-result') {
           searchCalls.push({ query: t.query, output: t.output });
         } else if (t.type === 'music') {
-          if (t.command) sendSmakbotCommand(channel, t.command.text, t.command.summon);
+          if (t.command) sendSmakbotCommand(channel, t.command);
         } else if (t.type === 'leave') {
           console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
           leaveAfterAnswer = true;
@@ -2145,117 +2046,21 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
 // ─── Text chat ────────────────────────────────────────────────────────────────
 //
-// Typing to Luna in TEXT_CHAT_CHANNELS: a message that @mentions her or starts
-// with "Luna" gets a written answer there, through the same LLM path as voice
-// (search, music tools) with the text-channel prompt. Everyone in a channel
-// shares one conversation (memory "text:<channel>", LM_MEMORY_TTL_MS), each
-// message prefixed with its writer's name; answers in a channel go one at a
-// time so they don't tangle that memory. The voice channel isn't needed.
-const TEXT_CHAT_CHANNELS = config.TEXT_CHAT_CHANNELS;
-const textQueues = new Map();   // channel id -> the answer in progress
-
-// No pings from the model's text: no @everyone, roles or users.
-const NO_PINGS = { parse: [], repliedUser: false };
-
-function onTextMessage(message) {
-  if (!TEXT_CHAT_CHANNELS.length || message.author?.bot || !message.channel) return false;
-  if (!named(message.channel, TEXT_CHAT_CHANNELS)) return false;
-  const question = textQuestion(message.content, client.user.id, BOT_COMMAND);
-  if (!question) return false;
-  if (!ready) { message.reply('Still starting up — try again in a few seconds.').catch(() => {}); return true; }
-  const key = message.channel.id;
-  const answer = (textQueues.get(key) || Promise.resolve())
-    .then(() => answerInText(message, question))
-    .catch(err => console.error(`[text] ${err.message}`));
-  textQueues.set(key, answer);
-  return true;
-}
-
-async function answerInText(message, question) {
-  const channel = message.channel;
-  const name = message.member?.displayName || message.author?.username || 'Someone';
-  console.log(`[text] ${name}: ${question}`);
-
-  // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
-  const music = extractSmakbotCommand(question);
-  if (music) {
-    await sendSmakbotCommand(channel, music.build(music.arg), music.summon);
-    const ack = music.ack(music.arg);
-    if (ack) await message.reply({ content: ack, allowedMentions: NO_PINGS }).catch(() => {});
-    return;
-  }
-
-  // "Say … in the voice channel": the model only writes the line; Luna speaks
-  // it and confirms herself, so the confirmation is always true.
-  if (isSayRequest(question)) return sayFromText(message, question, name);
-
-  // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
-  const typing = () => channel.sendTyping?.().catch(() => {});
-  typing();
-  const typingTimer = setInterval(typing, 8000);
-  let text = '', failed = false, searched = false;
-  try {
-    const onTool = t => {
-      if (t.type === 'say') {
-        sayInVoice(t.text, message.author?.id || 'text', name);
-      } else if (t.type === 'music') {
-        if (t.command) sendSmakbotCommand(channel, t.command.text, t.command.summon);
-      } else if (t.type === 'search' && !searched) {
-        searched = true;
-        message.react('🔍').catch(() => {});
-      }
-    };
-    for await (const piece of llm.stream(`${name}: ${question}`, { userId: message.author?.id || 'text', tag: 'text',
-      useSearch: llm.offerSearch(question), textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool })) {
-      text += piece;
-    }
-  } catch (err) {
-    failed = true;
-    console.error(`[text] answer failed: ${err.message}`);
-  } finally {
-    clearInterval(typingTimer);
-  }
-
-  const answer = text.replace(/<\/?think>/gi, '').trim() ||
-    (failed ? 'Sorry, I had trouble with that.' : 'Sorry, I lost my train of thought.');
-  const [first, ...rest] = splitMessage(answer);
-  await message.reply({ content: first, allowedMentions: NO_PINGS }).catch(err => console.error(`[text] reply failed: ${err.message}`));
-  for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
-}
-
-const SAY_PROMPT = 'Reply with only the exact words to say out loud in the voice channel, in the ' +
-  'language asked for, and nothing else: no quotation marks, no explanation, no pronunciation guide.';
-
-async function sayFromText(message, question, name) {
-  const channel = message.channel;
-  if (!activeConnection) {
-    await message.reply({ content: "I'm not in a voice channel right now.", allowedMentions: NO_PINGS }).catch(() => {});
-    return;
-  }
-  channel.sendTyping?.().catch(() => {});
-  let line = '';
-  try {
-    for await (const piece of llm.stream(`${name}: ${question}`, { userId: message.author?.id || 'text', useSearch: false,
-      textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
-      line += piece;
-    }
-  } catch (err) {
-    console.error(`[text] say failed: ${err.message}`);
-  }
-  line = line.replace(/<\/?think>/gi, '').trim().replace(/^["“'‘]+|["”'’]+$/g, '').trim();
-  if (!line || !sayInVoice(line, message.author?.id || 'text', name)) {
-    await message.reply({ content: 'Sorry, I couldn\'t work out what to say.', allowedMentions: NO_PINGS }).catch(() => {});
-    return;
-  }
-  await message.reply({ content: `🔊 Said in ${activeVoiceChannel?.name || 'the voice channel'}: ${line.slice(0, SAY_MAX_CHARS)}`,
-    allowedMentions: NO_PINGS }).catch(() => {});
-}
+// Typed questions in TEXT_CHAT_CHANNELS (text-chat.js).
+const textChat = createTextChat({
+  config, llm, console, command: BOT_COMMAND,
+  botId: () => client.user.id,
+  isReady: () => ready,
+  inChannels: channel => named(channel, config.TEXT_CHAT_CHANNELS),
+  sendCommand: sendSmakbotCommand,
+  sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
+  voiceChannelName: () => (activeConnection ? activeVoiceChannel?.name || 'the voice channel' : null),
+});
 
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or
 // "!luna say …"). Queued like their own answer — after whatever is playing,
 // superseded if they then ask something by voice — not interrupting anyone.
 // Returns false when she isn't in a voice channel.
-const SAY_MAX_CHARS = 400;
 function sayInVoice(text, userId, who) {
   const connection = activeConnection;
   const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);

@@ -16,7 +16,8 @@
 
 const { systemPrompt, SEARCH_PROMPT } = require('./prompt');
 const { takeSentences } = require('./sentences');
-const { LLM_TOOL_NAMES, VOICE_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
+const { LLM_TOOL_NAMES, VOICE_TOOL_NAMES, MUSIC_TOOL_NAMES } = require('./llm-tools');
+const { toolCommand } = require('./commands');
 
 // ─── When to search ───────────────────────────────────────────────────────────
 
@@ -328,7 +329,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '' }) {
   // what they mean, for onTool:
   //   { type: 'search' }                          a web search started
   //   { type: 'search-result', query, output }    one came back
-  //   { type: 'music', tool, args, command }      play/skip/stop (command: the smakbot one, or null)
+  //   { type: 'music', tool, args, command }      play/skip/stop (command: see commands.js, or null)
   //   { type: 'leave' }                           leave the voice channel
   //   { type: 'say', text }                       say this in the voice channel
   // Events that are none of these, and search results, go on to onEvent.
@@ -346,7 +347,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '' }) {
         if (e.tool === 'say_in_voice') { onTool({ type: 'say', text: e.arguments?.text }); return; }
         if (MUSIC_TOOL_NAMES.has(e.tool)) {
           console.log(`[${tag}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
-          onTool({ type: 'music', tool: e.tool, args: e.arguments || {}, command: smakbotCommandFor(e.tool, e.arguments) });
+          onTool({ type: 'music', tool: e.tool, args: e.arguments || {}, command: toolCommand(e.tool, e.arguments) });
           return;
         }
         if (e.output) onTool({ type: 'search-result', query: e.arguments?.query || '', output: e.output });

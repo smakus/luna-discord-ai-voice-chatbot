@@ -1,8 +1,15 @@
 // ─── Text chat ────────────────────────────────────────────────────────────────
 //
-// The pure parts of talking to Luna by typing (see "Text chat" in index.js):
-// whether a message is addressed to her, and cutting a long answer into
-// messages Discord accepts.
+// Typing to Luna in TEXT_CHAT_CHANNELS: a message that @mentions her or starts
+// with "Luna" gets a written answer there, through the same routing (see
+// commands.js) and LLM (answer-llm.js) as voice, with the text-channel prompt.
+// Everyone in a channel shares one conversation (memory "text:<channel>",
+// LM_MEMORY_TTL_MS), each message prefixed with its writer's name; answers in
+// a channel go one at a time so they don't tangle that memory. The voice
+// channel isn't needed.
+
+const { route, isSayRequest } = require('./commands');
+const { TEXT_TOOL_NAMES } = require('./llm-tools');
 
 // "Luna, …", "hey Luna …", "Luna: …" at the start ("lunar" does not count).
 const NAME_RE = /^\s*(?:(?:hey|hi|hello|ok(?:ay)?|yo)[\s,]+)?luna\b[\s,:;.!?-]*/i;
@@ -22,13 +29,6 @@ function textQuestion(content, botId, command = '!luna') {
   return text.replace(NAME_RE, '').trim() || null;
 }
 
-// A request to say something out loud in the voice channel: "say hello in
-// Chinese in the voice channel", "tell everyone in vc dinner is ready",
-// "announce in voice that …". Handled without relying on the model to call a
-// tool (some models answer "I said it!" without calling it).
-const SAY_RE = /\b(?:say|tell|announce|speak|shout|whisper|read)\b[\s\S]*?\b(?:in|on|over|to|into)\s+(?:the\s+)?(?:voice(?:\s+(?:channel|chat|call))?|vc|audio(?:\s+channel)?|call)\b/i;
-const isSayRequest = question => SAY_RE.test(String(question || ''));
-
 // Discord's limit is 2,000 characters a message. Cut at a paragraph, then a
 // line, then a sentence, then a space — whichever comes last within the limit.
 function splitMessage(text, max = 2000) {
@@ -45,4 +45,116 @@ function splitMessage(text, max = 2000) {
   return parts;
 }
 
-module.exports = { textQuestion, splitMessage, isSayRequest, NAME_RE };
+// No pings from the model's text: no @everyone, roles or users.
+const NO_PINGS = { parse: [], repliedUser: false };
+
+const SAY_PROMPT = 'Reply with only the exact words to say out loud in the voice channel, in the ' +
+  'language asked for, and nothing else: no quotation marks, no explanation, no pronunciation guide.';
+const SAY_MAX_CHARS = 400;
+
+// createTextChat(deps) → { onMessage(message) → true when it was for her }.
+//   llm            answer-llm.js
+//   botId()        her Discord user id
+//   isReady()      startup has finished
+//   inChannels(c)  c is one of TEXT_CHAT_CHANNELS
+//   sendCommand(channel, command)          post a smakbot command
+//   sayInVoice(text, userId, who) → bool   speak in the voice channel (false: not in one)
+//   voiceChannelName() → name, or null when not in a voice channel
+function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, command = '!luna' }) {
+  const queues = new Map();   // channel id -> the answer in progress
+
+  function onMessage(message) {
+    if (!config.TEXT_CHAT_CHANNELS.length || message.author?.bot || !message.channel) return false;
+    if (!inChannels(message.channel)) return false;
+    const question = textQuestion(message.content, botId(), command);
+    if (!question) return false;
+    if (!isReady()) { message.reply('Still starting up — try again in a few seconds.').catch(() => {}); return true; }
+    const key = message.channel.id;
+    const answer = (queues.get(key) || Promise.resolve())
+      .then(() => answerInText(message, question))
+      .catch(err => console.error(`[text] ${err.message}`));
+    queues.set(key, answer);
+    return true;
+  }
+
+  const reply = (message, content) => message.reply({ content, allowedMentions: NO_PINGS });
+
+  async function answerInText(message, question) {
+    const channel = message.channel;
+    const name = message.member?.displayName || message.author?.username || 'Someone';
+    const userId = message.author?.id || 'text';
+    console.log(`[text] ${name}: ${question}`);
+
+    const what = route(question, { voice: false });
+    // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
+    if (what.type === 'music') {
+      await sendCommand(channel, what.command);
+      if (what.command.ack) await reply(message, what.command.ack).catch(() => {});
+      return;
+    }
+    // "Say … in the voice channel": the model only writes the line; Luna speaks
+    // it and confirms herself, so the confirmation is always true.
+    if (what.type === 'say') return sayFromText(message, question, name, userId);
+
+    // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
+    const typing = () => channel.sendTyping?.().catch(() => {});
+    typing();
+    const typingTimer = setInterval(typing, 8000);
+    let text = '', failed = false, searched = false;
+    try {
+      const onTool = t => {
+        if (t.type === 'say') {
+          sayInVoice(t.text, userId, name);
+        } else if (t.type === 'music') {
+          if (t.command) sendCommand(channel, t.command);
+        } else if (t.type === 'search' && !searched) {
+          searched = true;
+          message.react('🔍').catch(() => {});
+        }
+      };
+      for await (const piece of llm.stream(`${name}: ${question}`, { userId, tag: 'text',
+        useSearch: llm.offerSearch(question), textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool })) {
+        text += piece;
+      }
+    } catch (err) {
+      failed = true;
+      console.error(`[text] answer failed: ${err.message}`);
+    } finally {
+      clearInterval(typingTimer);
+    }
+
+    const answer = text.replace(/<\/?think>/gi, '').trim() ||
+      (failed ? 'Sorry, I had trouble with that.' : 'Sorry, I lost my train of thought.');
+    const [first, ...rest] = splitMessage(answer);
+    await reply(message, first).catch(err => console.error(`[text] reply failed: ${err.message}`));
+    for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
+  }
+
+  async function sayFromText(message, question, name, userId) {
+    const channel = message.channel;
+    if (!voiceChannelName()) {
+      await reply(message, "I'm not in a voice channel right now.").catch(() => {});
+      return;
+    }
+    channel.sendTyping?.().catch(() => {});
+    let line = '';
+    try {
+      for await (const piece of llm.stream(`${name}: ${question}`, { userId, useSearch: false,
+        textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
+        line += piece;
+      }
+    } catch (err) {
+      console.error(`[text] say failed: ${err.message}`);
+    }
+    line = line.replace(/<\/?think>/gi, '').trim().replace(/^["“'‘]+|["”'’]+$/g, '').trim();
+    if (!line || !sayInVoice(line, userId, name)) {
+      await reply(message, 'Sorry, I couldn\'t work out what to say.').catch(() => {});
+      return;
+    }
+    await reply(message, `🔊 Said in ${voiceChannelName() || 'the voice channel'}: ${line.slice(0, SAY_MAX_CHARS)}`).catch(() => {});
+  }
+
+  return { onMessage };
+}
+
+module.exports = { createTextChat, textQuestion, splitMessage, isSayRequest, NAME_RE, SAY_MAX_CHARS };
