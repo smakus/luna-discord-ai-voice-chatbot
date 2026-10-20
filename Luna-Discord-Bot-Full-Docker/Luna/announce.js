@@ -2,7 +2,8 @@
 //
 // What Luna says on her own in the voice channel: her intro when she joins,
 // a greeting when someone joins (their custom one from greetings.js, if they
-// have one) and a farewell when someone leaves.
+// have one) and a farewell when someone leaves. Bots (smakbot) and
+// IGNORED_USER_IDS get a short line instead: "smakbot has joined." / "… has left."
 //
 // createAnnouncer(deps) → announcer.
 //   session, playback   voice-session.js, voice-playback.js
@@ -58,6 +59,10 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     '{name} headed out. Bye, {name}!',
     'And {name} is gone. Catch you next time!',
   ];
+  // Bots and ignored users: a short line each way (BOT_JOIN_PHRASES,
+  // BOT_LEAVE_PHRASES), under the same switches, delays and cooldowns.
+  const BOT_JOINS  = config.BOT_JOIN_PHRASES.length ? config.BOT_JOIN_PHRASES : ['{name} has joined.'];
+  const BOT_LEAVES = config.BOT_LEAVE_PHRASES.length ? config.BOT_LEAVE_PHRASES : ['{name} has left.'];
   const INTROS = config.INTRO_PHRASES.length ? config.INTRO_PHRASES : [
     "Hey {names}! Luna here. Just say {wake} whenever you need me.",
     "Hi {names}! It's Luna. Say {wake} if you want anything.",
@@ -126,10 +131,25 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
 
   // ─── Greetings ──────────────────────────────────────────────────────────────
 
+  // A bot or an ignored user: not greeted or bid farewell like a person.
+  const isBotLike = member => member.user.bot || isIgnored(member.id);
+
+  // The short line for a bot or ignored user arriving or leaving.
+  function botLine(member, phrases, fallback) {
+    const name = speakableName(member.displayName);
+    return name ? fillPhrase(phrases, { name }) : fallback;
+  }
+
   function greet(member, connection) {
     const now = Date.now();
     if (now - (lastGreetedAt.get(member.id) || 0) < config.GREET_COOLDOWN_MS) return;
     lastGreetedAt.set(member.id, now);
+
+    if (isBotLike(member)) {
+      const text = botLine(member, BOT_JOINS, 'A bot has joined.');
+      console.log(`[greet] ${member.user.tag} (bot) joined — "${text}"`);
+      return announce(member, connection, text);
+    }
 
     const name = speakableName(member.displayName);
     const text = name
@@ -160,6 +180,12 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     if (now - (lastFarewellAt.get(member.id) || 0) < config.LEAVE_COOLDOWN_MS) return;
     lastFarewellAt.set(member.id, now);
 
+    if (isBotLike(member)) {
+      const text = botLine(member, BOT_LEAVES, 'A bot has left.');
+      console.log(`[farewell] ${member.user.tag} (bot) left — "${text}"`);
+      return announce(member, connection, text);
+    }
+
     const name = speakableName(member.displayName);
     const text = name
       ? fillPhrase(FAREWELLS, { name })
@@ -184,7 +210,7 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     if (oldState.channelId === newState.channelId) return;
 
     const member = newState.member;
-    if (!member || member.user.bot || isIgnored(member.id)) return;
+    if (!member) return;
 
     const connection = session.connection;
     setTimeout(() => {
@@ -203,7 +229,7 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     if (oldState.channelId === newState.channelId) return;
 
     const member = oldState.member;
-    if (!member || member.user.bot || isIgnored(member.id)) return;
+    if (!member) return;
 
     const connection = session.connection;
     setTimeout(() => {

@@ -71,6 +71,8 @@ const SETTINGS = [
   { name: 'GREET_DELAY_MS', type: 'int', default: 1500, min: 0 },
   { name: 'ANNOUNCE_LEAVE', type: 'bool', default: true },
   { name: 'FAREWELL_PHRASES', type: 'phrases' },
+  { name: 'BOT_JOIN_PHRASES', type: 'phrases' },
+  { name: 'BOT_LEAVE_PHRASES', type: 'phrases' },
   { name: 'GREETINGS_FILE', type: 'string', default: 'local/greetings.json' },
   { name: 'NAME_PRONUNCIATIONS', type: 'phrases' },
   { name: 'LEAVE_COOLDOWN_MS', type: 'int', default: 600000, min: 0 },

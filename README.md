@@ -165,14 +165,17 @@ With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channel
 - **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
 - **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
 - **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
+- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
 
-Bots, `IGNORED_USER_IDS` and mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
+Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
 
 To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
 
 ```env
 GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
 FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+BOT_JOIN_PHRASES={name} has joined.
+BOT_LEAVE_PHRASES={name} has left.
 INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
 ```
 
@@ -269,6 +272,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+| `BOT_JOIN_PHRASES` / `BOT_LEAVE_PHRASES` | `{name} has joined.` / `{name} has left.` | Wording for bots and `IGNORED_USER_IDS` joining and leaving (on with `GREET_ON_JOIN` / `ANNOUNCE_LEAVE`) |
 | `GREETINGS_FILE` | `local/greetings.json` | Per-person join greetings and voices (see [Custom greetings](#custom-greetings)) |
 | `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |

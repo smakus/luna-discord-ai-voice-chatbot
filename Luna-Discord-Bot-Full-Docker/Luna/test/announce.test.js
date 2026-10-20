@@ -89,9 +89,24 @@ async function inChannel(env = {}) {
     H.move('u2', null, 'A'); await H.wait(80); H.move('u2', 'A', null); await H.wait(5); H.move('u2', null, 'A'); await H.wait(120);
     assert.strictEqual(H.said().filter(t => /Sam/.test(t)).length, 1);
     ok('drops and rejoins within the leave delay → no farewell, and no second greeting (cooldown)'); }
-  { const H = await inChannel({ IGNORED_USER_IDS: 'u3' });
-    H.move('luna', null, 'A'); H.move('u3', null, 'A'); H.move('u1', 'A', 'A'); await H.wait(100);
-    assert.deepStrictEqual(H.said(), []); ok('bots, ignored users and mute/deafen toggles (same channel) are not announced'); }
+  { const H = await inChannel();
+    H.move('luna', null, 'A'); H.move('u1', 'A', 'A'); await H.wait(100);
+    assert.deepStrictEqual(H.said(), []); ok('Luna herself and mute/deafen toggles (same channel) are not announced'); }
+
+  console.log('bots and ignored users');
+  { const H = await inChannel({ IGNORED_USER_IDS: 'u3' }); H.S.bots = ['smakbot']; H.S.names = { u3: 'Recorder', smakbot: 'smakbot' };
+    H.move('smakbot', null, 'A'); H.move('u3', null, 'A'); await H.wait(80);
+    assert.deepStrictEqual(H.said().sort(), ['Recorder has joined.', 'smakbot has joined.']);
+    H.S.tts.length = 0;
+    H.move('smakbot', 'A', null); H.move('u3', 'A', null); await H.wait(100);
+    assert.deepStrictEqual(H.said().sort(), ['Recorder has left.', 'smakbot has left.']);
+    ok('a bot and an ignored user → "smakbot has joined." / "smakbot has left." (no greeting or farewell)'); }
+  { const H = await inChannel({ BOT_JOIN_PHRASES: 'Beep, {name} is here.', BOT_LEAVE_PHRASES: '{name} powered down.' }); H.S.bots = ['smakbot']; H.S.names = { smakbot: 'smakbot' };
+    H.move('smakbot', null, 'A'); await H.wait(80); H.move('smakbot', 'A', null); await H.wait(100);
+    assert.deepStrictEqual(H.said(), ['Beep, smakbot is here.', 'smakbot powered down.']); ok('BOT_JOIN_PHRASES / BOT_LEAVE_PHRASES'); }
+  { const H = await inChannel({ GREET_ON_JOIN: 'off', ANNOUNCE_LEAVE: 'false' }); H.S.bots = ['smakbot'];
+    H.move('smakbot', null, 'A'); await H.wait(80); H.move('smakbot', 'A', null); await H.wait(100);
+    assert.deepStrictEqual(H.said(), []); ok('GREET_ON_JOIN=off / ANNOUNCE_LEAVE=false → silent for bots too'); }
   { const H = await inChannel({ GREET_PHRASES: 'GREETING {name}' });
     H.move('u2', null, 'A'); await H.wait(5); H.move('u2', 'A', 'B'); await H.wait(100);
     assert.ok(!H.said().some(t => /GREETING/.test(t)), H.said().join(' | '));
