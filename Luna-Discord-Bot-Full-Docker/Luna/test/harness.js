@@ -76,7 +76,7 @@ module.exports = function boot(env = {}) {
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
-    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')),
+    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')),
   };
 
   // ── fetch: LM Studio ──

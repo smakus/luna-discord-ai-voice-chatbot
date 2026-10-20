@@ -212,6 +212,21 @@ function createPlayback({ voice, fetchTTS, console, lookahead }) {
     }
   }
 
+  // Says one line in its turn: queued under `userId` (a speaker, or an id of
+  // its own like the intro's) at `generation` (a new one by default, which
+  // supersedes that id's earlier lines). Skipped if `wanted()` is false by
+  // the time it comes up — Luna left the channel, say. `render` makes the
+  // audio (fetchTTS by default); `then` runs after it has played.
+  function say(text, { connection, userId, generation = nextGeneration(userId), wanted = () => true,
+                       render = line => fetchTTS(line), then = null }) {
+    queue(async () => {
+      if (!wanted()) return;
+      const pt = await render(text);
+      if (pt) await play(pt, connection);
+      if (then) then();
+    }, userId, generation);
+  }
+
   // A short sound (the chime), outside the queue.
   async function playSound(filePath, connection) {
     try {
@@ -246,7 +261,7 @@ function createPlayback({ voice, fetchTTS, console, lookahead }) {
 
   return {
     queue, interrupt, nextGeneration, generationOf, isCurrent,
-    play, playSound,
+    say, play, playSound,
     startResponse, finishResponse, trackRequest, untrackRequest,
     reset,
     // Something is playing now (an answer, greeting or announcement).

@@ -12,7 +12,8 @@ const { createTextChat, SAY_MAX_CHARS } = require('./text-chat');
 const { route, sendSmakbotCommand: postSmakbotCommand, LEAVE_PHRASES } = require('./commands');
 const { LLM_TOOLS, LLM_TOOL_NAMES } = require('./llm-tools');
 const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } = require('./tts');
-const { loadCustomGreetings } = require('./greetings');
+const { shuffle, fillPhrase, speakableName } = require('./phrases');
+const { createAnnouncer } = require('./announce');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { QUICK_PROMPT } = require('./prompt');
@@ -70,39 +71,6 @@ const REPROMPTS = config.WAKE_REPROMPT_PHRASES.length ? config.WAKE_REPROMPT_PHR
 const IGNORED_USERS = new Set(
   config.IGNORED_USER_IDS
 );
-
-// ─── Join greetings ───────────────────────────────────────────────────────────
-//
-// When someone joins the voice channel Luna is in, she announces them by name
-// and says hello. The cooldown is per user, so a flaky connection that drops
-// and rejoins every few seconds is greeted once, not on every reconnect.
-const GREET_ON_JOIN     = config.GREET_ON_JOIN;
-const GREET_COOLDOWN_MS = config.GREET_COOLDOWN_MS;
-// A joining client takes a moment to connect its audio, and someone who joins
-// and immediately leaves (or passes through on the way to another channel)
-// should not be greeted at all. The greeting is spoken only if they are still
-// in the channel after this delay.
-const GREET_DELAY_MS    = config.GREET_DELAY_MS;
-
-// Leave announcements: the same idea in reverse. The delay is longer than the
-// join one because a dropped connection typically takes a few seconds to come
-// back, and someone who is back by then did not really leave.
-const ANNOUNCE_LEAVE    = config.ANNOUNCE_LEAVE;
-const LEAVE_COOLDOWN_MS = config.LEAVE_COOLDOWN_MS;
-const LEAVE_DELAY_MS    = config.LEAVE_DELAY_MS;
-
-// Custom wording for both announcements: phrases separated by "|", with
-// {name} where the person's name goes, e.g.
-//   FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
-// One is picked at random each time. Unset or empty keeps the built-in lines.
-const GREET_PHRASES    = config.GREET_PHRASES;
-const FAREWELL_PHRASES = config.FAREWELL_PHRASES;
-
-// Luna introduces herself when she joins a voice channel. INTRO_PHRASES works
-// like the two above, with {wake} for the wake phrase and {names} for the
-// people in the channel ("smakus, joel, and kenbeans") instead of {name}.
-const ANNOUNCE_SELF = config.ANNOUNCE_SELF;
-const INTRO_PHRASES = config.INTRO_PHRASES;
 
 // Spoken heads-up when a question is going to a web search — the slowest kind
 // of answer, where silence most reads as Luna not having heard. Audio tags are
@@ -219,6 +187,12 @@ setInterval(() => listener.healthReport(), 30000).unref?.();
 
 const processingUsers = new Set(); // who is being transcribed/answered right now
 
+// Her intro, join greetings and farewells (announce.js).
+const announcer = createAnnouncer({
+  config, console, session, playback, fetchTTS, fetchTTSInVoice, checkElevenLabsVoice,
+  isIgnored: id => IGNORED_USERS.has(id), wakeLabel: WAKE_LABEL,
+});
+
 // !luna is refused until startup finishes. A capture created before the wake
 // word models load runs without detection until its stream next restarts.
 let ready = false;
@@ -227,7 +201,7 @@ client.on(Events.ClientReady, async () => {
   if (!await llm.resolveModel()) process.exit(1);
   await listener.initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
-  describeCustomGreetings();
+  announcer.describeCustomGreetings();
   console.log(`[search] web search: ${llm.describeSearch()}`);
   if (LLM_TOOLS_ON) startLlmTools();
   ready = true;
@@ -282,7 +256,7 @@ client.on(Events.MessageCreate, async message => {
     console.log(`[voice] moved to ${channel.name} by !luna`);
     session.moveTo(channel);
     message.reply(`Moved to **${channel.name}**!`).catch(() => {});
-    introduceSelf(connection);
+    announcer.introduce(connection);
     return;
   }
 
@@ -292,7 +266,7 @@ client.on(Events.MessageCreate, async message => {
       `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
       `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
     ).catch(() => {});
-    introduceSelf(connection);
+    announcer.introduce(connection);
   });
 });
 
@@ -424,12 +398,7 @@ function askForQuestion(userId, connection) {
   console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
   const expect = ms => listener.expectQuestion(userId, ms);
   expect(60000);
-  const generation = playback.interrupt(userId);
-  playback.queue(async () => {
-    const pt = await fetchTTS(text);
-    if (pt) await playback.play(pt, connection);
-    expect(WAKE_FOLLOWUP_MS);
-  }, userId, generation);
+  playback.say(text, { connection, userId, generation: playback.interrupt(userId), then: () => expect(WAKE_FOLLOWUP_MS) });
 }
 
 // ─── Tools for the LLM (music, leaving) ───────────────────────────────────────
@@ -493,26 +462,15 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
     await sendSmakbotCommand(channel, what.command);
 
-    const ack = what.command.ack;
-    if (ack) {
-      playback.queue(async () => {
-        const pt = await fetchTTS(ack);
-        if (pt) await playback.play(pt, connection);
-      }, userId, musicGeneration);
-    }
+    if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration });
     return;
   }
 
   // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
   // music commands. (Wordier requests reach the LLM's leave_channel tool.)
   if (what.type === 'leave') {
-    const generation = playback.interrupt(userId);
-    const goodbye = fillPhrase(LEAVE_PHRASES, {});
-    playback.queue(async () => {
-      const pt = await fetchTTS(goodbye);
-      if (pt) await playback.play(pt, connection);
-      leaveOnRequest(userId);
-    }, userId, generation);
+    playback.say(fillPhrase(LEAVE_PHRASES, {}), { connection, userId, generation: playback.interrupt(userId),
+                                                  then: () => leaveOnRequest(userId) });
     return;
   }
 
@@ -870,232 +828,6 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
 
 client.on(Events.Error, console.warn);
 
-// ─── Join greetings ───────────────────────────────────────────────────────────
-
-const lastGreetedAt = new Map(); // userId -> ms timestamp of their last greeting
-
-// {name} is filled in by fillPhrase(). Overridable with GREET_PHRASES.
-const GREETINGS = GREET_PHRASES.length ? GREET_PHRASES : [
-  '{name} just joined. Hey {name}!',
-  "Look who's here, it's {name}. Hi there!",
-  '{name} has joined the channel. Hello, {name}!',
-  'Heads up, {name} is here. Welcome in, {name}!',
-];
-
-// A shuffled copy (Fisher–Yates; sorting on a random comparator is biased).
-function shuffle(items) {
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
-
-// A random phrase from `phrases` with every {key} in `vars` replaced.
-function fillPhrase(phrases, vars) {
-  let text = phrases[Math.floor(Math.random() * phrases.length)];
-  for (const [key, value] of Object.entries(vars)) text = text.replaceAll(`{${key}}`, value);
-  return text;
-}
-
-// Turns a display name into something Kokoro can say.
-//
-// NFKC folds "fancy font" names (𝓢𝓪𝓶, Ｓａｍ) back to plain letters. Emoji and
-// symbols are dropped rather than read aloud, separators become spaces, and a
-// trailing number tag ("sam_1234") is removed when there is a name before it.
-// Returns '' if nothing pronounceable is left.
-function speakableName(raw) {
-  let name = (raw || '').normalize('NFKC')
-    .replace(/[_.]+/g, ' ')
-    .replace(/[^\p{L}\p{N}\s'’-]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const withoutTag = name.replace(/[\s-]*\d+$/, '');
-  if (/\p{L}/u.test(withoutTag)) name = withoutTag;
-  return name.slice(0, 32).trim();
-}
-
-// Per-person greetings (greetings.js): their own phrases, in their own
-// ElevenLabs voice if they have one. Same cooldown and switches as the normal
-// greeting; on any problem with the custom voice, the normal greeting plays.
-// GREET_ON_JOIN=regular: everyone gets the regular greeting; the file stays.
-const CUSTOM_GREETINGS = GREET_ON_JOIN === 'custom'
-  ? loadCustomGreetings(path.resolve(__dirname, config.GREETINGS_FILE), { warn: message => console.warn(message) })
-  : new Map();
-
-// At startup: who has one, and whether their voices exist (no credits used).
-function describeCustomGreetings() {
-  if (!CUSTOM_GREETINGS.size) return;
-  console.log(`[greet] custom greetings for ${[...CUSTOM_GREETINGS].map(([id, g]) => g.name || id).join(', ')}`);
-  for (const [id, g] of CUSTOM_GREETINGS) {
-    if (!g.voice) continue;
-    checkElevenLabsVoice(g.voice).then(({ name, reason }) => {
-      if (!name) console.warn(`[greet] ${g.name || id}: ElevenLabs voice ${g.voice} unavailable (${reason}) — they'll get the normal greeting`);
-    });
-  }
-}
-
-function greetMember(member, connection) {
-  const now = Date.now();
-  if (now - (lastGreetedAt.get(member.id) || 0) < GREET_COOLDOWN_MS) return;
-  lastGreetedAt.set(member.id, now);
-
-  const name = speakableName(member.displayName);
-  const text = name
-    ? fillPhrase(GREETINGS, { name })
-    : 'Someone just joined. Hey there, welcome in!';
-  const custom = CUSTOM_GREETINGS.get(member.id);
-  if (custom) {
-    const own = fillPhrase(custom.phrases, { name: name || 'friend', user: name || 'friend' });
-    console.log(`[greet] ${member.user.tag} joined — custom greeting${custom.voice ? ` in voice ${custom.voice}` : ''}: "${own}"`);
-    if (!custom.voice) return announce(member, connection, own);
-    return announceInVoice(member, connection, own, custom.voice, text);
-  }
-  console.log(`[greet] ${member.user.tag} joined — "${text}"`);
-  announce(member, connection, text);
-}
-
-// Their own line in their own voice; if that voice can't be had, the normal
-// greeting in the normal voice.
-function announceInVoice(member, connection, text, voiceId, fallbackText) {
-  const generation = playback.nextGeneration(member.id);
-  playback.queue(async () => {
-    if (session.connection !== connection) return;
-    let pt = await fetchTTSInVoice(text, voiceId);
-    if (!pt) {
-      console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
-      pt = await fetchTTS(fallbackText);
-    }
-    if (pt) await playback.play(pt, connection);
-  }, member.id, generation);
-}
-
-// Queued under the member's own id: if they say the wake word before the
-// greeting plays, their query supersedes it (barge-in), and an announcement
-// never cuts off an answer someone else is already hearing.
-function announce(member, connection, text) {
-  const generation = playback.nextGeneration(member.id);
-  playback.queue(async () => {
-    if (session.connection !== connection) return; // Luna left in the meantime
-    const pt = await fetchTTS(text);
-    if (pt) await playback.play(pt, connection);
-  }, member.id, generation);
-}
-
-// ─── Self-introduction ────────────────────────────────────────────────────────
-
-// Overridable with INTRO_PHRASES. Phrases with {names} greet everyone in the
-// channel by name; the others are for an empty channel or a crowd.
-const INTROS = INTRO_PHRASES.length ? INTRO_PHRASES : [
-  "Hey {names}! Luna here. Just say {wake} whenever you need me.",
-  "Hi {names}! It's Luna. Say {wake} if you want anything.",
-  "Hello {names}, Luna has arrived! Say {wake} to get my attention.",
-  "Hi everyone, Luna here! Just say {wake} whenever you need me.",
-  "Hey all, it's Luna. Say {wake} if you want anything.",
-  "Luna has arrived! Say {wake} to get my attention.",
-];
-// More people than this and a list of names gets long: "everyone" instead.
-const INTRO_MAX_NAMES = 6;
-
-// "smakus", "smakus and joel", "smakus, joel, and kenbeans".
-const NAME_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conjunction' });
-
-// The speakable names of the people in the channel (not bots, not ignored
-// users), or [] when there are none or too many to list.
-function introNames(channel) {
-  const names = [...(channel?.members?.values() ?? [])]
-    .filter(m => !m.user.bot && !IGNORED_USERS.has(m.id))
-    .map(m => speakableName(m.displayName))
-    .filter(Boolean);
-  return names.length <= INTRO_MAX_NAMES ? names : [];
-}
-
-const INTRO_QUEUE_ID = 'luna:intro';
-
-// Spoken once when Luna joins, so the channel knows she is listening. Queued
-// under its own id, so nobody's query can be superseded by it or supersede it
-// by accident; whoever speaks first after it is simply answered next.
-function introduceSelf(connection) {
-  if (!ANNOUNCE_SELF) return;
-  const names = introNames(session.channel);
-  const fitting = INTROS.filter(p => p.includes('{names}') === names.length > 0);
-  const text = fillPhrase(fitting.length ? fitting : INTROS, { wake: WAKE_LABEL, names: NAME_LIST.format(names) || 'everyone' });
-  console.log(`[intro] "${text}"`);
-  const generation = playback.nextGeneration(INTRO_QUEUE_ID);
-  playback.queue(async () => {
-    if (session.connection !== connection) return;
-    const pt = await fetchTTS(text);
-    if (pt) await playback.play(pt, connection);
-  }, INTRO_QUEUE_ID, generation);
-}
-
-// ─── Leave announcements ──────────────────────────────────────────────────────
-
-const lastFarewellAt = new Map(); // userId -> ms timestamp of their last announcement
-
-// Overridable with FAREWELL_PHRASES.
-const FAREWELLS = FAREWELL_PHRASES.length ? FAREWELL_PHRASES : [
-  '{name} just left. See you later, {name}!',
-  '{name} has left the channel.',
-  '{name} headed out. Bye, {name}!',
-  'And {name} is gone. Catch you next time!',
-];
-
-function announceLeave(member, connection) {
-  const now = Date.now();
-  if (now - (lastFarewellAt.get(member.id) || 0) < LEAVE_COOLDOWN_MS) return;
-  lastFarewellAt.set(member.id, now);
-
-  const name = speakableName(member.displayName);
-  const text = name
-    ? fillPhrase(FAREWELLS, { name })
-    : 'Someone just left the channel.';
-  console.log(`[farewell] ${member.user.tag} left — "${text}"`);
-
-  // Also supersedes anything still queued for the leaver — an unplayed
-  // greeting, or the rest of an answer nobody is there to hear.
-  announce(member, connection, text);
-}
-
-// Someone left Luna's channel — disconnected from voice, or moved to another
-// channel. If they were the last real user, the disconnect handler below
-// tears the connection down, and the session.connection check skips this.
-function onVoiceLeave(oldState, newState) {
-  if (!ANNOUNCE_LEAVE || !session.channel || !session.connection) return;
-  if (oldState.channelId !== session.channel.id) return;
-  if (oldState.channelId === newState.channelId) return;
-
-  const member = oldState.member;
-  if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
-
-  const connection = session.connection;
-  setTimeout(() => {
-    if (session.connection !== connection) return;
-    if (member.voice.channelId === session.channel?.id) return; // came back
-    announceLeave(member, connection);
-  }, LEAVE_DELAY_MS);
-}
-
-// Someone arrived in Luna's channel — from outside voice, or moved in from
-// another channel. Mute/deafen/stream toggles also emit VoiceStateUpdate but
-// keep the same channelId, so they never match.
-function onVoiceJoin(oldState, newState) {
-  if (GREET_ON_JOIN === 'off' || !session.channel || !session.connection) return;
-  if (newState.channelId !== session.channel.id) return;
-  if (oldState.channelId === newState.channelId) return;
-
-  const member = newState.member;
-  if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
-
-  const connection = session.connection;
-  setTimeout(() => {
-    if (session.connection !== connection) return;
-    if (member.voice.channelId !== session.channel?.id) return; // left again
-    greetMember(member, connection);
-  }, GREET_DELAY_MS);
-}
-
 // Tracks Luna being moved, announces joins and leaves, and disconnects when the
 // last real user (non-bot, non-ignored) leaves.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -1110,8 +842,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     return;
   }
 
-  onVoiceJoin(oldState, newState);
-  onVoiceLeave(oldState, newState);
+  announcer.onJoin(oldState, newState);
+  announcer.onLeave(oldState, newState);
 
   // Asked to leave: auto-join resumes once the auto-join channels have emptied.
   if (autoJoinPaused && !autoJoinChannelsOccupied()) {
@@ -1152,12 +884,9 @@ function sayInVoice(text, userId, who) {
   const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
   if (!connection || !line) return false;
   console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
-  const generation = playback.generationOf(userId) ?? playback.nextGeneration(userId);
-  playback.queue(async () => {
-    if (session.connection !== connection) return;
-    const pt = await fetchTTS(line);
-    if (pt) await playback.play(pt, connection);
-  }, userId, generation);
+  // Their current generation: after whatever of theirs is already queued.
+  playback.say(line, { connection, userId, generation: playback.generationOf(userId) ?? playback.nextGeneration(userId),
+                       wanted: () => session.connection === connection });
   return true;
 }
 
@@ -1218,7 +947,7 @@ function autoJoin() {
   console.log(`[voice] auto-joining ${channel.name} (${people} ${people === 1 ? 'person' : 'people'} there)`);
   autoJoiningUntil = Date.now() + 15000;
   const connection = session.join(channel, g);
-  session.attach(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; introduceSelf(connection); });
+  session.attach(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; announcer.introduce(connection); });
 }
 
 void client.login(config.DISCORD_TOKEN || undefined);
