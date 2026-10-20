@@ -13,13 +13,13 @@ const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
 const { createMcpServer } = require('./mcp-server');
 const { textQuestion, splitMessage, isSayRequest } = require('./text-chat');
-const { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor } = require('./llm-tools');
+const { LLM_TOOLS, LLM_TOOL_NAMES, TEXT_TOOL_NAMES } = require('./llm-tools');
 const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } = require('./tts');
 const { loadCustomGreetings } = require('./greetings');
 const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
-const { takeSentences } = require('./sentences');
-const { systemPrompt, SEARCH_PROMPT, QUICK_PROMPT } = require('./prompt');
+const { QUICK_PROMPT } = require('./prompt');
+const { createLlm, condenseSearchResults, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const {
   stripWakeWord, isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
@@ -29,6 +29,9 @@ const {
 
 // Every setting, parsed and checked in one place (config.js).
 const config = loadConfig(process.env, { warn: message => console.warn(message) });
+
+// Talking to LM Studio: model, prompt, memory, search and tool offers (answer-llm.js).
+const llm = createLlm({ config, fetch, console, expressivePrompt });
 
 // ─── Wake phrase ──────────────────────────────────────────────────────────────
 //
@@ -198,70 +201,9 @@ function nextWhisperUrl() {
   whisperRR++;
   return url;
 }
-const LM_STUDIO_URL = config.LM_STUDIO_URL;
-
-// The time zone of "today" in the system prompt (see prompt.js). An IANA name;
-// containers run in UTC, which turns evenings in the Americas into tomorrow.
-const LUNA_TIMEZONE = (() => {
-  const tz = config.LUNA_TIMEZONE;
-  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; }
-  catch { console.warn(`LUNA_TIMEZONE="${tz}" is not a valid time zone — using UTC`); return 'UTC'; }
-})();
-
-
-  // Optional personality line, injected on a fraction of requests. Keep the base
-// prompt above free of "sometimes"/"occasionally" instructions — see below.
-const LM_FLAVOR_PROMPT = config.LM_FLAVOR_PROMPT;
-const LM_FLAVOR_CHANCE = config.LM_FLAVOR_CHANCE;
-
 // Resolved against this file, not the working directory, so `node Luna/index.js`
 // from elsewhere still finds it.
 const CHIME_PATH = path.join(__dirname, 'chime.mp3');
-
-// ─── Conversation memory scope ────────────────────────────────────────────────
-//
-// LM Studio's `previous_response_id` chains a conversation server-side. Two
-// consequences follow from how it was used before:
-//
-//   1. One global id meant every speaker shared one chain. The chain carries no
-//      speaker attribution, so the model saw A's and B's turns interleaved as a
-//      single user contradicting themselves — and B's follow-up ("what about
-//      tomorrow?") resolved against A's question.
-//   2. The chain never reset, so context grew for the lifetime of the process.
-//      Prefill cost is linear in context, so every turn was measurably slower
-//      than the last until the container was restarted.
-//
-// Now: one chain per speaker, dropped after LM_MEMORY_TTL_MS of silence or
-// LM_MEMORY_MAX_TURNS turns, whichever comes first. Both bound prefill.
-const LM_MEMORY_TTL_MS    = config.LM_MEMORY_TTL_MS;
-const LM_MEMORY_MAX_TURNS = config.LM_MEMORY_MAX_TURNS;
-
-const conversations = new Map(); // userId -> { responseId, turns, lastAt }
-
-function getConversationId(userId) {
-  const c = conversations.get(userId);
-  if (!c) return null;
-  if (Date.now() - c.lastAt > LM_MEMORY_TTL_MS) {
-    conversations.delete(userId);
-    return null;
-  }
-  if (c.turns >= LM_MEMORY_MAX_TURNS) {
-    console.log(`[${userId}] conversation reset after ${c.turns} turns (context cap)`);
-    conversations.delete(userId);
-    return null;
-  }
-  return c.responseId;
-}
-
-function rememberConversation(userId, responseId) {
-  if (!responseId) return;
-  const prev = conversations.get(userId);
-  conversations.set(userId, {
-    responseId,
-    turns:  (prev ? prev.turns : 0) + 1,
-    lastAt: Date.now(),
-  });
-}
 
 // ─── Latency tuning ───────────────────────────────────────────────────────────
 // Env-tunable so these can be adjusted with a container recreate rather than a
@@ -301,25 +243,8 @@ const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
 // genuinely slow — these are for hangs, not slowness.
 const WHISPER_TIMEOUT_MS = config.WHISPER_TIMEOUT_MS;
 
-// The LLM gets two limits, because a single overall timeout cannot tell a
-// hung request from a slow one. A large model that reasons and searches before
-// answering can legitimately take minutes, and its answer then streams for a
-// while longer; an overall 2-minute cap cut such answers off mid-sentence.
-//
-//   LM_IDLE_TIMEOUT_MS — abort only after this long with NO data from LM
-//                        Studio. Reasoning, tool-call and token events all
-//                        reset it, so a working model never trips it.
-//   LM_TIMEOUT_MS      — overall backstop for a request that keeps trickling.
-const LM_IDLE_TIMEOUT_MS = config.LM_IDLE_TIMEOUT_MS;
-const LM_TIMEOUT_MS      = config.LM_TIMEOUT_MS;
-// TTS timeouts live in tts.js with the providers.
-
-// Reasoning level sent to LM Studio ("off", "low", ... as the model allows;
-// empty = the model's own default, which for some models is the maximum).
-const LLM_REASONING = config.LLM_REASONING.toLowerCase();
-
-// Thinking limit. Neither timeout above can catch a model that keeps reasoning:
-// reasoning streams, so the request is never idle. One question spent over
+// Thinking limit. The LLM's own timeouts (answer-llm.js) can't catch a model
+// that keeps reasoning: reasoning streams, so the request is never idle. One question spent over
 // seven minutes (3,210 reasoning tokens) before its first word. If, before the
 // answer starts, the model has spent LLM_THINK_LIMIT_MS actually *reasoning*,
 // the request is cancelled and asked again with reasoning off, which answers
@@ -345,7 +270,7 @@ const TTS_LOOKAHEAD = config.TTS_LOOKAHEAD;
 
 // Backstop if something still wedges despite the timeouts above. Must exceed
 // the longest legitimate request, or it would release a speaker mid-answer.
-const STUCK_FLUSH_MS = WHISPER_TIMEOUT_MS + LM_TIMEOUT_MS + 60000;
+const STUCK_FLUSH_MS = WHISPER_TIMEOUT_MS + config.LM_TIMEOUT_MS + 60000;
 
 const MAX_UTTERANCE_MS    = 30000;
 const DECODER_CHUNK_MS    = 20; // 960 samples @ 48 kHz
@@ -386,31 +311,6 @@ const client = new Client({
   ],
 });
 
-let lmStudioModel = null;
-
-// Fatal at startup (nothing works without a model); afterwards it is re-run
-// whenever LM Studio rejects a request, so switching or reloading the model in
-// LM Studio no longer breaks every query until Luna is restarted.
-async function resolveModel({ fatal = true } = {}) {
-  try {
-    const res = await fetch(
-      LM_STUDIO_URL.replace('/api/v1/chat', '/api/v1/models'),
-      { headers: { 'Authorization': `Bearer ${config.LM_STUDIO_MCP_BEARER_TOKEN}` } }
-    );
-    const data = await res.json();
-    const loaded = data?.models?.find(m => m.type === 'llm' && m.loaded_instances?.length > 0);
-    if (!loaded) throw new Error('No models loaded');
-    const id = loaded.loaded_instances[0].id;
-    if (id !== lmStudioModel) console.log(`Using LM Studio model: ${id}`);
-    lmStudioModel = id;
-    return true;
-  } catch (err) {
-    console.error('Failed to resolve LM Studio model:', err.message);
-    if (fatal) process.exit(1);
-    return false;
-  }
-}
-
 async function initWakeWord() {
   if (!OWW_ENABLED) {
     console.log('[oww] disabled via OWW_ENABLED=false — using transcript wake word matching');
@@ -438,11 +338,11 @@ async function initWakeWord() {
 let ready = false;
 
 client.on(Events.ClientReady, async () => {
-  await resolveModel();
+  if (!await llm.resolveModel()) process.exit(1);
   await initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
   describeCustomGreetings();
-  console.log(`[search] web search: ${describeSearch()}`);
+  console.log(`[search] web search: ${llm.describeSearch()}`);
   if (LLM_TOOLS_ON) startLlmTools();
   ready = true;
   checkAutoJoin();
@@ -764,7 +664,7 @@ function resetVoiceState() {
   playbackQueue      = Promise.resolve();
   currentPlayer      = null;
   currentPlayerUser  = null;
-  conversations.clear();
+  llm.forgetConversations();
 }
 
 function leaveVoice(reason) {
@@ -1387,124 +1287,16 @@ async function playSound(filePath, connection) {
   } catch (_) {}
 }
 
-// ─── Intent detection ─────────────────────────────────────────────────────────
-
-const SEARCH_KEYWORDS = [
-  // factual lookups
-  'price', 'cost', 'weather', 'forecast', 'temperature',
-  'news', 'score', 'result', 'standing', 'ranking',
-  'stock', 'crypto', 'bitcoin', 'market',
-  // question patterns that imply real-world data
-  'who is', 'who are', 'who won', 'who plays',
-  'what happened', 'what time is',
-  'when is', 'when does', 'when did',
-  'where is', 'where are',
-  'how much does', 'how much is',
-  'is there a',
-  // Unambiguous recency phrases. Each of these is a request for information
-  // that changed after training; none of them occur in ordinary chit-chat.
-  'the latest', 'latest on', 'any news', 'update on', 'headlines',
-  'release date', 'came out', 'coming out',
-  'exchange rate', 'earnings report', 'election',
-  'open right now', 'still open', 'as of now',
-];
-
-// Bare time words are NOT search triggers on their own.
-//
-// "today", "tonight" and friends are among the most common words in casual
-// speech — "how are you doing today?" is a greeting, not a query, and routing
-// it through Tavily costs a web round trip plus a whole extra tool-calling turn
-// on the LLM for no benefit. They only imply a lookup when paired with a
-// subject whose answer actually moves.
-const TEMPORAL = [
-  'today', 'tonight', 'tomorrow', 'yesterday', 'last night',
-  'this week', 'this month', 'this year', 'right now', 'currently',
-];
-
-const TOPICAL = [
-  'weather', 'forecast', 'temperature', 'rain', 'snow', 'storm',
-  'news', 'happening', 'going on', 'score', 'game', 'match',
-  'price', 'cost', 'stock', 'market', 'open', 'closed', 'schedule',
-  'release', 'launch', 'event', 'traffic', 'flight',
-];
-
-// A four-digit year at or after 2020 is a strong recency signal on its own and
-// cannot be expressed as a substring match.
-const SEARCH_YEAR_RE = /\b20[2-9]\d\b/;
-
-// When the model is offered the web search tool:
-//   always   — on every question (default). The model decides for itself
-//              whether it needs the internet; the keyword rules below both
-//              missed real searches ("did UCLA play football today?" — the
-//              model then wrote a tool call as text) and searched for no
-//              reason ("is there a way to say this nicer?"). Offering the
-//              tool costs ~1-4 s per question (see searchIntegration).
-//   keywords — only when needsWebSearch() matches (the old behaviour).
-//   off      — never. Also forced when no search server is configured.
-//
-// Where the tool comes from:
-//   SEARCH_MCP_PLUGIN set (e.g. "mcp/tavily") — an MCP server configured in
-//     LM Studio's own mcp.json, which LM Studio keeps connected (~1 s faster
-//     per question than connecting per request).
-//   otherwise — Tavily's hosted MCP server with TAVILY_API_KEY, connected by
-//     LM Studio on every request (an "ephemeral" integration).
-// Either way the model is shown only SEARCH_TOOLS (default "tavily_search";
-// "all" for every tool the server has). Tavily also offers research, crawl,
-// map and extract — slower, credit-hungry, and the model chained them (search,
-// extract, search again) on a simple weather question; showing one tool also
-// cuts the tool definitions the model must read from ~2,300 to ~970 tokens.
-const SEARCH_MCP_PLUGIN = config.SEARCH_MCP_PLUGIN;
-const SEARCH_TOOLS = (() => {
-  const raw = config.SEARCH_TOOLS;
-  return raw.toLowerCase() === 'all' ? null : raw.split(',').map(t => t.trim()).filter(Boolean);
-})();
-
-// No search server configured → off, whatever WEB_SEARCH says.
-const WEB_SEARCH = !SEARCH_MCP_PLUGIN && !config.TAVILY_API_KEY ? 'off' : config.WEB_SEARCH;
-
-function searchIntegration() {
-  const allowed = SEARCH_TOOLS ? { allowed_tools: SEARCH_TOOLS } : {};
-  return SEARCH_MCP_PLUGIN
-    ? { type: 'plugin', id: SEARCH_MCP_PLUGIN, ...allowed }
-    : { type: 'ephemeral_mcp', server_label: 'tavily',
-        server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${config.TAVILY_API_KEY}`, ...allowed };
-}
-
-function describeSearch() {
-  if (WEB_SEARCH === 'off') {
-    return 'off' + (SEARCH_MCP_PLUGIN || config.TAVILY_API_KEY ? '' : ' (no TAVILY_API_KEY or SEARCH_MCP_PLUGIN)');
-  }
-  return (WEB_SEARCH === 'always' ? 'offered on every question (the model decides)' : 'keywords') +
-    ` via ${SEARCH_MCP_PLUGIN ? `LM Studio plugin ${SEARCH_MCP_PLUGIN}` : 'Tavily (connected per request)'}` +
-    `, tools: ${SEARCH_TOOLS ? SEARCH_TOOLS.join(', ') : 'all'}`;
-}
-
-// Search outage fallback. LM Studio connects to the search server before
-// answering, and if it can't (server down, or slow: it gives up after ~20 s)
-// it rejects the whole request, so with search offered on every question one
-// outage would fail every question. Instead the question is answered without
-// search, and search is paused for SEARCH_PAUSE_MS so the following questions
-// don't each pay the failed connection attempt.
-const SEARCH_PAUSE_MS = config.SEARCH_PAUSE_MS;
-let searchPausedUntil = 0;
-
-function pauseSearch(reason) {
-  searchPausedUntil = Date.now() + SEARCH_PAUSE_MS;
-  console.warn(`[search] ${reason} — answering without search; search paused for ${Math.round(SEARCH_PAUSE_MS / 60000)} min`);
-}
-
 // ─── Tools for the LLM (music, leaving) ───────────────────────────────────────
 //
 // Besides the fixed commands below, the LLM can play, skip and stop music and
 // leave the channel itself (llm-tools.js): Luna serves the tools over MCP on
 // LUNA_MCP_PORT, LM Studio knows them from its mcp.json as "luna", and every
-// request offers them as mcp/luna. When a call succeeds, Luna acts on it (see
-// the tool events in handleQuery). If LM Studio can't reach them, they are
-// left out for SEARCH_PAUSE_MS, like search.
+// request offers them as mcp/luna. When a call succeeds, Luna acts on it (the
+// onTool handlers in handleQuery and answerInText). Offering them, and leaving
+// them out while LM Studio can't reach them, is answer-llm.js's job.
 const LLM_TOOLS_ON    = config.LLM_TOOLS;
 const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
-const TOOLS_PLUGIN_ID = 'mcp/luna';
-let toolsPausedUntil  = 0;
 
 function startLlmTools() {
   // say_in_voice tells the model the truth about whether anything was said.
@@ -1517,26 +1309,6 @@ function startLlmTools() {
     .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
       `[tools] ${[...LLM_TOOL_NAMES].join(', ')} offered to the LLM as ${TOOLS_PLUGIN_ID} ` +
       `(LM Studio's mcp.json needs "luna": {"url": "http://127.0.0.1:${LUNA_MCP_PORT}/mcp"})`));
-}
-
-function offerLlmTools() {
-  return LLM_TOOLS_ON && Date.now() >= toolsPausedUntil;
-}
-
-function toolsIntegration(names = LLM_TOOL_NAMES) {
-  return { type: 'plugin', id: TOOLS_PLUGIN_ID, allowed_tools: [...names] };
-}
-
-function offerSearch(query) {
-  if (Date.now() < searchPausedUntil) return false;
-  return WEB_SEARCH === 'always' || (WEB_SEARCH === 'keywords' && needsWebSearch(query));
-}
-
-function needsWebSearch(query) {
-  const lower = query.toLowerCase();
-  if (SEARCH_YEAR_RE.test(lower)) return true;
-  if (SEARCH_KEYWORDS.some(k => lower.includes(k))) return true;
-  return TEMPORAL.some(t => lower.includes(t)) && TOPICAL.some(t => lower.includes(t));
 }
 
 // ─── Smakbot commands ─────────────────────────────────────────────────────────
@@ -1713,7 +1485,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   // Whether the model is offered the web search tool. It decides itself
   // whether to use it; `let`, because a question it tried to search without
   // the tool is asked again with it (see the pass loop).
-  let useSearch = offerSearch(query);
+  let useSearch = llm.offerSearch(query);
 
   if (!currentPlayer) {
     playSound(CHIME_PATH, connection).catch(() => {});
@@ -1874,7 +1646,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   //     finished with no words at all (it has answered "." after 50 s of
   //     reasoning) -> ask again with reasoning off, which answers in seconds.
   const superseded = () => userGeneration.get(userId) !== myGeneration;
-  let reasoning     = LLM_REASONING;
+  let reasoning     = llm.reasoning;
   let firstSentence = true;
   let reasoningRetried = false;
   // Search results seen so far (tool_call.success), so a quick-answer retry
@@ -1900,7 +1672,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
     for (;;) {
       let fakeToolCall = false;
       // Search may have been paused by an earlier pass of this question.
-      if (useSearch && Date.now() < searchPausedUntil) useSearch = false;
+      if (useSearch && llm.searchPaused()) useSearch = false;
       const cancel = new AbortController();
       llmRequests.set(userId, cancel);
       // Reasoning clock: runs only between reasoning.start and reasoning.end,
@@ -1909,7 +1681,6 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       let thinkTimer    = null;
       let reasonedMs    = 0;
       let reasoningAt   = 0;
-      let toolPending   = false;
       const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
       // What of the answer gets said is the answer filter's job (see
       // answer-filter.js). Reasoning-off passes that may search hold
@@ -1939,37 +1710,29 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
           reasonedMs += Date.now() - reasoningAt;
           reasoningAt = 0;
           clearTimeout(thinkTimer);
-        } else if (e.type === 'tool_call.start') {
-          // Which tool is only known from the next event (its name or
-          // arguments): a search is announced and handled as a search, a
-          // music tool is not.
-          toolPending = true;
-          return;
-        } else if ((e.type === 'tool_call.name' || e.type === 'tool_call.arguments') && toolPending) {
-          toolPending = false;
-          if (!LLM_TOOL_NAMES.has(e.tool_name || e.tool)) {
-            announceSearchNow();
-            filter.event({ type: 'tool_call.start' });
-          }
-          return;
-        } else if (e.type === 'tool_call.success' && e.tool === 'leave_channel') {
-          console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
-          leaveAfterAnswer = true;
-          return;
-        } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
-          const command = smakbotCommandFor(e.tool, e.arguments);
-          console.log(`[${userId}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
-          if (command) sendSmakbotCommand(channel, command.text, command.summon);
-          return;
-        } else if (e.type === 'tool_call.success' && e.output) {
-          searchCalls.push({ query: e.arguments?.query || '', output: e.output });
         }
         filter.event(e);
+      };
+      // What the model's tool calls mean (read in answer-llm.js). A search is
+      // announced and handled as a search; music and leaving are acted on.
+      const onTool = t => {
+        if (t.type === 'search') {
+          announceSearchNow();
+          filter.event({ type: 'tool_call.start' });
+        } else if (t.type === 'search-result') {
+          searchCalls.push({ query: t.query, output: t.output });
+        } else if (t.type === 'music') {
+          if (t.command) sendSmakbotCommand(channel, t.command.text, t.command.summon);
+        } else if (t.type === 'leave') {
+          console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
+          leaveAfterAnswer = true;
+        }
       };
 
       try {
         const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
-        for await (const sentence of getLMStudioResponseStreaming(query, userId, useSearch, { reasoning, signal: cancel.signal, onEvent, context, extraSystem })) {
+        for await (const sentence of llm.stream(query, { userId, useSearch, reasoning, signal: cancel.signal, onEvent, onTool,
+                                                         context, extraSystem, speaker: config.LM_USE_NAMES ? askerName : '' })) {
           // Abort only if THIS speaker asked something newer mid-stream.
           if (superseded()) break;
           const verdict = filter.text(sentence);
@@ -1997,7 +1760,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
       }
 
       if (superseded()) break;
-      if (fakeToolCall && !useSearch && WEB_SEARCH !== 'off' && Date.now() >= searchPausedUntil) {
+      if (fakeToolCall && !useSearch && llm.canSearch()) {
         console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
         useSearch = true;
         continue;
@@ -2060,338 +1823,6 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   }
 }
 
-
-
-// Search results from tool_call.success events, condensed for a quick-answer
-// retry: each result's title and snippet (never raw page content), deduplicated,
-// capped at maxChars (~1,500 tokens, ~20 s to read on this hardware).
-function condenseSearchResults(calls, maxChars = 6000) {
-  const seen = new Set();
-  const lines = [];
-  for (const { query, output } of calls) {
-    let results = null;
-    try {
-      // Tavily via MCP: '[{"type":"text","text":"{\"results\":[...]}"}]'
-      const outer = typeof output === 'string' ? JSON.parse(output) : output;
-      const text = Array.isArray(outer) ? outer.map(o => (o && o.text) || '').join('') : JSON.stringify(outer);
-      const inner = JSON.parse(text);
-      results = Array.isArray(inner.results) ? inner.results : [];
-      if (inner.answer) lines.push(`- ${inner.answer}`);
-    } catch (_) {}
-    if (!results) {
-      lines.push(`- (${query}) ${String(output ?? '').replace(/\s+/g, ' ').slice(0, 800)}`);
-      continue;
-    }
-    for (const r of results) {
-      const key = (r && (r.url || r.title)) || '';
-      if (!r || seen.has(key)) continue;
-      seen.add(key);
-      const snippet = String(r.content || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-      if (snippet) lines.push(`- ${r.title || r.url}: ${snippet}`);
-    }
-  }
-  let out = '';
-  for (const line of lines) {
-    if (out.length + line.length + 1 > maxChars) break;
-    out += line + '\n';
-  }
-  return out.trim();
-}
-
-// Where a searched answer's time goes: one line per tool call, and per long
-// read of a prompt or of tool results (~90 tokens/s on this hardware).
-function logLLMPhase(userId, e, phase) {
-  if (e.type === 'tool_call.arguments') {
-    console.log(`[${userId}] [LLM] tool: ${e.tool} ${JSON.stringify(e.arguments || {}).slice(0, 160)}`);
-  } else if (e.type === 'prompt_processing.start') {
-    phase.readingAt = Date.now();
-  } else if (e.type === 'prompt_processing.end' && phase.readingAt) {
-    const ms = Date.now() - phase.readingAt;
-    phase.readingAt = 0;
-    if (ms >= 2000) console.log(`[${userId}] [LLM] read prompt/results in ${(ms / 1000).toFixed(1)}s`);
-  }
-}
-
-// One line per answer from LM Studio's own accounting: what is needed to tell
-// whether a slow answer was spent reasoning, prefilling a long prompt
-// (conversation memory, stored web-search results) or just generating slowly.
-function logLLMStats(userId, stats, memoryKey = userId) {
-  if (!stats) return;
-  const n = v => (typeof v === 'number' ? v.toLocaleString('en-US') : '?');
-  const f = v => (typeof v === 'number' ? v.toFixed(1) : '?');
-  const turn = (conversations.get(memoryKey)?.turns || 0) + 1;
-  console.log(
-    `[${userId}] [LLM] stats: memory turn ${turn}, prompt ${n(stats.input_tokens)} tokens, ` +
-    `reasoning ${n(stats.reasoning_output_tokens)}, output ${n(stats.total_output_tokens)}, ` +
-    `first token ${f(stats.time_to_first_token_seconds)}s, ${f(stats.tokens_per_second)} tok/s`
-  );
-}
-
-// ─── LLM streaming ───────────────────────────────────────────────────────────
-//
-// Yields complete sentences as the LLM generates them.
-//
-// Strategy:
-//   1. Try LM Studio's responses API with stream:true (SSE).
-//      If it returns SSE data: lines, yield sentences as they arrive.
-//   2. If the response is plain JSON (LM Studio ignoring stream:true),
-//      fall back to parsing it as a normal response and chunking into
-//      sentences ourselves — still faster than the old single speakResponse call.
-
-// `reasoning` overrides LLM_REASONING for this request; aborting `signal`
-// cancels it (thinking limit, barge-in, supersede).
-// Typed questions (see "Text chat") use the same path with textMode: the
-// text-channel prompt, the channel's shared memory (memoryKey), only the
-// tools that make sense there (toolNames), and the answer yielded as it
-// arrives (raw pieces, line breaks and formatting kept) instead of sentences.
-async function* getLMStudioResponseStreaming(text, userId, useSearch = offerSearch(text),
-                                             { reasoning = LLM_REASONING, signal = null, onEvent = null,
-                                               context = '', extraSystem = '', memoryKey = userId,
-                                               textMode = false, toolNames = VOICE_TOOL_NAMES, flavorOk = true } = {}) {
-  const body = {
-    model: lmStudioModel,
-    input: context ? `${text}\n\n${context}` : text,
-    stream: true,
-  };
-  const offeredTools = offerLlmTools() ? toolNames : new Set();
-  const integrations = [...(useSearch ? [searchIntegration()] : []), ...(offeredTools.size ? [toolsIntegration(offeredTools)] : [])];
-  if (integrations.length) body.integrations = integrations;
-
-  // Sent on EVERY request, not only the first of a chain.
-  //
-  // LM Studio stores the thread server-side, so in principle a system prompt
-  // set on turn 1 persists through previous_response_id. In practice
-  // instruction adherence decays as the prompt recedes behind a growing
-  // conversation, and nothing here can observe whether the stored thread still
-  // carries it. Re-sending costs a few tokens of prefill and removes the doubt.
-    // Personality lines are injected probabilistically, not written into the
-  // base prompt.
-  //
-  // A model cannot follow "occasionally do X". Every turn is evaluated
-  // independently, with no memory of how often it has already done it, so
-  // "occasionally" reliably becomes "every single time". Deciding here — and
-  // simply omitting the line most of the time — is the only way to get a rate
-  // that is actually a rate.
-  const flavor = flavorOk && LM_FLAVOR_PROMPT && Math.random() < LM_FLAVOR_CHANCE ? LM_FLAVOR_PROMPT : '';
-  // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
-  // the one speaking; empty for Kokoro, so it is never told to use tags.
-  const expressive = textMode ? '' : expressivePrompt();
-  // The asker's name, so she can use it (LM_USE_NAMES); left out when they
-  // aren't in her voice channel or their name has nothing speakable.
-  // (In text, each message carries its writer's name instead.)
-  const speaker = config.LM_USE_NAMES && !textMode ? speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) : '';
-  body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
-    search: useSearch && ANNOUNCE_SEARCH, tools: offeredTools, speaker, extra: extraSystem, flavor, text: textMode });
-
-  const priorId = getConversationId(memoryKey);
-  if (priorId) body.previous_response_id = priorId;
-
-  // Idle timeout: aborts only when LM Studio has sent nothing at all for
-  // LM_IDLE_TIMEOUT_MS. Every chunk received — reasoning, tool calls, tokens —
-  // pushes it back. LM_TIMEOUT_MS remains as an overall backstop.
-  const idle = new AbortController();
-  let idleTimer = null;
-  const resetIdle = () => {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => idle.abort(new DOMException(
-      `LM Studio sent nothing for ${LM_IDLE_TIMEOUT_MS / 1000}s`, 'TimeoutError')), LM_IDLE_TIMEOUT_MS);
-  };
-  const requestSignal = AbortSignal.any([idle.signal, AbortSignal.timeout(LM_TIMEOUT_MS), ...(signal ? [signal] : [])]);
-  if (reasoning) body.reasoning = reasoning;
-
-  try {
-    let res;
-    let retriedModel = false;
-    let retriedConversation = false;
-    let retriedWithoutSearch = false;
-    for (;;) {
-      body.model = lmStudioModel;
-      console.log(`[LLM] POST ${LM_STUDIO_URL} model=${lmStudioModel} stream=true useSearch=${useSearch} reasoning=${reasoning || 'default'}`);
-      resetIdle();
-      res = await fetch(LM_STUDIO_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.LM_STUDIO_MCP_BEARER_TOKEN}`,
-        },
-        body: JSON.stringify(body),
-        signal: requestSignal,
-      });
-      if (res.ok) break;
-
-      const errText = await res.text();
-
-      // Luna's own music tools are unreachable — not in LM Studio's mcp.json,
-      // or its port isn't published. Answer without them and leave them out
-      // for SEARCH_PAUSE_MS.
-      if (body.integrations?.some(i => i.id === TOOLS_PLUGIN_ID) && /MCP|plugin|integration/i.test(errText) &&
-          /\bluna\b/i.test(errText)) {
-        toolsPausedUntil = Date.now() + SEARCH_PAUSE_MS;
-        console.warn(`[tools] LM Studio can't use Luna's tools (${errText.replace(/\s+/g, ' ').slice(0, 160)}) — ` +
-          `answering without them for ${Math.round(SEARCH_PAUSE_MS / 60000)} min. Is "luna" in LM Studio's mcp.json?`);
-        body.integrations = body.integrations.filter(i => i.id !== TOOLS_PLUGIN_ID);
-        if (!body.integrations.length) delete body.integrations;
-        continue;
-      }
-
-      // The search server is unreachable (LM Studio rejects the whole request,
-      // not just the search). Answer without it and pause search.
-      if (!retriedWithoutSearch && useSearch && body.integrations && /MCP server|plugin|integration/i.test(errText)) {
-        retriedWithoutSearch = true;
-        pauseSearch(`search server unavailable (${errText.replace(/\s+/g, ' ').slice(0, 120)})`);
-        body.integrations = body.integrations.filter(i => i.id === TOOLS_PLUGIN_ID);
-        if (!body.integrations.length) delete body.integrations;
-        body.system_prompt = body.system_prompt.replace(' ' + SEARCH_PROMPT, '');
-        useSearch = false;
-        continue;
-      }
-
-      // This speaker's conversation memory no longer exists in LM Studio (it
-      // was reset, its data cleared, or the stored response expired). Without
-      // this the same dead id was resent on every question, and every answer
-      // failed until LM_MEMORY_TTL_MS expired. Start a fresh conversation.
-      if (!retriedConversation && body.previous_response_id && /previous_response_id/i.test(errText)) {
-        retriedConversation = true;
-        console.warn(`[${userId}] [LLM] conversation memory not found in LM Studio — starting a fresh one`);
-        conversations.delete(memoryKey);
-        delete body.previous_response_id;
-        continue;
-      }
-
-      // Otherwise a 4xx is most often a model that was switched or unloaded in
-      // LM Studio since startup. Look it up again and retry once.
-      if (!retriedModel && res.status >= 400 && res.status < 500) {
-        retriedModel = true;
-        const previous = lmStudioModel;
-        if (await resolveModel({ fatal: false }) && lmStudioModel !== previous) {
-          console.warn(`[LLM] ${res.status} from LM Studio — model changed, retrying with ${lmStudioModel}`);
-          continue;
-        }
-      }
-      throw new Error(`LM Studio ${res.status}: ${errText}`);
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-
-    // ── Path A: SSE streaming ─────────────────────────────────────────────────
-    if (contentType.includes('text/event-stream')) {
-      let buffer     = '';
-      let sseBuffer  = '';
-      let responseId = null;
-      const reader   = res.body.getReader();
-      const decoder  = new TextDecoder();
-
-      // Terminal-event handling is load-bearing, not cosmetic.
-      //
-      // This loop previously ran `while (true)` and treated `data: [DONE]` as a
-      // line to skip. If LM Studio finishes the response but does NOT close the
-      // HTTP stream, `reader.read()` blocks forever: this generator never
-      // returns, so handleQuery never returns, so processUtterance never
-      // resolves, so `flushing` stays true — and that speaker is permanently
-      // deaf with nothing logged. It presents exactly as "she answers once, then
-      // stops responding".
-      //
-      // So: exit on the terminal markers rather than waiting for the socket.
-      let finished = false;
-    const phase = { readingAt: 0 };
-
-      try {
-        while (!finished) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          resetIdle();
-
-          sseBuffer += decoder.decode(value, { stream: true });
-          const lines = sseBuffer.split('\n');
-          sseBuffer = lines.pop();
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-
-            if (trimmed === 'data: [DONE]') { finished = true; break; }
-            if (!trimmed.startsWith('data: ')) continue;
-
-            let parsed;
-            try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
-            if (onEvent) onEvent(parsed);
-            logLLMPhase(userId, parsed, phase);
-
-            // response_id lives inside chat.end result
-            if (parsed.type === 'chat.end') {
-              logLLMStats(userId, parsed.result?.stats, memoryKey);
-              if (parsed.result?.output) {
-                const msg = parsed.result.output.filter(o => o.type === 'message').pop();
-                if (msg?.content) responseId = parsed.result?.response_id ?? null;
-              }
-              finished = true;
-              break;
-            }
-
-            // A message ends at a tool call or at the end of the answer: either
-            // way a sentence boundary, so text before a search is never glued
-            // onto the text after it.
-            if (parsed.type === 'message.end' && buffer.trim()) {
-              const rest = buffer.trim();
-              buffer = '';
-              yield rest;
-              continue;
-            }
-
-            // LM Studio SSE format: {type:'message.delta', content:'token'}
-            const delta = parsed.type === 'message.delta' ? (parsed.content ?? '') : '';
-
-            if (!delta) continue;
-            if (textMode) { yield delta; continue; }
-            buffer += delta;
-
-            const split = takeSentences(buffer);
-            buffer = split.rest;
-            for (const sentence of split.sentences) yield sentence;
-          }
-        }
-      } finally {
-        // Cancel rather than only releasing the lock: if we exited on a terminal
-        // marker the socket is still open, and without this it leaks until the
-        // AbortSignal fires two minutes later.
-        try { await reader.cancel(); } catch (_) {}
-        try { reader.releaseLock(); } catch (_) {}
-      }
-
-      const remainder = buffer.trim();
-      if (remainder) yield remainder;
-      rememberConversation(memoryKey, responseId);
-
-    // ── Path B: Plain JSON fallback (responses API without true streaming) ─────
-    } else {
-      console.log('[LLM] Non-streaming JSON mode (unexpected — LM Studio ignored stream:true)');
-      // No progress to observe while the whole body arrives; rely on the
-      // overall LM_TIMEOUT_MS alone.
-      clearTimeout(idleTimer);
-      const data = await res.json();
-
-      logLLMStats(userId, data.stats, memoryKey);
-      rememberConversation(memoryKey, data.response_id);
-
-      // Extract full reply text from responses API format
-      const messageItem = data.output?.filter(o => o.type === 'message').pop();
-      const fullText    = messageItem?.content?.trim();
-
-      if (!fullText) {
-        console.error('[LLM] No content found in response:', JSON.stringify(data).slice(0, 300));
-        throw new Error('No message content in LLM response');
-      }
-
-      // Split into sentences and yield each one so TTS starts immediately
-      if (textMode) { yield fullText; return; }
-      const split = takeSentences(fullText);
-      for (const sentence of split.sentences) yield sentence;
-      if (split.rest.trim()) yield split.rest.trim();
-    }
-  } finally {
-    clearTimeout(idleTimer);
-  }
-}
 
 // ─── TTS: fetch and play (split for prefetch pipeline) ──────────────────────
 //
@@ -2764,20 +2195,18 @@ async function answerInText(message, question) {
   const typingTimer = setInterval(typing, 8000);
   let text = '', failed = false, searched = false;
   try {
-    const onEvent = e => {
-      if (e.type === 'tool_call.success' && e.tool === 'say_in_voice') {
-        sayInVoice(e.arguments?.text, message.author?.id || 'text', name);
-      } else if (e.type === 'tool_call.success' && MUSIC_TOOL_NAMES.has(e.tool)) {
-        const command = smakbotCommandFor(e.tool, e.arguments);
-        console.log(`[text] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
-        if (command) sendSmakbotCommand(channel, command.text, command.summon);
-      } else if (e.type === 'tool_call.arguments' && !LLM_TOOL_NAMES.has(e.tool) && !searched) {
+    const onTool = t => {
+      if (t.type === 'say') {
+        sayInVoice(t.text, message.author?.id || 'text', name);
+      } else if (t.type === 'music') {
+        if (t.command) sendSmakbotCommand(channel, t.command.text, t.command.summon);
+      } else if (t.type === 'search' && !searched) {
         searched = true;
         message.react('🔍').catch(() => {});
       }
     };
-    for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text',
-      offerSearch(question), { textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onEvent })) {
+    for await (const piece of llm.stream(`${name}: ${question}`, { userId: message.author?.id || 'text', tag: 'text',
+      useSearch: llm.offerSearch(question), textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool })) {
       text += piece;
     }
   } catch (err) {
@@ -2806,8 +2235,8 @@ async function sayFromText(message, question, name) {
   channel.sendTyping?.().catch(() => {});
   let line = '';
   try {
-    for await (const piece of getLMStudioResponseStreaming(`${name}: ${question}`, message.author?.id || 'text', false,
-      { textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
+    for await (const piece of llm.stream(`${name}: ${question}`, { userId: message.author?.id || 'text', useSearch: false,
+      textMode: true, memoryKey: `text:${channel.id}`, toolNames: new Set(), extraSystem: SAY_PROMPT, flavorOk: false })) {
       line += piece;
     }
   } catch (err) {

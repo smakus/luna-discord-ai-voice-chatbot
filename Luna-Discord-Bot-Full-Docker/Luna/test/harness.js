@@ -76,6 +76,7 @@ module.exports = function boot(env = {}) {
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
+    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')),
   };
 
   // ── fetch: LM Studio ──
@@ -119,7 +120,7 @@ module.exports = function boot(env = {}) {
   vm.runInContext(src + `
 ;globalThis.__t = { client, handleQuery, LEAVE_RE, extractSmakbotCommand, stripPoliteness, condenseSearchResults, speakableName, nextGeneration, interruptOwnPlayback, spokenResponses,
   get activeConnection() { return activeConnection; }, get activeVoiceChannel() { return activeVoiceChannel; }, get ready() { return ready; },
-  get model() { return lmStudioModel; }, THINKING: { waits: THINKING_WAITS, cap: THINKING_MAX }, LLM: { reasoning: LLM_REASONING, thinkLimit: LLM_THINK_LIMIT_MS } };`, ctx);
+  get model() { return llm.model; }, THINKING: { waits: THINKING_WAITS, cap: THINKING_MAX }, LLM: { reasoning: llm.reasoning, thinkLimit: LLM_THINK_LIMIT_MS } };`, ctx);
   const T = ctx.__t;
 
   // helpers
