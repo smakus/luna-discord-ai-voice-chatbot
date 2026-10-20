@@ -11,7 +11,7 @@
 // addresses, so the server has one fixed URL and cannot tell whose question
 // a call belongs to. Each tool's run() therefore only answers the model; Luna
 // carries the action out when she sees the call in that speaker's own answer
-// stream — see index.js.)
+// stream — see answer-llm.js.)
 //
 // Just enough of MCP's Streamable HTTP transport for that: JSON-RPC over
 // POST, answered with plain JSON (no server-sent events, no server-initiated

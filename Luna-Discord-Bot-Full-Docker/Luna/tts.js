@@ -4,7 +4,7 @@
 // container ffmpeg can probe — Kokoro, Qwen3-TTS and Chatterbox send WAV,
 // ElevenLabs MP3),
 // or null if every provider failed. It resolves as soon as the response headers
-// arrive, so the prefetch pipeline in index.js keeps overlapping synthesis with
+// arrive, so the prefetch pipeline in voice-playback.js keeps overlapping synthesis with
 // playback.
 //
 // TTS_PROVIDER picks the preferred provider: "kokoro" (default), "qwen3",

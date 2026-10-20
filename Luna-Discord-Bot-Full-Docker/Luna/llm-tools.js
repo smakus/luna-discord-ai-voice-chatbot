@@ -1,15 +1,16 @@
 // ─── Tools for the LLM ────────────────────────────────────────────────────────
 //
 // Things the LLM can make Luna do: play, skip and stop music through smakbot,
-// leave the voice channel, and (from text chat) say something in it. The fixed patterns in index.js ("play …",
-// "skip", "stop", "leave") handle the plain commands instantly, before the
-// LLM; these tools cover everything else ("put on something chill", "we're
+// leave the voice channel, and (from text chat) say something in it. The
+// fixed commands in commands.js ("play …", "skip", "stop", "leave") handle the
+// plain requests instantly, before the LLM; these tools cover everything else ("put on something chill", "we're
 // done for tonight, you can head out").
 //
 // Served to LM Studio by mcp-server.js. A tool's run() only answers the LLM
-// (that server cannot tell whose question a call belongs to); index.js acts
-// when it sees the call in the speaker's own answer stream: the smakbot
-// command via smakbotCommandFor(), or leaving once her goodbye has played.
+// (that server cannot tell whose question a call belongs to). Luna acts when
+// she sees the call in the asker's own answer stream (read in answer-llm.js,
+// acted on in voice-answer.js and text-chat.js): the smakbot command via
+// smakbotCommandFor(), or leaving once her goodbye has played.
 //
 // smakbot: !play queues after the current song when music is playing, so
 // there is no separate queue tool.
@@ -28,6 +29,19 @@ const MUSIC_TOOLS = [
       required: ['query'],
     },
     run: ({ query }) => `Queued "${query}" with the music bot. It plays after any song already playing.`,
+  },
+  {
+    name: 'play_top_songs',
+    description: "Play the most played songs: the music bot's own favourites, the ones played most " +
+      'in this server. Use it when someone asks for the top songs, the most played, the usual, or ' +
+      'their favourites rather than a particular song.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        count: { type: 'integer', description: 'How many songs (default 10, at most 50)', minimum: 1, maximum: 50 },
+      },
+    },
+    run: ({ count }) => `Queued the ${count || 10} most played songs with the music bot.`,
   },
   {
     name: 'skip_song',
@@ -84,6 +98,10 @@ function smakbotCommandFor(tool, args = {}) {
   if (tool === 'play_music') {
     const query = String(args.query || '').trim();
     return query ? { text: `!play ${query}`, summon: true } : null;
+  }
+  if (tool === 'play_top_songs') {
+    const n = Math.min(50, Math.max(1, Math.round(Number(args.count)) || 10));
+    return { text: `!playtop ${n}`, summon: true };
   }
   if (tool === 'skip_song') return { text: '!skip', summon: false };
   if (tool === 'stop_music') return { text: '!stop', summon: false };

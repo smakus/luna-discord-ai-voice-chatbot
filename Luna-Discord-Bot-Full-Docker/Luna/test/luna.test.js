@@ -669,7 +669,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
   { const H = await setup({ LLM_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[tools\] play_music, skip_song, stop_music, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, stop_music, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -711,10 +711,26 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.strictEqual(cmd('play Right Now'), '!play Right Now');
     assert.strictEqual(cmd('can you skip this song?'), '!skip');
     assert.strictEqual(cmd('please stop the music, thanks'), '!stop');
+    assert.strictEqual(cmd('play the top 10'), '!playtop 10');
+    assert.strictEqual(cmd('can you play the top twenty songs?'), '!playtop 20');
+    assert.strictEqual(cmd('play our most played'), '!playtop 10');
+    assert.strictEqual(cmd('play the 15 most played tracks'), '!playtop 15');
+    assert.strictEqual(cmd('play my favorites'), '!playtop 10');
+    assert.strictEqual(cmd('play the top 100'), '!playtop 50');
+    for (const q of ['play top of the world', 'play favorites', 'play the top 10 songs of 1985']) assert.strictEqual(cmd(q), '!play ' + q.slice(5), q);
     for (const q of ['do you play guitar?', "let's play a game", 'can you play?', 'can you stop talking']) assert.strictEqual(cmd(q), null, q);
     for (const q of ['can you leave?', 'could you please head out', 'you can go now, thanks']) assert.ok(H.T.LEAVE_RE.test(H.T.stripPoliteness(q)), q);
     assert.ok(!H.T.LEAVE_RE.test(H.T.stripPoliteness('can you leave a note?')));
-    ok('"can you play …", "could you skip this song", "please stop the music, thanks", "can you leave" are fixed commands'); }
+    ok('"can you play …", "could you skip this song", "please stop the music, thanks", "can you leave", "play the top 10" are fixed commands; "play top of the world" is still a song'); }
+  { const H = await setup({}); H.S.llmRequests.length = 0;
+    await H.T.handleQuery('play the top 5', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.ok(H.S.sends.includes('!summon') && H.S.sends.includes('!playtop 5') && H.S.llmRequests.length === 0, H.S.sends.join(' | '));
+    assert.strictEqual(H.S.tts[0].text, 'Okay, playing the top 5.');
+    ok('"play the top 5" → !summon, !playtop 5, "Okay, playing the top 5." (no LLM)'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'play_top_songs' }],
+      [5, { type: 'tool_call.arguments', tool: 'play_top_songs', arguments: { count: 8 } }], [5, { type: 'tool_call.success', tool: 'play_top_songs', arguments: { count: 8 }, output: '[]' }], ...sse('Here come the favourites!')];
+    await H.T.handleQuery('put on the usual stuff', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.sends.includes('!playtop 8'));
+    ok('the LLM calls play_top_songs {count: 8} → !playtop 8'); }
   { const H = await setup({}); H.S.llmRequests.length = 0;
     await H.T.handleQuery('can you play some jazz?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0, H.S.sends.join(' | '));

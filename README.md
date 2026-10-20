@@ -118,6 +118,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what's the weather today?" | Web search, then answer |
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
+| "Hey Luna, play the top 10" / "play our most played" | smakbot's most played songs (`!playtop`) |
 
 When Luna starts searching the web, she says a short heads-up such as *"Hmm, let me take a look."* at that moment, so you always know when she's using the internet, and the Discord status changes to "searching the web". If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
 
@@ -165,14 +166,17 @@ With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channel
 - **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
 - **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
 - **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
+- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
 
-Bots, `IGNORED_USER_IDS` and mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
+Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
 
 To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
 
 ```env
 GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
 FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+BOT_JOIN_PHRASES={name} has joined.
+BOT_LEAVE_PHRASES={name} has left.
 INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
 ```
 
@@ -269,6 +273,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
 | `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
 | `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+| `BOT_JOIN_PHRASES` / `BOT_LEAVE_PHRASES` | `{name} has joined.` / `{name} has left.` | Wording for bots and `IGNORED_USER_IDS` joining and leaving (on with `GREET_ON_JOIN` / `ANNOUNCE_LEAVE`) |
 | `GREETINGS_FILE` | `local/greetings.json` | Per-person join greetings and voices (see [Custom greetings](#custom-greetings)) |
 | `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
@@ -451,6 +456,21 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 
 ## Development
 
+### Code layout
+
+`Luna/` is plain files, one job each. A file only uses files in its own row or the rows below it:
+
+| Layer | Files |
+| ----- | ----- |
+| Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
+| Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
+| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `tts.js`, `whisper.js`, `mcp-server.js` |
+| Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
+
+Modules that need a library, `fetch`, timers or each other get them as arguments (`createX({ ... })`), which is how the test harness swaps in fakes.
+
+### Tests
+
 Luna's tests live in `Luna/test/` and run without Discord, LM Studio, Whisper or a TTS server: every outside service is faked. They need only Node 22. Without Node on your machine, run them in Docker:
 
 From the repository's top folder:
@@ -516,9 +536,9 @@ Below the table, each model's problems are listed by question. The answers are s
 
 ## MusicBot integration
 
-Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave".
+Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave". "Play the top 10", "play the top twenty songs", "play our most played" or "play my favorites" post `!playtop <n>` (10 if no number is said, at most 50): smakbot's most played songs, from its cache. "Play top of the world" is still a song.
 
-Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `play_top_songs`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
 ```json
 "luna": { "url": "http://127.0.0.1:8895/mcp" }
