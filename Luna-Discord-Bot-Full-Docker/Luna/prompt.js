@@ -87,15 +87,18 @@ function speakerLine(name) {
 //   tools       names of Luna's own tools offered (a Set), for toolsLine
 //   speaker     the asker's speakable name ('' to leave it out); after the
 //               parts every request shares, so they stay a cached prefix
+//   music       what smakbot is playing (now-playing.js), '' when nothing;
+//               changes with every song, so it comes late
 //   extra       e.g. QUICK_PROMPT for a quick-answer retry
 //   flavor      the occasional personality line, already chosen or ''
 //   text        the text-channel version of her (textBasePrompt) instead of voice
-function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, tools = new Set(), speaker = '', extra = '', flavor = '', text = false }) {
+function systemPrompt({ config, timeZone, now = new Date(), expressive = '', search = false, tools = new Set(), speaker = '', music = '', extra = '', flavor = '', text = false }) {
   return (text ? textBasePrompt(config) : basePrompt(config)) + ' ' + todayLine(timeZone, now) +
     (expressive ? ' ' + expressive : '') +
     (search ? ' ' + SEARCH_PROMPT : '') +
     (tools.size && toolsLine(tools) ? ' ' + toolsLine(tools) : '') +
     (speaker ? ' ' + speakerLine(speaker) : '') +
+    (music ? ' ' + music : '') +
     (extra ? ' ' + extra : '') +
     (flavor ? ' ' + flavor : '');
 }

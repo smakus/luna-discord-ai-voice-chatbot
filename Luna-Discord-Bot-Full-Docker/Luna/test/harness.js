@@ -76,13 +76,14 @@ module.exports = function boot(env = {}) {
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
-    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')),
+    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')), './now-playing': require(path.join(LUNA_DIR, 'now-playing.js')),
   };
 
   // ── fetch: LM Studio ──
   S.model = 'model-a';
   const fakeFetch = async (url, init = {}) => {
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
+    if (url.includes('now-playing')) { S.nowPlayingAsked = (S.nowPlayingAsked || 0) + 1; if (S.musicDown) throw new Error('connect ECONNREFUSED'); return { ok: true, json: async () => S.nowPlaying ?? { playing: false } }; }
     if (url.endsWith('/api/v1/models')) return { ok: true, json: async () => ({ models: [{ type: 'llm', loaded_instances: [{ id: S.model }] }] }) };
     const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations });
     init.signal.addEventListener('abort', () => { S.aborted = (S.aborted || 0) + 1; }, { once: true });
@@ -112,7 +113,7 @@ module.exports = function boot(env = {}) {
   const src = fs.readFileSync(path.join(LUNA_DIR, 'index.js'), 'utf8');
   const ctx = {
     require: m => { if (m in mods) return mods[m]; throw new Error('unmocked ' + m); },
-    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', OWW_ENABLED: 'true', LLM_TOOLS: 'false', GREETINGS_FILE: '/nonexistent/greetings.json', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
+    process: { env: { LM_STUDIO_URL: 'http://lm/api/v1/chat', MUSIC_STATUS_URL: 'http://music/now-playing', OWW_ENABLED: 'true', LLM_TOOLS: 'false', GREETINGS_FILE: '/nonexistent/greetings.json', WHISPER_SERVER_URLS: 'http://whisper/inference', TAVILY_API_KEY: 'test-key', ...env }, exit: c => { throw new Error('exit ' + c); } },
     console: { log, warn: log, error: log }, fetch: fakeFetch, setTimeout, clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     AbortController, AbortSignal, DOMException, TextDecoder, TextEncoder, Promise, Date, Math, Map, Set, WeakSet, Buffer, FormData, Blob, __dirname: LUNA_DIR,
   };

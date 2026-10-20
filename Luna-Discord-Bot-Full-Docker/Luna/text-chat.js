@@ -60,7 +60,8 @@ const SAY_MAX_CHARS = 400;
 //   sendCommand(channel, command)          post a smakbot command
 //   sayInVoice(text, userId, who) → bool   speak in the voice channel (false: not in one)
 //   voiceChannelName() → name, or null when not in a voice channel
-function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, command = '!luna' }) {
+//   nowPlaying     now-playing.js: "what song is this?"
+function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, nowPlaying, command = '!luna' }) {
   const queues = new Map();   // channel id -> the answer in progress
 
   function onMessage(message) {
@@ -95,6 +96,11 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     // "Say … in the voice channel": the model only writes the line; Luna speaks
     // it and confirms herself, so the confirmation is always true.
     if (what.type === 'say') return sayFromText(message, question, name, userId);
+    // "What song is this?": from smakbot (else the LLM answers, as by voice).
+    if (what.type === 'now-playing' && nowPlaying?.enabled) {
+      await reply(message, nowPlaying.describe(await nowPlaying.get(message.guild?.id || ''))).catch(() => {});
+      return;
+    }
 
     // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
     const typing = () => channel.sendTyping?.().catch(() => {});

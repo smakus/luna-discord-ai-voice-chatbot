@@ -45,3 +45,5 @@ services:
       - CHATTERBOX_URL=http://host.docker.internal:8891/v1/audio/speech
       # The host-native Metal Whisper from scripts/whisper-metal.sh.
       - WHISPER_SERVER_URLS=http://host.docker.internal:8081/inference
+      # smakbot's now-playing endpoint (StatusApiPort, published on the host's 127.0.0.1).
+      - MUSIC_STATUS_URL=http://host.docker.internal:8896/now-playing

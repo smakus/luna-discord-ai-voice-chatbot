@@ -740,6 +740,32 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music and leave the voice channel\./);
     ok('the system prompt names the tools offered'); }
 
+  console.log('now playing (smakbot)');
+  const NP = { playing: true, paused: false, title: 'Seal - Crazy (Official Music Video)', artist: 'Seal', track: 'Crazy', url: 'https://youtu.be/x',
+    requested_by: 'smakus', elapsed: 73, duration: 212, up_next: ['Kiss From a Rose (Official Video)'] };
+  { const H = await setup({}); H.S.nowPlaying = NP; H.S.llmRequests.length = 0;
+    await H.T.handleQuery("what song is this?", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose.');
+    assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('"what song is this?" → "This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose." (no LLM)'); }
+  { const H = await setup({}); H.S.nowPlaying = { playing: false };
+    await H.T.handleQuery("what's playing", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, "Nothing's playing right now."); ok('nothing playing → says so'); }
+  { const H = await setup({}); H.S.musicDown = true;
+    await H.T.handleQuery("what song is this", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.match(H.S.tts[0].text, /can't reach the music bot/); assert.ok(H.S.logs.some(l => /\[music\] can't reach smakbot/.test(l)));
+    ok("smakbot unreachable → says it can't tell, warns in the log"); }
+  { const H = await setup({ MUSIC_STATUS_URL: '' }); H.S.llmScript = sse('No idea!'); H.S.llmRequests.length = 0;
+    await H.T.handleQuery("what song is this", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.strictEqual(H.S.llmRequests.length, 1); assert.ok(!H.S.nowPlayingAsked); ok('MUSIC_STATUS_URL unset → an ordinary question for the LLM'); }
+  { const H = await setup({}); H.S.nowPlaying = NP; H.S.llmScript = sse('It is about love.'); H.S.llmRequests.length = 0;
+    await H.T.handleQuery("what is this song about?", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.match(H.S.llmRequests[0].system, /Music playing in the voice channel now: "Seal - Crazy", artist: Seal, track: Crazy, requested by smakus \(1:13 of 3:32\)\. When someone asks about "this song"/);
+    H.S.nowPlaying = { playing: false }; H.S.llmRequests.length = 0; await H.wait(2100);
+    await H.T.handleQuery("tell me a joke", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(!/Music playing/.test(H.S.llmRequests[0].system));
+    ok('"what is this song about?" → the LLM, told what is playing; nothing playing → no music line'); }
+
   console.log('leaving on request');
   { const H = await setup({}); H.S.llmRequests.length = 0;
     await H.T.handleQuery('Okay, leave the channel.', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.destroyed.length > 0);
@@ -796,6 +822,10 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.replies[0].content.length <= 2000 && H.S.sends[0].content.length <= 2000); ok('a long answer → split into messages under 2,000 characters'); }
   { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
     assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0); ok('"Luna, play …" in text → smakbot command, no LLM'); }
+  { const H = await textRig(); H.S.nowPlaying = { playing: true, paused: true, title: 'Crazy', requested_by: 'smakus' };
+    await H.say('Luna, what song is this?'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0].content, "It's paused on Crazy, requested by smakus."); assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('"Luna, what song is this?" in text → answered from smakbot, no LLM'); }
   { const H = await textRig({ LLM_TOOLS: 'true' }); H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'play_music' }],
       [5, { type: 'tool_call.arguments', tool: 'play_music', arguments: { query: 'lo-fi' } }], [5, { type: 'tool_call.success', tool: 'play_music', arguments: { query: 'lo-fi' }, output: '[]' }], ...sse('Queued some lo-fi!')];
     await H.say('Luna, put on something chill'); await H.until(() => H.S.replies.length > 0);
