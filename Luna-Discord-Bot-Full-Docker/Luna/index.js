@@ -1,7 +1,6 @@
 require('dotenv').config();
 
 const voiceLib = require('@discordjs/voice');
-const { joinVoiceChannel, VoiceConnectionStatus, EndBehaviorType, entersState } = voiceLib;
 const { GatewayIntentBits } = require('discord-api-types/v10');
 const { Events, Client } = require('discord.js');
 const { OpusEncoder } = require('@discordjs/opus');
@@ -18,11 +17,10 @@ const { createAnswerFilter } = require('./answer-filter');
 const { loadConfig, parseWaits } = require('./config');
 const { QUICK_PROMPT } = require('./prompt');
 const { createPlayback } = require('./voice-playback');
+const { createVoiceSession } = require('./voice-session');
+const { createListener } = require('./voice-listen');
 const { createLlm, condenseSearchResults, TOOLS_PLUGIN_ID } = require('./answer-llm');
-const {
-  isBareWake, createPacketDecoder, createWakeFeeder, createSegmenter,
-  decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
-} = require('./voice-input');
+const { isBareWake, confirmWake } = require('./voice-input');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -57,42 +55,8 @@ const BOT_COMMAND = '!luna';
 // Human-readable phrase for user-facing messages.
 const WAKE_LABEL = 'hey Luna';
 
-// ─── openWakeWord ─────────────────────────────────────────────────────────────
+// ─── Wake follow-up ───────────────────────────────────────────────────────────
 //
-// When a model is loaded, wake word detection runs on the raw audio stream and
-// acts as a gate: only utterances containing a detection are sent to Whisper.
-// This is both cheaper (Whisper no longer transcribes every utterance in the
-// channel) and more accurate than substring-matching a transcript.
-//
-// If the model fails to load for any reason, Luna falls back to the original
-// behaviour — transcribe everything, then match WAKE_RE against the text.
-
-const OWW_ENABLED   = config.OWW_ENABLED;
-const OWW_MODEL     = config.OWW_MODEL_PATH     || path.join(__dirname, 'hey_luna.onnx');
-const OWW_MELSPEC   = config.OWW_MELSPEC_PATH   || path.join(__dirname, 'melspectrogram.onnx');
-const OWW_EMBEDDING = config.OWW_EMBEDDING_PATH || path.join(__dirname, 'embedding_model.onnx');
-const OWW_THRESHOLD = config.OWW_THRESHOLD;
-const OWW_TRIGGER_FRAMES = config.OWW_TRIGGER_FRAMES;
-const OWW_REFRACTORY_MS  = config.OWW_REFRACTORY_MS;
-const OWW_FEATURE_FRAMES = config.OWW_FEATURE_FRAMES;
-// How far before an utterance's first speech a detection may land and still
-// count for that utterance. Covers the gap between the wake word finishing and
-// the energy gate opening.
-const OWW_GRACE_MS = config.OWW_GRACE_MS;
-// Two-stage detection. The model is trained on "hey Luna" said on its own and
-// scores it far lower when the question follows without a pause: in testing
-// with 16 voices, run-on "hey Luna what's the weather" reached the threshold
-// for only 5 (typical peak 0.41 vs 0.66 with a pause), yet 15 of 16 still
-// peaked above 0.1 — while ordinary chat, "lunar" and "tuna" included, peaks
-// around 0.001. So an utterance whose peak is at least this high but that
-// never triggered is a candidate: it is transcribed, and kept only if Whisper
-// heard "Luna" in it. 0 disables (only full detections count).
-const OWW_CANDIDATE_THRESHOLD = config.OWW_CANDIDATE_THRESHOLD;
-// After a bare "hey Luna" and a pause, how long to wait for the question
-// before answering the greeting (decideUtteranceEnd in voice-input.js). She
-// waits silently: the chime always means "got it", once the question is in.
-// 0 disables (the utterance ends after SILENCE_MS, as before).
-const WAKE_LISTEN_MS = config.WAKE_LISTEN_MS;
 // A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
 // what they wanted (WAKE_REPROMPT_PHRASES) instead of answering a greeting,
 // then that speaker has WAKE_FOLLOWUP_MS after she finishes to start the
@@ -103,16 +67,6 @@ const REPROMPTS = config.WAKE_REPROMPT_PHRASES.length ? config.WAKE_REPROMPT_PHR
   "Sorry {name}, I missed that. What did you want to ask?",
   "Hey, I didn't catch that. Did you mean to ask me something?",
 ];
-// Log every score above this value — useful for tuning OWW_THRESHOLD.
-const OWW_DEBUG_SCORE = config.OWW_DEBUG_SCORE;
-// 'auto' normalises quiet speech up toward a target level before detection,
-// 'off' disables it, or give a fixed multiplier like '3'. Detection input only —
-// the audio sent to Whisper is untouched. Never attenuates, so it cannot make a
-// already-working setup worse.
-const OWW_GAIN = config.OWW_GAIN;
-
-let wakeEngine = null; // set during ClientReady; null means fall back to transcript matching
-
 const IGNORED_USERS = new Set(
   config.IGNORED_USER_IDS
 );
@@ -207,38 +161,6 @@ function nextWhisperUrl() {
 // from elsewhere still finds it.
 const CHIME_PATH = path.join(__dirname, 'chime.mp3');
 
-// ─── Latency tuning ───────────────────────────────────────────────────────────
-// Env-tunable so these can be adjusted with a container recreate rather than a
-// rebuild. Defaults are the original hardcoded values.
-//
-// ENERGY_THRESHOLD gates which audio is buffered for Whisper. It is INDEPENDENT
-// of wake word detection — the detector always receives every frame. If the
-// model fires but this gate stays shut, the detection is real but there is no
-// utterance to transcribe, which feels exactly like a missed wake word.
-// Lower it (150-200) for quiet speakers or distant mics.
-const SILENCE_MS       = config.SILENCE_MS;
-const ENERGY_THRESHOLD = config.ENERGY_THRESHOLD;
-const MIN_SPEECH_MS    = config.MIN_SPEECH_MS;
-
-// Audio kept from BEFORE the energy gate opens, and prepended to the utterance.
-//
-// Without this, everything below ENERGY_THRESHOLD is discarded, so an utterance
-// begins on the first frame loud enough to trip the gate. Low-energy onsets —
-// unvoiced fricatives and stops ("s", "f", "th", "wh", "h", "k", "p", "t") —
-// sit below the threshold for 50-150 ms, so the utterance reaching Whisper
-// starts mid-word. Whisper then guesses the missing onset: "what's the score"
-// arrives as "the score", "set a timer" as "a timer".
-//
-// The detector is unaffected (it always saw every frame); this only changes
-// what is transcribed. Cost is PREROLL_MS of ring buffer per speaker — 320 ms
-// is ~30 KB.
-const PREROLL_MS     = config.PREROLL_MS;
-const PREROLL_CHUNKS = Math.max(0, Math.round(PREROLL_MS / 20));
-
-// Hard cap on a single buffered utterance. `flushing` stays true for the whole
-// LLM + TTS response, during which flushUtterance() early-returns while the
-// decoder keeps appending — without this cap, the segmenter's buffer grows for the entire
-// duration of Luna's reply (~2.9 MB per 30 s per speaker).
 // Request timeouts. Without these a hung Whisper or LM Studio call never
 // settles, `flushing` stays true forever, and that speaker goes permanently
 // deaf with nothing logged. Generous, because a saturated CPU makes Whisper
@@ -265,38 +187,6 @@ const QUICK_ANSWER_PHRASES = (() => {
   ];
 })();
 
-// Backstop if something still wedges despite the timeouts above. Must exceed
-// the longest legitimate request, or it would release a speaker mid-answer.
-const STUCK_FLUSH_MS = WHISPER_TIMEOUT_MS + config.LM_TIMEOUT_MS + 60000;
-
-const MAX_UTTERANCE_MS    = 30000;
-const DECODER_CHUNK_MS    = 20; // 960 samples @ 48 kHz
-const MAX_UTTERANCE_CHUNKS = MAX_UTTERANCE_MS / DECODER_CHUNK_MS;
-
-// Longest a single stretch of speech may run without a silence gap before it is
-// flushed anyway.
-//
-// An utterance normally ends after SILENCE_MS of audio below ENERGY_THRESHOLD.
-// If the threshold sits below the room's noise floor — or Luna's own voice
-// returns through a speaker into the mic — the energy gate is open on every frame,
-// the silence timer is reset on every frame, and the utterance never ends. That
-// speaker then buffers audio forever and is never heard again.
-const MAX_SPEECH_MS = config.MAX_SPEECH_MS;
-
-// Discord stops transmitting Opus during silence, so two consecutive packets
-// can be seconds apart in wall-clock time while being adjacent in the sample
-// stream. The detector then sees the gap spliced out — "hey ... Luna" spoken
-// with a natural pause arrives as a compressed "heyLuna" that matches nothing
-// the model was trained on. Re-inserting real silence keeps the feature
-// timeline aligned with how the phrase was actually spoken.
-//
-// Capped because the classifier window is only 1.28 s; beyond that the window
-// is fully flushed anyway and further silence is wasted inference.
-const MAX_SILENCE_FILL_MS = config.MAX_SILENCE_FILL_MS;
-
-// Sentences are split as the answer streams (sentences.js), so TTS starts on
-// the first one while the rest is still being written.
-
 // ─── Discord client ───────────────────────────────────────────────────────────
 
 const client = new Client({
@@ -308,27 +198,26 @@ const client = new Client({
   ],
 });
 
-async function initWakeWord() {
-  if (!OWW_ENABLED) {
-    console.log('[oww] disabled via OWW_ENABLED=false — using transcript wake word matching');
-    return;
-  }
-  try {
-    wakeEngine = await WakeWordEngine.load({
-      modelPath:     OWW_MODEL,
-      melspecPath:   OWW_MELSPEC,
-      embeddingPath: OWW_EMBEDDING,
-      featureFrames: OWW_FEATURE_FRAMES || undefined,
-    });
-    console.log(`[oww] active — threshold=${OWW_THRESHOLD}, Whisper gated on detection` +
-      (OWW_CANDIDATE_THRESHOLD > 0 && OWW_CANDIDATE_THRESHOLD < OWW_THRESHOLD
-        ? `; candidates from ${OWW_CANDIDATE_THRESHOLD} confirmed by Whisper` : ''));
-  } catch (err) {
-    console.warn(`[oww] unavailable (${err.message})`);
-    console.warn('[oww] falling back to transcript wake word matching');
-    wakeEngine = null;
-  }
-}
+// Luna's place in a voice channel (voice-session.js) and hearing the people in
+// it (voice-listen.js). Leaving forgets the session's listening, playback and
+// conversations.
+const session = createVoiceSession({
+  config, voice: voiceLib, console,
+  isIgnored: id => IGNORED_USERS.has(id),
+  onConnected: (connection, channel, textChannel) => listener.start(connection, channel, textChannel),
+  onReset: () => { listener.reset(); playback.reset(); llm.forgetConversations(); },
+});
+const listener = createListener({
+  config, console, voice: voiceLib, OpusEncoder, WakeWordEngine, timers: { setInterval, clearInterval },
+  session, playback,
+  botId: () => client.user.id,
+  isIgnored: id => IGNORED_USERS.has(id),
+  onUtterance: (...args) => processUtterance(...args),
+  onStuck: userId => processingUsers.delete(userId),
+});
+setInterval(() => listener.healthReport(), 30000).unref?.();
+
+const processingUsers = new Set(); // who is being transcribed/answered right now
 
 // !luna is refused until startup finishes. A capture created before the wake
 // word models load runs without detection until its stream next restarts.
@@ -336,7 +225,7 @@ let ready = false;
 
 client.on(Events.ClientReady, async () => {
   if (!await llm.resolveModel()) process.exit(1);
-  await initWakeWord();
+  await listener.initWakeWord();
   console.log(`[tts] ${describeTTS()}`);
   describeCustomGreetings();
   console.log(`[search] web search: ${llm.describeSearch()}`);
@@ -347,13 +236,7 @@ client.on(Events.ClientReady, async () => {
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
-// ─── Voice join ───────────────────────────────────────────────────────────────
-
-let activeConnection   = null;
-let activeVoiceChannel = null;
-let activeTextChannel  = null;   // where !luna was typed; music commands go here
-let activeGuild        = null;   // { id, adapterCreator }, for reconnecting
-const listeningUsers   = new Set();
+// ─── Text commands ────────────────────────────────────────────────────────────
 
 client.on(Events.MessageCreate, async message => {
   if (textChat.onMessage(message)) return;
@@ -370,7 +253,7 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} leave`) {
-    if (!activeConnection) return message.reply("I'm not in a voice channel.").catch(() => {});
+    if (!session.connection) return message.reply("I'm not in a voice channel.").catch(() => {});
     message.reply('Bye!').catch(() => {});
     return leaveOnRequest(message.author?.id);
   }
@@ -386,24 +269,24 @@ client.on(Events.MessageCreate, async message => {
   const guild = { id: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator };
   // Returns the guild's existing connection if there is one, moving it to
   // `channel` when that differs.
-  const connection = joinVoice(channel, guild);
+  const connection = session.join(channel, guild);
 
-  if (connection === activeConnection) {
-    if (activeVoiceChannel?.id === channel.id) {
+  if (connection === session.connection) {
+    if (session.channel?.id === channel.id) {
       message.reply(`Already listening in **${channel.name}**.`).catch(() => {});
       return;
     }
-    // !luna from another channel: joinVoiceChannel() just moved Luna there.
+    // !luna from another channel: session.join() just moved Luna there.
     // Listening carries over (it is per connection, not per channel); only
     // the channel she announces and counts members in changes.
     console.log(`[voice] moved to ${channel.name} by !luna`);
-    activeVoiceChannel = channel;
+    session.moveTo(channel);
     message.reply(`Moved to **${channel.name}**!`).catch(() => {});
     introduceSelf(connection);
     return;
   }
 
-  attachVoice(connection, channel, message.channel, guild, () => {
+  session.attach(connection, channel, message.channel, guild, () => {
     message.reply(
       `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
       `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
@@ -417,597 +300,19 @@ client.on(Events.MessageCreate, async message => {
 // voice privacy code to compare with the one Discord shows in the call's
 // encryption details — if they differ, Luna's whole session is out of sync.
 function voiceCheck(message) {
-  if (!activeConnection || !activeVoiceChannel) return message.reply("I'm not in a voice channel.").catch(() => {});
-  const crypto = voiceCryptoState();
+  if (!session.connection || !session.channel) return message.reply("I'm not in a voice channel.").catch(() => {});
+  const crypto = session.cryptoState();
   if (!crypto) return message.reply('Encryption details are unavailable (unencrypted call, or the voice library changed).').catch(() => {});
   const lines = [`**Voice encryption:** ${crypto.status}, epoch ${crypto.epoch ?? '-'}` +
     (crypto.privacyCode ? ` — privacy code \`${crypto.privacyCode}\` (should match the code Discord shows for this call)` : '')];
-  for (const member of activeVoiceChannel.members.values()) {
+  for (const member of session.channel.members.values()) {
     if (member.user.bot) continue;
-    const v = cryptoVerdict(crypto, member.id);
+    const v = session.cryptoVerdict(crypto, member.id);
     lines.push(`${v.problem ? '⚠️' : '✅'} ${member.displayName}: ${v.text}`);
   }
   console.log(`[voice] voicecheck: ${lines.slice(1).join(' | ')}`);
   return message.reply(lines.join('\n')).catch(() => {});
 }
-
-// debug: true so the voice library's encryption (DAVE) messages reach
-// logVoiceDebug; everything else it says is filtered out there.
-function joinVoice(channel, guild) {
-  return joinVoiceChannel({
-    channelId: channel.id,
-    guildId: guild.id,
-    adapterCreator: guild.adapterCreator,
-    debug: true,
-  });
-}
-
-// Starts listening on a new connection once it is Ready. Shared by !luna and
-// the encrypted-session reconnect; `onJoined` runs after setup (reply, intro).
-function attachVoice(connection, channel, textChannel, guild, onJoined = null) {
-  watchConnection(connection);
-
-  // Once, not on: a connection returns to Ready after every network blip, and
-  // re-running this would re-post the join message and stack another
-  // speaking listener each time.
-  const onReady = () => {
-    activeConnection   = connection;
-    activeVoiceChannel = channel;
-    activeTextChannel  = textChannel;
-    activeGuild        = guild;
-    startListening(connection, textChannel);
-
-    // Subscribe to users already in the channel at join time
-    channel.members.forEach(member => {
-      if (member.user.bot)               return;
-      if (IGNORED_USERS.has(member.id))  return;
-      if (listeningUsers.has(member.id)) return;
-      listeningUsers.add(member.id);
-      continuousCapture(connection, member.id, textChannel);
-    });
-
-    if (onJoined) onJoined();
-  };
-
-  if (connection.state.status === VoiceConnectionStatus.Ready) {
-    onReady();
-  } else {
-    connection.once(VoiceConnectionStatus.Ready, onReady);
-  }
-}
-
-// ─── Voice connection lifecycle ───────────────────────────────────────────────
-
-const watchedConnections = new WeakSet();
-
-function watchConnection(connection) {
-  if (watchedConnections.has(connection)) return;
-  watchedConnections.add(connection);
-
-  // Kicked, moved, or a network drop. A move or a blip starts reconnecting
-  // within seconds; anything else is gone for good, and without this Luna
-  // kept believing she was connected — queueing speech into a dead connection
-  // and announcing joins for a channel she had left.
-  connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    try {
-      await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5000),
-      ]);
-    } catch {
-      console.warn('[voice] connection lost and did not recover — leaving');
-      try { connection.destroy(); } catch (_) {}
-    }
-  });
-
-  connection.on(VoiceConnectionStatus.Destroyed, () => {
-    if (activeConnection === connection) resetVoiceState();
-  });
-
-  connection.on('debug', logVoiceDebug);
-}
-
-// ─── Encrypted voice (DAVE): logging and self-heal ────────────────────────────
-//
-// Discord voice is end-to-end encrypted. Occasionally the bot's session loses
-// one speaker's keys: Discord keeps reporting them speaking (the voice library
-// records that before decrypting), but every packet fails to decrypt and is
-// dropped with only a debug message. To Luna that speaker is simply silent —
-// it looks exactly like her ignoring the wake word — while everyone else in
-// the channel hears them fine. Them rejoining does not fix it; a fresh voice
-// session for Luna does. Hence:
-//   - logVoiceDebug: the library's [DAVE] messages, decrypt failures counted
-//     and summarised at most every 10 s;
-//   - a speaker reported speaking for VOICE_RECOVER_MS with no audio arriving
-//     makes Luna reconnect (at most once per 5 minutes). 0 disables.
-const VOICE_RECOVER_MS     = config.VOICE_RECOVER_MS;
-const VOICE_RECOVER_GAP_MS = 5 * 60000;
-const silentSpeakers = new Map();   // userId -> when Discord first said they spoke, with no audio since
-let lastVoiceRecoveryAt = 0;
-let decryptFailures = 0;
-let decryptLoggedAt = 0;
-
-function logVoiceDebug(message) {
-  if (!message.includes('[DAVE]')) return;
-  const text = message.replace(/^.*?\[DAVE\]\s*/, '');
-  if (/failed to decrypt/i.test(text)) {
-    decryptFailures++;
-    const now = Date.now();
-    if (now - decryptLoggedAt >= 10000) {
-      console.warn(`[voice] encrypted audio: ${decryptFailures} packet(s) failed to decrypt (latest: ${text})`);
-      decryptFailures = 0;
-      decryptLoggedAt = now;
-    }
-    return;
-  }
-  console.log(`[voice] encryption: ${text}`);
-}
-
-// Encryption diagnostics. Whether Luna can decrypt a given speaker, read from
-// the DAVE session itself rather than inferred from silence: is the speaker in
-// her MLS group (no keys otherwise), and how many of their packets decrypted
-// or failed. Discord's "speaking" signal fires when packets arrive, before
-// decryption, so "speaking + failures + 0 decrypted" is a decryption problem,
-// and "speaking + no packets at all" means they never reached decryption.
-// Read through the voice library's internal session object (not public API):
-// if a library update moves it, this returns null and logs once.
-let cryptoDiagWarned = false;
-function voiceCryptoState() {
-  const conn = activeConnection;
-  const dave = conn?.state?.networking?.state?.dave;
-  if (!dave) return null;
-  const session = dave.session;
-  if (!session || typeof session.getUserIds !== 'function' || typeof session.getDecryptionStats !== 'function') {
-    if (!cryptoDiagWarned && dave.protocolVersion > 0) {
-      cryptoDiagWarned = true;
-      console.warn('[voice] encryption diagnostics unavailable — the voice library\'s internals have changed');
-    }
-    return null;
-  }
-  let members = null;
-  try { members = new Set(session.getUserIds()); } catch (_) {}
-  let privacyCode = null;
-  try { privacyCode = conn.voicePrivacyCode || null; } catch (_) {}
-  return {
-    status: ['inactive', 'pending', 'awaiting response', 'active'][session.status] ?? String(session.status),
-    epoch: session.epoch != null ? String(session.epoch) : null,
-    privacyCode,
-    members,
-    stats: userId => { try { return session.getDecryptionStats(userId); } catch (_) { return null; } },
-  };
-}
-
-// One speaker's encryption state: { inGroup, ok, failed, problem, text }.
-function cryptoVerdict(state, userId) {
-  if (!state) return null;
-  const inGroup = state.members ? state.members.has(userId) : null;
-  const st = state.stats(userId);
-  const ok = st ? st.successes : 0, failed = st ? st.failures : 0;
-  const problem = inGroup === false || (failed > 0 && ok === 0);
-  const group = inGroup === null ? 'group unknown' : inGroup ? 'in group' : 'NOT in group';
-  return { inGroup, ok, failed, problem, text: st ? `${group}, ${ok} decrypted/${failed} failed` : `${group}, no packets yet` };
-}
-
-// Discord reported `userId` speaking (receiver 'start').
-function noteSpeaking(userId) {
-  if (!VOICE_RECOVER_MS || silentSpeakers.has(userId)) return;
-  silentSpeakers.set(userId, Date.now());
-  setTimeout(() => checkSilentSpeaker(userId), VOICE_RECOVER_MS);
-}
-
-// Decoded audio arrived from `userId`: their audio is fine.
-function noteAudio(userId) {
-  silentSpeakers.delete(userId);
-}
-
-function checkSilentSpeaker(userId) {
-  const since = silentSpeakers.get(userId);
-  if (!since || !activeConnection) return;
-  // Timers can fire a millisecond early. Returning then left the speaker in
-  // silentSpeakers, so noteSpeaking never scheduled another check and
-  // recovery for them silently never ran: check again when it is time.
-  const early = VOICE_RECOVER_MS - (Date.now() - since);
-  if (early > 0) { setTimeout(() => checkSilentSpeaker(userId), early + 1); return; }
-  silentSpeakers.delete(userId);
-  const name = activeVoiceChannel?.members?.get(userId)?.displayName || userId;
-  const verdict = cryptoVerdict(voiceCryptoState(), userId);
-  const why = verdict ? ` (encryption: ${verdict.text})` : '';
-  const action = decideSilentSpeaker({ verdict, now: Date.now(), lastReconnectAt: lastVoiceRecoveryAt, gapMs: VOICE_RECOVER_GAP_MS });
-  if (action === 'restart-capture') {
-    // Encryption is fine, so a reconnect (which disrupts everyone) would not
-    // help: restart just this speaker's capture; Discord's next "speaking"
-    // starts a fresh one.
-    console.warn(`[voice] Discord reports ${name} speaking and their audio is decrypting${why}, ` +
-      'but none of it reached Luna — restarting their capture (not an encryption problem)');
-    activeConnection.receiver.subscriptions.get(userId)?.destroy();
-    return;
-  }
-  if (action === 'wait') {
-    console.warn(`[voice] still no decryptable audio from ${name}${why}; already reconnected recently, not retrying yet`);
-    return;
-  }
-  lastVoiceRecoveryAt = Date.now();
-  console.warn(`[voice] Discord reports ${name} speaking, but none of their audio has decrypted in ` +
-    `${Math.round(VOICE_RECOVER_MS / 1000)}s${why} — reconnecting for a fresh encrypted session`);
-  reconnectVoice();
-}
-
-// Leave and rejoin the same channel, quietly (no reply, no intro).
-function reconnectVoice() {
-  const channel = activeVoiceChannel, textChannel = activeTextChannel, guild = activeGuild;
-  if (!channel || !guild) return;
-  leaveVoice('reconnecting');
-  setTimeout(() => {
-    if (activeConnection) return;   // someone ran !luna in the meantime
-    const connection = joinVoice(channel, guild);
-    attachVoice(connection, channel, textChannel, guild, () => console.log(`[voice] reconnected to ${channel.name}`));
-  }, 1500);
-}
-
-// Forgets everything tied to the current voice session.
-function resetVoiceState() {
-  activeConnection   = null;
-  activeVoiceChannel = null;
-  activeTextChannel  = null;
-  activeGuild        = null;
-  silentSpeakers.clear();
-  listeningUsers.clear();
-  captureStates.clear();
-  playback.reset();
-  llm.forgetConversations();
-}
-
-function leaveVoice(reason) {
-  const connection = activeConnection;
-  if (!connection) return;
-  console.log(`[voice] ${reason} — disconnecting.`);
-  resetVoiceState();
-  // Throws if the connection was already destroyed (e.g. Luna was kicked
-  // from the channel), and an exception here escapes into discord.js.
-  try { connection.destroy(); } catch (_) {}
-}
-
-// ─── Core listening loop ──────────────────────────────────────────────────────
-
-function getRealMemberCount(voiceChannel) {
-  if (!voiceChannel) return 0;
-  return voiceChannel.members.filter(m => !m.user.bot && !IGNORED_USERS.has(m.id)).size;
-}
-
-function startListening(connection, channel) {
-  // Self-heal input (see noteSpeaking); separate from the capture start below,
-  // which returns early for speakers that already have a capture.
-  connection.receiver.speaking.on('start', userId => {
-    if (userId === client.user.id || IGNORED_USERS.has(userId)) return;
-    noteSpeaking(userId);
-  });
-
-  connection.receiver.speaking.on('start', userId => {
-    if (listeningUsers.has(userId))   return;
-    if (userId === client.user.id)    return; // ignore bot's own audio
-    if (IGNORED_USERS.has(userId))    return; // ignore configured bots/users
-    listeningUsers.add(userId);
-    continuousCapture(connection, userId, channel);
-  });
-}
-
-// Live view of every active capture, for the health heartbeat below.
-const captureStates = new Map();
-
-// Learned audio level per speaker, keyed by user ID. Survives capture restarts,
-// which happen on every 60 s idle gap — without this, AGC re-learns each
-// speaker's level from scratch while they are saying the wake phrase.
-// A few floats per user; never cleared.
-const userGainState = new Map();
-
-// Every 30 s, report enough per-speaker state to tell apart the three ways this
-// can silently stop working: audio stopped arriving, the detector wedged, or
-// `flushing` got stuck holding the gate shut.
-setInterval(() => {
-  if (captureStates.size === 0) return;
-
-  const now = Date.now();
-  const parts = [];
-  const crypto = voiceCryptoState();
-  if (crypto) parts.push(`enc[${crypto.status}, epoch ${crypto.epoch ?? '-'}, ${crypto.members ? crypto.members.size : '?'} in group]`);
-    for (const [uid, s] of captureStates) {
-    const ws = s.wakeStream;
-    // Snapshot here too, not only on close: a crash or an ungraceful stream
-    // teardown would otherwise discard everything learned about this speaker.
-    if (ws) userGainState.set(uid, ws.exportGainState());
-    parts.push(
-      `${uid.slice(-5)}[` +
-      `audio ${((now - s.lastData) / 1000).toFixed(0)}s ago, ` +
-      `frames ${ws ? ws.chunksProcessed : 'n/a'}, ` +
-      `peak30s ${ws ? ws.takeHealthPeak().toFixed(3) : 'n/a'}, ` +
-      `qdepth ${ws ? ws.queueDepth : 'n/a'}, ` +
-      `flushing ${s.flushing}, ` +
-      `buffered ${s.buffered}` +
-      (crypto ? `, ${cryptoVerdict(crypto, uid).text}` : '') + ']'
-    );
-  }
-  console.log('[health] ' + parts.join(' '));
-}, 30000).unref?.();
-
-function continuousCapture(connection, userId, channel) {
-  console.log(`[${userId}] capture started`);
-  const audioStream = connection.receiver.subscribe(userId, {
-    end: { behavior: EndBehaviorType.AfterSilence, duration: 60000 },
-  });
-
-  // The pipeline (see voice-input.js): packets → decoder → PCM frames, which
-  // go both to the wake-word model and to the segmenter; each utterance the
-  // segmenter cuts is gated on the wake word (flushUtterance) and, if it
-  // passes, transcribed and turned into a question (processUtterance).
-  let flushing       = false;   // an utterance of this speaker is being processed
-  let flushStartedAt = 0;
-  let lastDataTime   = Date.now();
-  let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
-  let listening      = false;   // waiting for the question after a bare "hey Luna"
-  let listenTimer    = null;    // ends that wait if no question comes
-  let followUpUntil  = 0;       // after "did you mean to ask me something?": answer without the wake word until then
-
-  const segmenter = createSegmenter({
-    energyThreshold: ENERGY_THRESHOLD,
-    prerollFrames:   PREROLL_CHUNKS,
-    frameMs:         DECODER_CHUNK_MS,
-    maxFrames:       MAX_UTTERANCE_CHUNKS,
-    silenceMs:       SILENCE_MS,
-    onSilence:       () => flushUtterance(),
-  });
-
-  // Each speaker needs an independent wake-word pipeline — sharing one buffer
-  // across users would interleave their audio and corrupt every detection.
-  const wakeStream = wakeEngine
-    ? wakeEngine.createStream({
-        threshold:     OWW_THRESHOLD,
-        triggerFrames: OWW_TRIGGER_FRAMES,
-        refractoryMs:  OWW_REFRACTORY_MS,
-        gain:          OWW_GAIN,
-        gainState:     userGainState.get(userId) || null,
-        label:         userId,
-        onDetect: (score, at) => {
-          lastWakeAt = at;
-          console.log(`[${userId}] [oww] wake word detected (score=${score.toFixed(3)})`);
-
-          // Barge-in while this speaker's previous question is still with the
-          // LLM. Before, `flushing` held the new request back until the old
-          // one finished: during a long think the speaker could not get
-          // through at all, and by the time the old answer arrived their
-          // buffered "hey Luna" was too old and got discarded. Now the old
-          // question is cancelled at once, which releases `flushing` in a
-          // moment, and the buffer is cut down to the audio around the wake
-          // phrase so the new question is not prefixed by whatever was said
-          // during the wait.
-          if (flushing) {
-            console.log(`[${userId}] barge-in — cancelling the previous question`);
-            playback.interrupt(userId);
-            segmenter.keepLast(Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS));
-          }
-        },
-      })
-    : null;
-  const feedWake = wakeStream
-    ? createWakeFeeder(wakeStream, { frameMs: DECODER_CHUNK_MS, maxFillMs: MAX_SILENCE_FILL_MS })
-    : null;
-
-  const decodePacket = createPacketDecoder(new OpusEncoder(48000, 1), {
-    onPcm,
-    onUndecodable: count => console.warn(`[${userId}] ${count} audio packet(s) could not be decoded — dropped ` +
-      '(normal for a moment while the encryption session is set up)'),
-  });
-  audioStream.setMaxListeners(20);
-  audioStream.on('data', decodePacket);
-
-  captureStates.set(userId, {
-    wakeStream,
-    expectQuestion(ms) { followUpUntil = Date.now() + ms; },
-    get flushing() { return flushing; },
-    get buffered() { return segmenter.buffered; },
-    get lastData() { return lastDataTime; },
-  });
-
-  function onPcm(frame) {
-    lastDataTime = Date.now();
-    noteAudio(userId);
-    // The model hears every frame, quiet ones included.
-    if (feedWake) {
-      feedWake(frame).then(score => {
-        if (OWW_DEBUG_SCORE > 0 && score !== null && score >= OWW_DEBUG_SCORE) {
-          console.log(
-            `[${userId}] [oww] score=${score.toFixed(3)} ` +
-            `gain=${wakeStream.lastGain.toFixed(1)}x rms=${Math.round(wakeStream.lastRms)}`
-          );
-        }
-      }).catch(() => {});
-    }
-    segmenter.push(frame);
-  }
-
-  let blockedWarnAt = 0;
-
-  function flushUtterance() {
-    // Being blocked here is how "she only answers once" manifests: `flushing`
-    // stays true while a response is in flight, and every utterance in that
-    // window is refused. Normally it clears; if it does not, this is the only
-    // visible symptom. Rate-limited so it does not flood at 10 Hz.
-    if (flushing) {
-      const now = Date.now();
-      if (now - blockedWarnAt > 10000) {
-        blockedWarnAt = now;
-        console.warn(
-          `[${userId}] flush blocked — still processing a previous request ` +
-          `(${Math.round((now - flushStartedAt) / 1000)}s). Speech is buffering, not lost.`
-        );
-      }
-      return;
-    }
-
-    if (segmenter.buffered === 0) return;
-
-    // Only the wake phrase so far, then a pause: wait for the question rather
-    // than answering "hey Luna" on its own. The question, once spoken, ends
-    // the utterance as usual (silence after it); if none comes, the timer
-    // ends the wait and the greeting is answered. The timer stands down once
-    // the question has begun: firing mid-question cut it off ("…will be like
-    // on." — "Saturday" then arrived as an utterance with no wake word).
-    const quietMs = Date.now() - segmenter.lastSpeechAt;
-    if (wakeStream && decideUtteranceEnd({ quietMs, lastSpeechAt: segmenter.lastSpeechAt,
-        wakeAt: lastWakeAt, listenMs: WAKE_LISTEN_MS }) === 'listen') {
-      if (!listening) {
-        listening = true;
-        console.log(`[${userId}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
-      }
-      clearTimeout(listenTimer);
-      listenTimer = setTimeout(() => {
-        if (Date.now() - segmenter.lastSpeechAt >= SILENCE_MS) flushUtterance();
-      }, WAKE_LISTEN_MS - quietMs + 20);
-      return;
-    }
-    listening = false;
-    clearTimeout(listenTimer);
-
-    flushing = true;
-    flushStartedAt = Date.now();
-    const { pcm, durationMs, speechMs, speechStartedAt } = segmenter.take();
-
-    // Consume the detection up front. Every exit path below must leave
-    // lastWakeAt disarmed, otherwise a detection that was dropped by an early
-    // return stays armed and silently validates a later, wake-word-free
-    // utterance.
-    const wakeAt = lastWakeAt;
-    lastWakeAt = 0;
-
-    // MIN_SPEECH_MS is measured against speech, not speech plus lead-in, or
-    // the lead-in would quietly lower it and let short noise bursts through.
-    if (speechMs < MIN_SPEECH_MS) {
-      // Too short to transcribe, but the detector sees all audio while the
-      // segmenter only keeps frames above ENERGY_THRESHOLD. A quiet speaker
-      // can trip the model without clearing the energy gate — re-arm rather
-      // than burning the detection and rejecting the query that follows.
-      lastWakeAt = wakeAt;
-      flushing = false;
-      return;
-    }
-
-    // The answer to "did you mean to ask me something?": no wake word needed.
-    const followUp = Date.now() < followUpUntil;
-    followUpUntil = 0;
-    if (followUp) {
-      wakeStream?.takePeak();
-      console.log(`[${userId}] the question after "did you mean to ask me something?" — no wake word needed`);
-    }
-
-    let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
-    if (wakeStream && !followUp) {
-      const now = Date.now();
-      // The peak is read (and reset) once per utterance, whatever the verdict,
-      // so a good score cannot leak into a later utterance.
-      const peak = wakeStream.takePeak();
-      const decision = decideWake({ wakeAt, speechStartedAt, now, durationMs, peak,
-        graceMs: OWW_GRACE_MS, candidateThreshold: OWW_CANDIDATE_THRESHOLD });
-      verdict = decision.verdict;
-      if (verdict === 'candidate') {
-        console.log(`[${userId}] [oww] wake candidate (peak score ${peak.toFixed(3)}, ` +
-          `threshold ${OWW_THRESHOLD}) — transcribing to confirm`);
-      } else if (verdict === 'discard') {
-        // The model's best score across the discarded utterance. If you spoke
-        // the wake word and this reads 0.2x, the threshold is too high. If it
-        // reads 0.00x, the model did not react to your voice at all and no
-        // threshold will help.
-        console.log(
-          `[${userId}] utterance discarded — no wake word ` +
-          `(${Math.round(durationMs)}ms, peak score ${peak.toFixed(3)}, ` +
-          `threshold ${OWW_THRESHOLD})`
-        );
-        // A detection that exists but fails the window check is the single
-        // most confusing failure mode — the user said the wake word, saw it
-        // logged, and got nothing. Say why. (Silence when wakeAt === 0 is
-        // normal: that is just ordinary conversation being filtered out.)
-        if (wakeAt > 0) {
-          console.warn(
-            `[${userId}] DISCARDED despite detection — ` +
-            `wake was ${now - wakeAt}ms ago, speech began ${now - speechStartedAt}ms ago, ` +
-            `utterance ${Math.round(durationMs)}ms, span ${Math.round(decision.span)}ms. ` +
-            'Raise OWW_GRACE_MS if this looks wrong.'
-          );
-        }
-        flushing = false;
-        return;
-      }
-    }
-
-    console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
-    processUtterance(pcm, userId, connection, channel, followUp || (wakeStream ? verdict === 'detected' : false), verdict === 'candidate' && !followUp)
-      .finally(() => { flushing = false; });
-  }
-
-  // Discord stops sending packets during true silence, so the segmenter's
-  // silence timer alone can miss the end of speech. Every 100 ms:
-  const dataWatchdog = setInterval(() => {
-    // …no data for SILENCE_MS while speaking ends the utterance;
-    if (segmenter.speaking && Date.now() - lastDataTime > SILENCE_MS) {
-      flushUtterance();
-    }
-
-    // …an utterance that never sees a silence gap is cut off;
-    if (segmenter.speaking && Date.now() - segmenter.speechStartedAt > MAX_SPEECH_MS) {
-      console.warn(
-        `[${userId}] ${Math.round(MAX_SPEECH_MS / 1000)}s of continuous speech with no ` +
-        'silence gap — forcing flush. ENERGY_THRESHOLD is likely below your background ' +
-        'noise floor, or Luna is hearing herself through your speakers.'
-      );
-      segmenter.stopSilenceTimer();
-      flushUtterance();
-      // If the flush was refused — already flushing, or nothing buffered —
-      // reset anyway so this does not re-fire every 100 ms.
-      if (segmenter.speaking) segmenter.abandon();
-    }
-
-    // …and a request that never returns releases this speaker. `flushing` is
-    // cleared in processUtterance's .finally(); if a Whisper or LM Studio call
-    // never settles it stays true forever and this user goes permanently deaf
-    // with no error logged. Self-heal, and say so loudly.
-    if (flushing && Date.now() - flushStartedAt > STUCK_FLUSH_MS) {
-      console.error(
-        `[${userId}] flush stuck for ${Math.round((Date.now() - flushStartedAt) / 1000)}s ` +
-        '— releasing. A Whisper or LM Studio request almost certainly never returned.'
-      );
-      flushing = false;
-      flushStartedAt = 0;
-      // processUtterance's own guard is released in the same .finally() that
-      // never ran — without this every later utterance is still dropped as
-      // "previous one still being processed" and the self-heal heals nothing.
-      processingUsers.delete(userId);
-    }
-  }, 100);
-
-  audioStream.once('close', () => {
-    console.log(`[${userId}] capture stream closed — will resume on next speech`);
-    clearInterval(dataWatchdog);
-    clearTimeout(listenTimer);
-    segmenter.close();
-    if (wakeStream) {
-      userGainState.set(userId, wakeStream.exportGainState());
-      wakeStream.close();
-    }
-    captureStates.delete(userId);
-    listeningUsers.delete(userId);
-    // Stream closed — speaking.start will re-trigger continuousCapture next time user speaks
-  });
-
-  audioStream.once('error', err => {
-    console.error(`[${userId}] capture stream error:`, err);
-    clearInterval(dataWatchdog);
-    clearTimeout(listenTimer);
-    segmenter.close();
-    if (wakeStream) wakeStream.close();
-    captureStates.delete(userId);
-    listeningUsers.delete(userId);
-  });
-}
-
-const processingUsers = new Set(); // tracks who is currently being transcribed/responded to
 
 // ─── WAV helper ───────────────────────────────────────────────────────────────
 
@@ -1113,11 +418,11 @@ async function processUtterance(pcm, userId, connection, channel, wakeDetected =
 // finishing, are taken as the question without the wake word. (Until she has
 // finished, the window stays open, so an early answer still counts.)
 function askForQuestion(userId, connection) {
-  const name = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
+  const name = speakableName(session.channel?.members?.get(userId)?.displayName);
   const fitting = REPROMPTS.filter(p => p.includes('{name}') === Boolean(name));
   const text = fillPhrase(fitting.length ? fitting : REPROMPTS, { name });
   console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
-  const expect = ms => captureStates.get(userId)?.expectQuestion(ms);
+  const expect = ms => listener.expectQuestion(userId, ms);
   expect(60000);
   const generation = playback.interrupt(userId);
   playback.queue(async () => {
@@ -1140,8 +445,8 @@ const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
 
 function startLlmTools() {
   // say_in_voice tells the model the truth about whether anything was said.
-  const tools = LLM_TOOLS.map(t => t.name !== 'say_in_voice' ? t : { ...t, run: () => activeConnection
-    ? `Said in ${activeVoiceChannel?.name || 'the voice channel'}.`
+  const tools = LLM_TOOLS.map(t => t.name !== 'say_in_voice' ? t : { ...t, run: () => session.connection
+    ? `Said in ${session.channel?.name || 'the voice channel'}.`
     : 'You are not in a voice channel, so nothing was said. Tell them that.' });
   const server = createMcpServer({ tools });
   http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
@@ -1158,17 +463,17 @@ function startLlmTools() {
 let autoJoinPaused = false;
 
 function leaveOnRequest(userId) {
-  if (!activeConnection) return;
-  const who = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName) || userId;
+  if (!session.connection) return;
+  const who = speakableName(session.channel?.members?.get(userId)?.displayName) || userId;
   if (AUTO_JOIN_CHANNELS.length) autoJoinPaused = true;
-  leaveVoice(`asked to leave by ${who}`);
+  session.leave(`asked to leave by ${who}`);
 }
 
 // Posts a smakbot command (commands.js) in the text channel, summoning smakbot
 // first if it isn't in the voice channel. Used by the fixed commands and by
 // the LLM's music tools, by voice and by text.
 function sendSmakbotCommand(channel, command) {
-  const musicBotPresent = !!activeVoiceChannel?.members?.some(m => m.user.username.toLowerCase().includes('smakbot'));
+  const musicBotPresent = !!session.channel?.members?.some(m => m.user.username.toLowerCase().includes('smakbot'));
   return postSmakbotCommand(channel, command, { musicBotPresent, console });
 }
 
@@ -1281,7 +586,7 @@ async function handleQuery(query, connection, channel, t0 = Date.now(), userId =
   let answerStarted = false;
   let fillerTimer   = null;
   let fillersSaid   = 0;
-  const askerName = speakableName(activeVoiceChannel?.members?.get(userId)?.displayName);
+  const askerName = speakableName(session.channel?.members?.get(userId)?.displayName);
   const usable = THINKING_PHRASES.filter(p => askerName || !p.includes('{name}'));
   let deck = [];
   let lastFiller = null;
@@ -1656,7 +961,7 @@ function greetMember(member, connection) {
 function announceInVoice(member, connection, text, voiceId, fallbackText) {
   const generation = playback.nextGeneration(member.id);
   playback.queue(async () => {
-    if (activeConnection !== connection) return;
+    if (session.connection !== connection) return;
     let pt = await fetchTTSInVoice(text, voiceId);
     if (!pt) {
       console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
@@ -1672,7 +977,7 @@ function announceInVoice(member, connection, text, voiceId, fallbackText) {
 function announce(member, connection, text) {
   const generation = playback.nextGeneration(member.id);
   playback.queue(async () => {
-    if (activeConnection !== connection) return; // Luna left in the meantime
+    if (session.connection !== connection) return; // Luna left in the meantime
     const pt = await fetchTTS(text);
     if (pt) await playback.play(pt, connection);
   }, member.id, generation);
@@ -1713,13 +1018,13 @@ const INTRO_QUEUE_ID = 'luna:intro';
 // by accident; whoever speaks first after it is simply answered next.
 function introduceSelf(connection) {
   if (!ANNOUNCE_SELF) return;
-  const names = introNames(activeVoiceChannel);
+  const names = introNames(session.channel);
   const fitting = INTROS.filter(p => p.includes('{names}') === names.length > 0);
   const text = fillPhrase(fitting.length ? fitting : INTROS, { wake: WAKE_LABEL, names: NAME_LIST.format(names) || 'everyone' });
   console.log(`[intro] "${text}"`);
   const generation = playback.nextGeneration(INTRO_QUEUE_ID);
   playback.queue(async () => {
-    if (activeConnection !== connection) return;
+    if (session.connection !== connection) return;
     const pt = await fetchTTS(text);
     if (pt) await playback.play(pt, connection);
   }, INTRO_QUEUE_ID, generation);
@@ -1755,19 +1060,19 @@ function announceLeave(member, connection) {
 
 // Someone left Luna's channel — disconnected from voice, or moved to another
 // channel. If they were the last real user, the disconnect handler below
-// tears the connection down, and the activeConnection check skips this.
+// tears the connection down, and the session.connection check skips this.
 function onVoiceLeave(oldState, newState) {
-  if (!ANNOUNCE_LEAVE || !activeVoiceChannel || !activeConnection) return;
-  if (oldState.channelId !== activeVoiceChannel.id) return;
+  if (!ANNOUNCE_LEAVE || !session.channel || !session.connection) return;
+  if (oldState.channelId !== session.channel.id) return;
   if (oldState.channelId === newState.channelId) return;
 
   const member = oldState.member;
   if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
 
-  const connection = activeConnection;
+  const connection = session.connection;
   setTimeout(() => {
-    if (activeConnection !== connection) return;
-    if (member.voice.channelId === activeVoiceChannel?.id) return; // came back
+    if (session.connection !== connection) return;
+    if (member.voice.channelId === session.channel?.id) return; // came back
     announceLeave(member, connection);
   }, LEAVE_DELAY_MS);
 }
@@ -1776,17 +1081,17 @@ function onVoiceLeave(oldState, newState) {
 // another channel. Mute/deafen/stream toggles also emit VoiceStateUpdate but
 // keep the same channelId, so they never match.
 function onVoiceJoin(oldState, newState) {
-  if (GREET_ON_JOIN === 'off' || !activeVoiceChannel || !activeConnection) return;
-  if (newState.channelId !== activeVoiceChannel.id) return;
+  if (GREET_ON_JOIN === 'off' || !session.channel || !session.connection) return;
+  if (newState.channelId !== session.channel.id) return;
   if (oldState.channelId === newState.channelId) return;
 
   const member = newState.member;
   if (!member || member.user.bot || IGNORED_USERS.has(member.id)) return;
 
-  const connection = activeConnection;
+  const connection = session.connection;
   setTimeout(() => {
-    if (activeConnection !== connection) return;
-    if (member.voice.channelId !== activeVoiceChannel?.id) return; // left again
+    if (session.connection !== connection) return;
+    if (member.voice.channelId !== session.channel?.id) return; // left again
     greetMember(member, connection);
   }, GREET_DELAY_MS);
 }
@@ -1795,12 +1100,12 @@ function onVoiceJoin(oldState, newState) {
 // last real user (non-bot, non-ignored) leaves.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   // Luna herself was dragged to another channel by someone. (A kick or a lost
-  // connection is handled by watchConnection; !luna updates this itself.)
+  // connection is handled by voice-session.js; !luna updates this itself.)
   if (newState.id === client.user.id) {
-    if (activeConnection && newState.channelId && newState.channelId !== activeVoiceChannel?.id) {
-      activeVoiceChannel = newState.channel;
-      console.log(`[voice] moved to ${activeVoiceChannel.name}`);
-      if (getRealMemberCount(activeVoiceChannel) === 0) leaveVoice('Moved into an empty channel');
+    if (session.connection && newState.channelId && newState.channelId !== session.channel?.id) {
+      session.moveTo(newState.channel);
+      console.log(`[voice] moved to ${newState.channel.name}`);
+      if (session.realMemberCount(session.channel) === 0) session.leave('Moved into an empty channel');
     }
     return;
   }
@@ -1816,11 +1121,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
   // Someone joined a voice channel while Luna is in none: maybe one to
   // auto-join (scheduleAutoJoin checks).
-  if (!activeConnection && newState.channelId && newState.channelId !== oldState.channelId) scheduleAutoJoin();
+  if (!session.connection && newState.channelId && newState.channelId !== oldState.channelId) scheduleAutoJoin();
 
-  if (!activeVoiceChannel || oldState.channelId !== activeVoiceChannel.id) return;
-  if (getRealMemberCount(activeVoiceChannel) === 0) {
-    leaveVoice('Last real user left');
+  if (!session.channel || oldState.channelId !== session.channel.id) return;
+  if (session.realMemberCount(session.channel) === 0) {
+    session.leave('Last real user left');
     scheduleAutoJoin();   // people may be waiting in another auto-join channel
   }
 });
@@ -1835,7 +1140,7 @@ const textChat = createTextChat({
   inChannels: channel => named(channel, config.TEXT_CHAT_CHANNELS),
   sendCommand: sendSmakbotCommand,
   sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
-  voiceChannelName: () => (activeConnection ? activeVoiceChannel?.name || 'the voice channel' : null),
+  voiceChannelName: () => (session.connection ? session.channel?.name || 'the voice channel' : null),
 });
 
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or
@@ -1843,13 +1148,13 @@ const textChat = createTextChat({
 // superseded if they then ask something by voice — not interrupting anyone.
 // Returns false when she isn't in a voice channel.
 function sayInVoice(text, userId, who) {
-  const connection = activeConnection;
+  const connection = session.connection;
   const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
   if (!connection || !line) return false;
   console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
   const generation = playback.generationOf(userId) ?? playback.nextGeneration(userId);
   playback.queue(async () => {
-    if (activeConnection !== connection) return;
+    if (session.connection !== connection) return;
     const pt = await fetchTTS(line);
     if (pt) await playback.play(pt, connection);
   }, userId, generation);
@@ -1891,7 +1196,7 @@ function checkAutoJoin() {
 
 function autoJoinChannelsOccupied() {
   return [...(client.guilds?.cache?.values() ?? [])].some(guild => guildChannels(guild)
-    .some(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS) && getRealMemberCount(c) > 0));
+    .some(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS) && session.realMemberCount(c) > 0));
 }
 
 function scheduleAutoJoin() {
@@ -1901,10 +1206,10 @@ function scheduleAutoJoin() {
 }
 
 function autoJoin() {
-  if (!ready || activeConnection || autoJoinPaused || Date.now() < autoJoiningUntil) return;
+  if (!ready || session.connection || autoJoinPaused || Date.now() < autoJoiningUntil) return;
   const candidates = [...(client.guilds?.cache?.values() ?? [])].flatMap(guild => guildChannels(guild)
     .filter(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS))
-    .map(channel => ({ guild, channel, people: getRealMemberCount(channel) })))
+    .map(channel => ({ guild, channel, people: session.realMemberCount(channel) })))
     .filter(c => c.people > 0)
     .sort((a, b) => b.people - a.people);
   if (!candidates.length) return;
@@ -1912,8 +1217,8 @@ function autoJoin() {
   const g = { id: guild.id, adapterCreator: guild.voiceAdapterCreator };
   console.log(`[voice] auto-joining ${channel.name} (${people} ${people === 1 ? 'person' : 'people'} there)`);
   autoJoiningUntil = Date.now() + 15000;
-  const connection = joinVoice(channel, g);
-  attachVoice(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; introduceSelf(connection); });
+  const connection = session.join(channel, g);
+  session.attach(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; introduceSelf(connection); });
 }
 
 void client.login(config.DISCORD_TOKEN || undefined);
