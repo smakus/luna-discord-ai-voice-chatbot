@@ -10,9 +10,11 @@
 //     play, leaving, something to say — read here once, so voice and text
 //     only decide what to do about them.
 //
-// createLlm({ config, fetch, console, expressivePrompt }) → llm. fetch and
-// console are passed in (not the globals) so the test harness can fake them;
-// expressivePrompt() is the audio-tag instruction of the voice speaking now.
+// createLlm({ config, fetch, console, expressivePrompt, musicLine }) → llm.
+// fetch and console are passed in (not the globals) so the test harness can
+// fake them; expressivePrompt() is the audio-tag instruction of the voice
+// speaking now; musicLine() resolves to the prompt line about the song playing
+// (now-playing.js), or ''.
 
 const { systemPrompt, SEARCH_PROMPT } = require('./prompt');
 const { takeSentences } = require('./sentences');
@@ -109,7 +111,7 @@ function condenseSearchResults(calls, maxChars = 6000) {
 
 const TOOLS_PLUGIN_ID = 'mcp/luna';
 
-function createLlm({ config, fetch, console, expressivePrompt = () => '' }) {
+function createLlm({ config, fetch, console, expressivePrompt = () => '', musicLine = async () => '' }) {
   const LM_STUDIO_URL = config.LM_STUDIO_URL;
 
   // The LLM gets two limits, because a single overall timeout cannot tell a
@@ -412,8 +414,10 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '' }) {
     // Audio-tag instruction only while an expressive TTS (ElevenLabs v3/v4) is
     // the one speaking; empty for Kokoro, so it is never told to use tags.
     const expressive = textMode ? '' : expressivePrompt();
+    // What smakbot is playing, so "what's this song about?" needs no tool call.
+    const music = await musicLine().catch(() => '');
     body.system_prompt = systemPrompt({ config, timeZone: LUNA_TIMEZONE, expressive,
-      search: useSearch && config.ANNOUNCE_SEARCH, tools: offeredTools, speaker, extra: extraSystem, flavor, text: textMode });
+      search: useSearch && config.ANNOUNCE_SEARCH, tools: offeredTools, speaker, music, extra: extraSystem, flavor, text: textMode });
 
     const priorId = getConversationId(memoryKey);
     if (priorId) body.previous_response_id = priorId;

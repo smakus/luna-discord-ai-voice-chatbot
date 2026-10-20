@@ -16,6 +16,7 @@
 //   sendCommand(channel, command)     post a smakbot command
 //   leave(userId)                     leave the voice channel at their request
 //   expectQuestion(userId, ms)        voice-listen.js: their next words are the question
+//   nowPlaying                        now-playing.js: "what song is this?"
 
 const path = require('path');
 const { route, LEAVE_PHRASES } = require('./commands');
@@ -26,7 +27,7 @@ const { parseWaits } = require('./config');
 const { isBareWake, confirmWake } = require('./voice-input');
 const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
-function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion }) {
+function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying }) {
   // ─── Settings ───────────────────────────────────────────────────────────────
 
   // A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
@@ -189,6 +190,17 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       await sendCommand(channel, what.command);
 
       if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration });
+      return;
+    }
+
+    // "What song is this?": answered from smakbot, like a command. (Without a
+    // MUSIC_STATUS_URL it goes to the LLM like any question.)
+    if (what.type === 'now-playing' && nowPlaying?.enabled) {
+      const generation = playback.interrupt(userId);
+      if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
+      const text = nowPlaying.describe(await nowPlaying.get(session.channel?.guild?.id || ''));
+      console.log(`[${userId}] [music] now playing → "${text}"`);
+      playback.say(text, { connection, userId, generation });
       return;
     }
 

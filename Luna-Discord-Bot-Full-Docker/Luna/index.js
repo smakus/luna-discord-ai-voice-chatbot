@@ -20,14 +20,20 @@ const { createListener } = require('./voice-listen');
 const { createVoiceAnswerer } = require('./voice-answer');
 const { createWhisper } = require('./whisper');
 const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
+const { createNowPlaying } = require('./now-playing');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 // Every setting, parsed and checked in one place (config.js).
 const config = loadConfig(process.env, { warn: message => console.warn(message) });
 
+// What smakbot is playing (now-playing.js): answers "what song is this?", and
+// names the song in the LLM's prompt while one plays.
+const nowPlaying = createNowPlaying({ config, fetch, console });
+
 // Talking to LM Studio: model, prompt, memory, search and tool offers (answer-llm.js).
-const llm = createLlm({ config, fetch, console, expressivePrompt });
+const llm = createLlm({ config, fetch, console, expressivePrompt,
+  musicLine: async () => nowPlaying.promptLine(await nowPlaying.get(session.channel?.guild?.id || '')) });
 
 // Everything said in the voice channel goes through one queue (voice-playback.js).
 const playback = createPlayback({ voice: voiceLib, fetchTTS, console, lookahead: config.TTS_LOOKAHEAD });
@@ -95,6 +101,7 @@ const answerer = createVoiceAnswerer({
   sendCommand: (channel, command) => sendSmakbotCommand(channel, command),
   leave: userId => leaveOnRequest(userId),
   expectQuestion: (userId, ms) => listener.expectQuestion(userId, ms),
+  nowPlaying,
 });
 
 // Her intro, join greetings and farewells (announce.js).
@@ -290,6 +297,7 @@ const textChat = createTextChat({
   sendCommand: sendSmakbotCommand,
   sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
   voiceChannelName: () => (session.connection ? session.channel?.name || 'the voice channel' : null),
+  nowPlaying,
 });
 
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or

@@ -6,6 +6,7 @@
 //     { type: 'music', command }   play/skip/stop, straight to smakbot
 //     { type: 'leave' }            "leave", "bye" (by voice only)
 //     { type: 'say' }              "say … in the voice channel" (typed only)
+//     { type: 'now-playing' }      "what song is this?" (answered from smakbot)
 //     { type: 'ask' }              everything else: the LLM answers
 //
 // A smakbot command, whether from a fixed command here or from the LLM's
@@ -144,6 +145,15 @@ const LEAVE_PHRASES = ['Okay, bye everyone!', "Alright, I'm heading out. Bye!", 
 const SAY_RE = /\b(?:say|tell|announce|speak|shout|whisper|read)\b[\s\S]*?\b(?:in|on|over|to|into)\s+(?:the\s+)?(?:voice(?:\s+(?:channel|chat|call))?|vc|audio(?:\s+channel)?|call)\b/i;
 const isSayRequest = question => SAY_RE.test(String(question || ''));
 
+// ─── What's playing ───────────────────────────────────────────────────────────
+//
+// "What song is this?", "what's playing?", "what are we listening to?",
+// "what's the name of this song?" — the whole question, so "what song is
+// this about?" or "who sings this?" still reach the LLM (which is told what
+// is playing, see now-playing.js).
+const NOW_PLAYING_RE = /^(?:what|which)(?:'s|\s+is)?\s+(?:(?:the\s+)?(?:song|track|music|tune)(?:\s+is)?(?:\s+(?:this|that|playing|on))?|this\s+(?:song|track|tune)(?:\s+called)?|playing|that\s+(?:song|track|tune)|the\s+name\s+of\s+(?:this|that|the)\s+(?:song|track|tune)|are\s+we\s+listening\s+to|(?:song|track)\s+are\s+we\s+listening\s+to)(?:\s+(?:right\s+)?now)?[\s,.!?]*$/i;
+const isNowPlayingQuestion = question => NOW_PLAYING_RE.test(bare(question));
+
 // ─── Routing ──────────────────────────────────────────────────────────────────
 
 function route(question, { voice }) {
@@ -151,6 +161,7 @@ function route(question, { voice }) {
   if (cmd) return { type: 'music', command: { text: cmd.build(cmd.arg), summon: !!cmd.summon, ack: cmd.ack(cmd.arg) } };
   if (voice && LEAVE_RE.test(bare(question))) return { type: 'leave' };
   if (!voice && isSayRequest(question)) return { type: 'say' };
+  if (isNowPlayingQuestion(question)) return { type: 'now-playing' };
   return { type: 'ask' };
 }
 
@@ -179,6 +190,6 @@ async function sendSmakbotCommand(channel, command, { musicBotPresent = false, c
 }
 
 module.exports = {
-  route, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest,
+  route, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest, isNowPlayingQuestion,
   LEAVE_RE, LEAVE_PHRASES,
 };

@@ -119,6 +119,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
 | "Hey Luna, play the top 10" / "play our most played" | smakbot's most played songs (`!playtop`) |
+| "Hey Luna, what song is this?" / "what's playing?" | The song smakbot is playing, who asked for it, and what's next |
 
 When Luna starts searching the web, she says a short heads-up such as *"Hmm, let me take a look."* at that moment, so you always know when she's using the internet, and the Discord status changes to "searching the web". If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
 
@@ -279,6 +280,7 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
 | `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |
 | `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the LLM's tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
+| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Unset: off |
 | `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
 | `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
@@ -464,7 +466,7 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 | ----- | ----- |
 | Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
 | Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
-| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `tts.js`, `whisper.js`, `mcp-server.js` |
+| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `tts.js`, `whisper.js`, `mcp-server.js` |
 | Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
 
 Modules that need a library, `fetch`, timers or each other get them as arguments (`createX({ ... })`), which is how the test harness swaps in fakes.
@@ -537,6 +539,8 @@ Below the table, each model's problems are listed by question. The answers are s
 ## MusicBot integration
 
 Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave". "Play the top 10", "play the top twenty songs", "play our most played" or "play my favorites" post `!playtop <n>` (10 if no number is said, at most 50): smakbot's most played songs, from its cache. "Play top of the world" is still a song.
+
+With smakbot's now-playing endpoint (`StatusApiPort` in smakbot, `MUSIC_STATUS_URL` in Luna), "what song is this?", "what's playing?" or "what are we listening to?" is answered at once: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* While a song plays, the LLM is told which one, so "what's this song about?", "who wrote it?" or "when did it come out?" need no title.
 
 Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `play_top_songs`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
