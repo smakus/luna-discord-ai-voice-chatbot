@@ -30,7 +30,7 @@ describe('MCP server', () => {
   });
   it('tools/list: the music tools, leave_channel and say_in_voice, without their run()', async () => {
     const r = await exchange(server, { body: { jsonrpc: '2.0', id: 2, method: 'tools/list' } });
-    assert.deepStrictEqual(r.json.result.tools.map(t => t.name), ['play_music', 'skip_song', 'stop_music', 'leave_channel', 'say_in_voice']);
+    assert.deepStrictEqual(r.json.result.tools.map(t => t.name), ['play_music', 'play_top_songs', 'skip_song', 'stop_music', 'leave_channel', 'say_in_voice']);
     assert.ok(r.json.result.tools.every(t => t.description && t.inputSchema && !t.run));
   });
   it('tools/call: the tool\'s answer for the model', async () => {

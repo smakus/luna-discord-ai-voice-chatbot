@@ -31,6 +31,19 @@ const MUSIC_TOOLS = [
     run: ({ query }) => `Queued "${query}" with the music bot. It plays after any song already playing.`,
   },
   {
+    name: 'play_top_songs',
+    description: "Play the most played songs: the music bot's own favourites, the ones played most " +
+      'in this server. Use it when someone asks for the top songs, the most played, the usual, or ' +
+      'their favourites rather than a particular song.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        count: { type: 'integer', description: 'How many songs (default 10, at most 50)', minimum: 1, maximum: 50 },
+      },
+    },
+    run: ({ count }) => `Queued the ${count || 10} most played songs with the music bot.`,
+  },
+  {
     name: 'skip_song',
     description: 'Skip the song the music bot is playing now and go to the next one in its queue.',
     inputSchema: { type: 'object', properties: {} },
@@ -85,6 +98,10 @@ function smakbotCommandFor(tool, args = {}) {
   if (tool === 'play_music') {
     const query = String(args.query || '').trim();
     return query ? { text: `!play ${query}`, summon: true } : null;
+  }
+  if (tool === 'play_top_songs') {
+    const n = Math.min(50, Math.max(1, Math.round(Number(args.count)) || 10));
+    return { text: `!playtop ${n}`, summon: true };
   }
   if (tool === 'skip_song') return { text: '!skip', summon: false };
   if (tool === 'stop_music') return { text: '!stop', summon: false };

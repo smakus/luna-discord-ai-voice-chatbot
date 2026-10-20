@@ -118,6 +118,7 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 | "Hey Luna, what's the weather today?" | Web search, then answer |
 | "Hey Luna, what did I just ask you?" | Uses your conversation memory |
 | "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
+| "Hey Luna, play the top 10" / "play our most played" | smakbot's most played songs (`!playtop`) |
 
 When Luna starts searching the web, she says a short heads-up such as *"Hmm, let me take a look."* at that moment, so you always know when she's using the internet, and the Discord status changes to "searching the web". If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
 
@@ -535,9 +536,9 @@ Below the table, each model's problems are listed by question. The answers are s
 
 ## MusicBot integration
 
-Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave".
+Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave". "Play the top 10", "play the top twenty songs", "play our most played" or "play my favorites" post `!playtop <n>` (10 if no number is said, at most 50): smakbot's most played songs, from its cache. "Play top of the world" is still a song.
 
-Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `play_top_songs`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
 ```json
 "luna": { "url": "http://127.0.0.1:8895/mcp" }

@@ -28,7 +28,34 @@ const { smakbotCommandFor } = require('./llm-tools');
 // The trailing [\s,.!?]* is load-bearing: Whisper punctuates single-word
 // utterances, so a spoken "skip" arrives as "Skip." and matches nothing
 // without it.
+// "the top 10", "ten": how many of the most played songs.
+const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
+const NUMBER = `\\d+|${NUMBER_WORDS.join('|')}`;
+const TOP_DEFAULT = 10;
+const TOP_MAX     = 50;
+// A count as said (digits or a word), within 1..TOP_MAX; TOP_DEFAULT if none.
+function topCount(said) {
+  if (!said) return TOP_DEFAULT;
+  const n = /^\d+$/.test(said) ? Number(said) : NUMBER_WORDS.indexOf(said.toLowerCase());
+  return Math.min(TOP_MAX, Math.max(1, n || TOP_DEFAULT));
+}
+
 const SMAKBOT_COMMANDS = [
+  {
+    // smakbot's most played songs, from its cache (!playtop): "play the top
+    // 10", "play the top songs", "play our most played", "play the 20 most
+    // played songs", "play my favorites". Before 'play', which would search
+    // for the words instead. Anchored at the end, so "play top of the world"
+    // is still a song.
+    name:    'playtop',
+    pattern: new RegExp(
+      `^play\\s+(?:(?:the|our|my)\\s+)?(?:(?:top|most[\\s-]played)(?:\\s+(${NUMBER}))?|(${NUMBER})\\s+most[\\s-]played|(?<=(?:our|my)\\s+)favou?rites?)` +
+      `(?:\\s+(?:songs?|tracks?))?[\\s,.!?]*$`, 'i'),
+    build:   n => `!playtop ${topCount(n)}`,
+    ack:     n => `Okay, playing the top ${topCount(n)}.`,
+    summon:  true,
+  },
   {
     name:        'play',
     pattern:     /^play(?:\s+(?:the\s+)?(?:song|music|track))?[,.]?\s+(.+)$/i,
@@ -84,8 +111,9 @@ function extractSmakbotCommand(question) {
     const match = after.match(cmd.pattern);
     if (!match) continue;
 
-    const arg = match[1]
-      ? match[1]
+    const said = match[1] ?? match[2];
+    const arg = said
+      ? said
           .trim()
           .replace(/[,.!?]+$/, '')
           .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')  // strip surrounding quote characters, incl. curly quotes
