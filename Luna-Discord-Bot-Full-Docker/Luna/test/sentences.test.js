@@ -4,7 +4,7 @@
 // Run: node --test test/   (see README → Development)
 const { describe, it } = require('node:test');
 const assert = require('assert');
-const { takeSentences, sentenceEnd } = require('../sentences');
+const { takeSentences, sentenceEnd, createTagJoiner } = require('../sentences');
 
 const split = text => { const { sentences, rest } = takeSentences(text); return rest.trim() ? [...sentences, rest.trim()] : sentences; };
 
@@ -28,6 +28,32 @@ describe('sentence splitting', () => {
     assert.strictEqual(sentenceEnd('the architecture in St.'), -1);
     assert.deepStrictEqual(takeSentences('the architecture in St.'), { sentences: [], rest: 'the architecture in St.' });
     assert.ok(sentenceEnd('That is all.') > 0, 'a normal sentence end splits at once');
+  });
+
+  // Streams `pieces` through takeSentences + the joiner the way answer-llm.js does.
+  const stream = pieces => {
+    const joiner = createTagJoiner(), said = [];
+    let buffer = '';
+    for (const p of pieces) {
+      buffer += p;
+      const { sentences, rest } = takeSentences(buffer);
+      buffer = rest;
+      said.push(...joiner.push(sentences, buffer));
+    }
+    return [...said, ...joiner.flush(buffer)];
+  };
+  it('a tag after the last full stop stays with that sentence ("… umbrella. [chuckles]")', () => {
+    assert.deepStrictEqual(stream(['Bring an ', 'umbrella. ', '[chuck', 'les]']), ['Bring an umbrella. [chuckles]']);
+    assert.deepStrictEqual(stream(['First. ', 'Second one. ', '[laughs] ', '[sighs]']), ['First.', 'Second one. [laughs] [sighs]']);
+  });
+  it('a tag that starts the next sentence stays with that one', () => {
+    assert.deepStrictEqual(stream(['That is all. ', '[sighs] ', 'Oh well.']), ['That is all.', '[sighs] Oh well.']);
+  });
+  it('a finished sentence is said as soon as anything but a tag follows it', () => {
+    const joiner = createTagJoiner();
+    assert.deepStrictEqual(joiner.push(['Hello there.'], ''), [], 'held: a tag may follow');
+    assert.deepStrictEqual(joiner.push([], ' How'), ['Hello there.'], 'released by the next word');
+    assert.deepStrictEqual(joiner.flush(' How are you?'), ['How are you?']);
   });
 
   it('a sentence that really ends in an abbreviation is kept with the next one, never lost', () => {

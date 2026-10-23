@@ -98,7 +98,7 @@ setInterval(() => listener.healthReport(), 30000).unref?.();
 const answerer = createVoiceAnswerer({
   config, console, llm, playback, session, fetchTTS,
   whisper: createWhisper({ config, fetch, console }),
-  sendCommand: (channel, command) => sendSmakbotCommand(channel, command),
+  sendCommand: (channel, command, requesterId) => sendSmakbotCommand(channel, command, requesterId),
   leave: userId => leaveOnRequest(userId),
   expectQuestion: (userId, ms) => listener.expectQuestion(userId, ms),
   nowPlaying,
@@ -243,11 +243,12 @@ function leaveOnRequest(userId) {
 }
 
 // Posts a smakbot command (commands.js) in the text channel, summoning smakbot
-// first if it isn't in the voice channel. Used by the fixed commands and by
-// the LLM's music tools, by voice and by text.
-function sendSmakbotCommand(channel, command) {
+// first if it isn't in the voice channel, credited to whoever asked
+// (requesterId). Used by the fixed commands and by the LLM's music tools, by
+// voice and by text.
+function sendSmakbotCommand(channel, command, requesterId = null) {
   const musicBotPresent = !!session.channel?.members?.some(m => m.user.username.toLowerCase().includes('smakbot'));
-  return postSmakbotCommand(channel, command, { musicBotPresent, console });
+  return postSmakbotCommand(channel, command, { musicBotPresent, console, requesterId });
 }
 
 client.on(Events.Error, console.warn);

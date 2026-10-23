@@ -727,6 +727,17 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.sends.includes('!summon') && H.S.sends.includes('!playtop 5') && H.S.llmRequests.length === 0, H.S.sends.join(' | '));
     assert.strictEqual(H.S.tts[0].text, 'Okay, playing the top 5.');
     ok('"play the top 5" → !summon, !playtop 5, "Okay, playing the top 5." (no LLM)'); }
+  { const H = await setup({}); const id = '189231634736873473'; H.put(id, 'A'); await H.wait(10);
+    await H.T.handleQuery('play some jazz', H.S.lastConnection, H.text, Date.now(), id); await H.until(() => H.S.sends.some(m => /^!play /.test(m?.content ?? m)));
+    const credited = H.S.sends.find(m => m?.content === `!play some jazz --for=<@${id}>`);
+    assert.ok(credited, JSON.stringify(H.S.sends)); assert.deepStrictEqual(credited.allowedMentions, { parse: [] }, 'shown as @name, nobody pinged');
+    H.S.sends.length = 0; await H.T.handleQuery('skip', H.S.lastConnection, H.text, Date.now(), id); await H.wait(50);
+    assert.ok(H.S.sends.includes('!skip'), 'only songs that are queued are credited');
+    const { sendSmakbotCommand } = H.T; const sent = []; const chan = { send: async m => sent.push(m) }; const quiet = { log() {}, error() {} };
+    await sendSmakbotCommand(chan, { text: '!playtop 10', summon: true }, { musicBotPresent: true, console: quiet, requesterId: id });
+    await sendSmakbotCommand(chan, { text: '!play x', summon: true }, { musicBotPresent: true, console: quiet, requesterId: 'text' });
+    assert.deepStrictEqual(sent.map(m => m.content ?? m), [`!playtop 10 --for=<@${id}>`, '!play x']);
+    ok('a song asked for by voice → "!play … --for=<@their id>" (shown as @name, no ping), so smakbot credits them; !skip and non-Discord ids untouched'); }
   { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'play_top_songs' }],
       [5, { type: 'tool_call.arguments', tool: 'play_top_songs', arguments: { count: 8 } }], [5, { type: 'tool_call.success', tool: 'play_top_songs', arguments: { count: 8 }, output: '[]' }], ...sse('Here come the favourites!')];
     await H.T.handleQuery('put on the usual stuff', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.sends.includes('!playtop 8'));
@@ -739,6 +750,12 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music and leave the voice channel\./);
     ok('the system prompt names the tools offered'); }
+
+  console.log('audio tags after the last sentence');
+  { const H = await setup({}); H.S.llmScript = sse('Expect rain today, so bring an umbrella.', '[chuckles]');
+    await H.T.handleQuery('what is the weather', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0); await H.wait(100);
+    assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Expect rain today, so bring an umbrella. [chuckles]']);
+    ok('"… umbrella." then "[chuckles]" → one sentence for the voice (ElevenLabs refuses a tag on its own)'); }
 
   console.log('now playing (smakbot)');
   const NP = { playing: true, paused: false, title: 'Seal - Crazy (Official Music Video)', artist: 'Seal', track: 'Crazy', url: 'https://youtu.be/x',
