@@ -57,7 +57,7 @@ const SAY_MAX_CHARS = 400;
 //   botId()        her Discord user id
 //   isReady()      startup has finished
 //   inChannels(c)  c is one of TEXT_CHAT_CHANNELS
-//   sendCommand(channel, command)          post a smakbot command
+//   sendCommand(channel, command, requesterId)   post a smakbot command, credited to them
 //   sayInVoice(text, userId, who) → bool   speak in the voice channel (false: not in one)
 //   voiceChannelName() → name, or null when not in a voice channel
 //   nowPlaying     now-playing.js: "what song is this?"
@@ -89,7 +89,7 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     const what = route(question, { voice: false });
     // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
     if (what.type === 'music') {
-      await sendCommand(channel, what.command);
+      await sendCommand(channel, what.command, userId);
       if (what.command.ack) await reply(message, what.command.ack).catch(() => {});
       return;
     }
@@ -112,7 +112,7 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
         if (t.type === 'say') {
           sayInVoice(t.text, userId, name);
         } else if (t.type === 'music') {
-          if (t.command) sendCommand(channel, t.command);
+          if (t.command) sendCommand(channel, t.command, userId);
         } else if (t.type === 'search' && !searched) {
           searched = true;
           message.react('🔍').catch(() => {});

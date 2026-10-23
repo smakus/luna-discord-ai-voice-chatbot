@@ -13,7 +13,7 @@
 // createVoiceAnswerer(deps) → { onUtterance, answer, release }.
 //   llm, playback, session, whisper   the modules
 //   fetchTTS                          tts.js
-//   sendCommand(channel, command)     post a smakbot command
+//   sendCommand(channel, command, requesterId)   post a smakbot command, credited to them
 //   leave(userId)                     leave the voice channel at their request
 //   expectQuestion(userId, ms)        voice-listen.js: their next words are the question
 //   nowPlaying                        now-playing.js: "what song is this?"
@@ -187,7 +187,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         playback.playSound(CHIME_PATH, connection).catch(() => {});
       }
 
-      await sendCommand(channel, what.command);
+      await sendCommand(channel, what.command, userId);
 
       if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration });
       return;
@@ -462,7 +462,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           } else if (t.type === 'search-result') {
             searchCalls.push({ query: t.query, output: t.output });
           } else if (t.type === 'music') {
-            if (t.command) sendCommand(channel, t.command);
+            if (t.command) sendCommand(channel, t.command, userId);
           } else if (t.type === 'leave') {
             console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
             leaveAfterAnswer = true;
