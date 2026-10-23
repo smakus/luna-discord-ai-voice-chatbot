@@ -728,15 +728,16 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.strictEqual(H.S.tts[0].text, 'Okay, playing the top 5.');
     ok('"play the top 5" → !summon, !playtop 5, "Okay, playing the top 5." (no LLM)'); }
   { const H = await setup({}); const id = '189231634736873473'; H.put(id, 'A'); await H.wait(10);
-    await H.T.handleQuery('play some jazz', H.S.lastConnection, H.text, Date.now(), id); await H.until(() => H.S.sends.some(m => /^!play /.test(m)));
-    assert.ok(H.S.sends.includes(`!play some jazz --for=${id}`), H.S.sends.join(' | '));
+    await H.T.handleQuery('play some jazz', H.S.lastConnection, H.text, Date.now(), id); await H.until(() => H.S.sends.some(m => /^!play /.test(m?.content ?? m)));
+    const credited = H.S.sends.find(m => m?.content === `!play some jazz --for=<@${id}>`);
+    assert.ok(credited, JSON.stringify(H.S.sends)); assert.deepStrictEqual(credited.allowedMentions, { parse: [] }, 'shown as @name, nobody pinged');
     H.S.sends.length = 0; await H.T.handleQuery('skip', H.S.lastConnection, H.text, Date.now(), id); await H.wait(50);
     assert.ok(H.S.sends.includes('!skip'), 'only songs that are queued are credited');
     const { sendSmakbotCommand } = H.T; const sent = []; const chan = { send: async m => sent.push(m) }; const quiet = { log() {}, error() {} };
     await sendSmakbotCommand(chan, { text: '!playtop 10', summon: true }, { musicBotPresent: true, console: quiet, requesterId: id });
     await sendSmakbotCommand(chan, { text: '!play x', summon: true }, { musicBotPresent: true, console: quiet, requesterId: 'text' });
-    assert.deepStrictEqual(sent, [`!playtop 10 --for=${id}`, '!play x']);
-    ok('a song asked for by voice → "!play … --for=<their id>", so smakbot credits them; !skip and non-Discord ids untouched'); }
+    assert.deepStrictEqual(sent.map(m => m.content ?? m), [`!playtop 10 --for=<@${id}>`, '!play x']);
+    ok('a song asked for by voice → "!play … --for=<@their id>" (shown as @name, no ping), so smakbot credits them; !skip and non-Discord ids untouched'); }
   { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmScript = [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'play_top_songs' }],
       [5, { type: 'tool_call.arguments', tool: 'play_top_songs', arguments: { count: 8 } }], [5, { type: 'tool_call.success', tool: 'play_top_songs', arguments: { count: 8 }, output: '[]' }], ...sse('Here come the favourites!')];
     await H.T.handleQuery('put on the usual stuff', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.sends.includes('!playtop 8'));

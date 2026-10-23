@@ -176,11 +176,12 @@ function toolCommand(tool, args) {
 //
 // Posts a command in the text channel, summoning smakbot first when the
 // command asks for it and smakbot isn't in the voice channel. A song queued
-// for someone (requesterId: their Discord user id) ends in "--for=<id>", so
+// for someone (requesterId: their Discord user id) ends in "--for=<@id>", so
 // smakbot credits it to them rather than to Luna ("added by", now playing).
+// It is a mention, which Discord shows as "@name", sent without pinging them.
 async function sendSmakbotCommand(channel, command, { musicBotPresent = false, console, requesterId = null }) {
   const forSomeone = /^!play/.test(command.text) && /^\d{5,25}$/.test(String(requesterId || ''));
-  command = forSomeone ? { ...command, text: `${command.text} --for=${requesterId}` } : command;
+  command = forSomeone ? { ...command, text: `${command.text} --for=<@${requesterId}>` } : command;
   console.log(`Smakbot command: ${command.text}`);
   if (!musicBotPresent && command.summon) {
     console.log('smakbot not in channel — summoning first');
@@ -188,7 +189,8 @@ async function sendSmakbotCommand(channel, command, { musicBotPresent = false, c
       console.error('Failed to send summon command:', err.message)
     );
   }
-  await channel.send(command.text).catch(err =>
+  const message = forSomeone ? { content: command.text, allowedMentions: { parse: [] } } : command.text;
+  await channel.send(message).catch(err =>
     console.error(`Failed to send ${command.text}:`, err.message)
   );
 }
