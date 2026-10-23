@@ -1,36 +1,153 @@
-# Luna — Discord AI Voice Assistant
+# Luna: Local AI Voice Assistant for Discord
 
-Luna is a locally hosted AI voice assistant for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud. Speech-to-text (Whisper), the LLM (LM Studio) and text-to-speech (Kokoro) all run on your own machine, so there are no cloud AI costs. The exceptions are opt-in: Tavily web search, and ElevenLabs as an alternative voice.
+**Luna** is a free, open-source, self-hosted AI voice assistant and chatbot for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud: questions, jokes, the weather, music requests, and whatever else the group throws at her. You can also type to her in a text channel.
+
+Everything that matters runs on your own computer: a local LLM through [LM Studio](https://lmstudio.ai), [Whisper](https://github.com/ggml-org/whisper.cpp) speech-to-text, and Kokoro, Chatterbox or Qwen3-TTS text-to-speech. There are no cloud AI bills and no voices sent to a third party. Web search ([Tavily](https://tavily.com)) and the [ElevenLabs](https://elevenlabs.io) voice are optional extras. Paired with [smakbot](https://github.com/smakus/smakbot-discord-music-bot), she's also a voice-controlled music DJ.
 
 If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
+**Contents:** [Features](#features) · [Using Luna](#using-luna) · [Music with smakbot](#music-with-smakbot) · [How it works](#how-it-works) · [Setup](#setup) · [Voices](#text-to-speech-providers) · [Configuration](#configuration) · [Hardware sizing](#hardware-sizing) · [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Development](#development)
+
 ## Features
 
-- 🎤 **Neural wake word.** Say "hey Luna" to activate. [openWakeWord](https://github.com/dscripka/openWakeWord) runs on the raw audio, so only real requests get transcribed.
-- 🧠 **Local LLM** via LM Studio, with separate conversation memory for each speaker.
-- 🔊 **Streaming TTS** via Kokoro. Luna starts speaking her first sentence while the rest is still being generated.
-- 🗣️ **Optional cloned voice** on Apple Silicon with Qwen3-TTS: describe a voice in words, pick a take you like, and Luna speaks in it.
-- 🎭 **Optional expressive voice** on Apple Silicon with Chatterbox Turbo: she laughs, sighs and whispers where it fits.
-- 🎭 **Optional ElevenLabs voice** (v4 Turbo), with expressive audio tags like `[laughs]` and `[whispers]`. Luna falls back to Kokoro automatically when credits run out. See [Text-to-speech providers](#text-to-speech-providers).
-- 👥 **Multi-user.** Every speaker gets their own audio capture and wake word detector, and answers queue so no one's question cancels someone else's.
-- 🔁 **Interruptible.** Say "hey Luna" again to cut off *your own* answer, even while she's still thinking about it.
-- 👋 **Voice-channel announcements.** Luna introduces herself when she joins, greets people who join the channel by name, and announces who left. The wording is customizable.
-- 🎵 **Music control.** "Hey Luna, play…", "skip" and "stop" are relayed to a music bot.
-- 🌐 **Optional web search** via Tavily. The model decides when it needs current information, and Luna tells you whenever she's searching.
-- 🍎 **Metal acceleration** for Whisper and Kokoro on Apple Silicon.
+- 🎤 **"Hey Luna" wake word.** A neural wake-word model ([openWakeWord](https://github.com/dscripka/openWakeWord)) listens to everyone in the channel, so only real requests are transcribed. Say it mid-sentence, or pause after it; both work.
+- 🧠 **Runs on your own LLM** in LM Studio (Qwen, Gemma and others), with conversation memory for each person.
+- 🔊 **Talks back fast.** She starts speaking her first sentence while the rest of the answer is still being written.
+- 🎭 **Expressive voices.** Kokoro by default. Chatterbox Turbo and ElevenLabs laugh, sigh and whisper where it fits, and Qwen3-TTS speaks in a voice you design.
+- 🌐 **Web search when it's needed** (optional, Tavily). The model decides when it needs fresh information, and Luna tells you when she's looking something up.
+- 👥 **Built for groups.** Each person gets their own wake-word detector and memory. Answers queue instead of cutting each other off, and saying "hey Luna" again interrupts only your own answer.
+- 💬 **Text chat.** Type "Luna, …" in a chat channel for a written answer. She can also say something out loud in the voice channel for you.
+- 🎵 **Voice-controlled music** with smakbot: play, skip, stop, "play the top 10", "what song is this?", and questions about the song that's playing.
+- 👋 **Greets people.** She introduces herself, greets people who join by name (with custom greetings in their own voice if you like), and says goodbye when they leave.
+- 🍎 **Apple Silicon acceleration** for Whisper and the voices; Linux and Intel Macs run everything in Docker.
+
+## Using Luna
+
+### Talking to her
+
+Join a voice channel and type `!luna` in a text channel (or set up [auto-join](#audio-and-memory) so she comes by herself). She joins and introduces herself. Then say **"hey Luna"** and your request:
+
+- **Run it straight into the question** ("hey Luna what's the weather"), **or pause** after "hey Luna": she waits up to 4 seconds for the question. A chime means she's got it.
+- **Mid-sentence works:** "…anyway, hey Luna, what's the weather?" Only what follows "hey Luna" is the question.
+- **Just "hey Luna" and nothing else?** She asks "did you mean to ask me something?" and takes your next words as the question, no wake word needed.
+- **Say "hey Luna" again** to interrupt her answer to you. It doesn't cut off answers to anyone else.
+
+| Say | What happens |
+| --- | ------------ |
+| "Hey Luna, tell me a joke" | Answered by the LLM |
+| "Hey Luna, what's the weather today?" | She searches the web, then answers |
+| "Hey Luna, what did I just ask you?" | She remembers your conversation for an hour |
+| "Hey Luna, play Bohemian Rhapsody" | Plays it through smakbot (see [Music with smakbot](#music-with-smakbot)) |
+| "Hey Luna, play the top 10" | Your server's most played songs |
+| "Hey Luna, skip" / "stop the music" | Skips the song / stops the music |
+| "Hey Luna, what song is this?" | Says what's playing, who asked for it and what's next |
+| "Hey Luna, what's this song about?" | Answers about the song that's playing, no title needed |
+| "Hey Luna, leave" / "bye" / "you can go now" | Says goodbye and leaves the channel |
+
+Polite versions work too: "hey Luna, can you play…", "could you skip this song?", "please stop the music, thanks".
+
+### What you'll hear while she works
+
+- **"Hmm, let me take a look."** She's searching the web. The Discord message changes to "searching the web" too.
+- **"Still thinking."** An answer is taking a while: the first filler comes after 15–22 seconds, then every 22–40 seconds. Some are personal: *"Hey Sam, I'm still working on that. I didn't forget about you."*
+- **"Sorry, I was overthinking that one. Here's the quick answer."** The model spent over a minute reasoning, so she asked again with reasoning off.
+
+She leaves the voice channel by herself when the last person does.
+
+### Typing to her
+
+With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that starts with "Luna" or @mentions her gets a written reply, e.g. *"Luna, what's the weather in Irvine?"* She doesn't need to be in a voice channel for this.
+
+- She shows "Luna is typing…" while she works and reacts with 🔍 when she searches the web.
+- Everyone in a channel shares one conversation, each message labelled with its writer's name, so *"Luna, and in Newport?"* follows on from someone else's question. It's separate from voice, and forgotten after an hour of quiet (`LM_MEMORY_TTL_MS`).
+- Answers can use Discord formatting (bold, a short list, links) and are split if longer than Discord's 2,000-character limit. They can't ping anyone.
+- Music works the same way: *"Luna, play …"*, *"skip"*, *"stop"*, *"play the top 10"*, *"what song is this?"*
+- **She can say things out loud for you:** *"Luna, say hello in Chinese in the voice channel"*, *"Luna, tell everyone in vc that dinner is ready"*. Requests like these ("say / tell / announce … in the voice channel / vc / voice") have the LLM write just the line. Luna speaks it in her voice channel and posts *"🔊 Said in Talk Soup: 你好！"*. Other phrasings ("give Joel a warm welcome out loud") go through the LLM's `say_in_voice` tool. Lines are capped at 400 characters and wait their turn behind whatever she's saying. With Chatterbox (English only) as the voice, other languages won't sound right.
+
+### Text commands
+
+| Command | What it does |
+| ------- | ------------ |
+| `!luna` | Joins the voice channel you're in, or moves there if she's elsewhere |
+| `!luna leave` | Leaves the voice channel. With auto-join on, she stays away until the channel has emptied once, or someone types `!luna` |
+| `!luna say <text>` | Says exactly that text out loud in her voice channel, with no LLM involved, and reacts 🔊 |
+| `!luna voicecheck` | Shows, for each person, whether Luna can decrypt their voice (see [Troubleshooting](#troubleshooting)) |
+
+### Music with smakbot
+
+Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/smakbot-discord-music-bot), a self-hosted Discord music bot built to work with her, by posting its commands in the text channel. You can always type smakbot's own commands too (`!queue`, `!pause`, `!volume 50`, …); see [its command list](https://github.com/smakus/smakbot-discord-music-bot#commands).
+
+| You say (or type "Luna, …") | Luna sends to smakbot |
+| --------------------------- | -------------------- |
+| "play Crazy by Seal" | `!summon` if smakbot isn't in the channel, then `!play Crazy by Seal --for=@you` |
+| "play the top 10" / "play the top twenty songs" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
+| "skip" / "skip this song" | `!skip` |
+| "stop" / "stop the music" | `!stop` (smakbot stops and leaves) |
+| "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
+| "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
+| "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
+
+- **`--for=@you`** credits the song to you instead of Luna, in smakbot's "Now playing", its status and Luna's own "what song is this?". It's sent without pinging you.
+- **"Play top of the world"** is still a song search. Only "the top N" / "most played" / "my favorites" mean the top-songs list.
+- **When smakbot joins or leaves,** Luna says so briefly: *"smakbot has joined."*
+
+Setting the two bots up to talk to each other is covered in [MusicBot integration](#musicbot-integration).
+
+### Custom greetings
+
+A few people can get their own join greeting, optionally in their own ElevenLabs voice. Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
+
+```json
+{
+  "371034505349169152": {
+    "name": "User X",
+    "voice": "OUBnvvuqEKdDWtapoJFn",
+    "phrases": ["Oh my, look who is here, {user}. [excited] Welcome in!"]
+  }
+}
+```
+
+- Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
+- `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
+- `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). The voice must be in your own ElevenLabs voices: add Voice Library voices to "My Voices" first. Leave it out to use Luna's normal voice.
+- `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
+- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down, out of credits, unknown voice), they get the normal greeting in the normal voice.
+- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voice IDs ElevenLabs doesn't know (checking costs no credits).
+
+### Announcements
+
+- **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
+- **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
+- **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
+- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
+
+Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam". Names a voice says wrong can be respelled with `NAME_PRONUNCIATIONS` (`smakus=smack-us`).
+
+To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
+
+```env
+GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
+FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+BOT_JOIN_PHRASES={name} has joined.
+BOT_LEAVE_PHRASES={name} has left.
+INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
+```
+
+---
 
 ## How it works
 
 ```
 You speak ─► openWakeWord (on the raw audio) ─► detection opens the gate
-          ─► Whisper transcribes ─► LM Studio streams a reply
-          ─► each finished sentence goes to Kokoro ─► Discord plays it
+          ─► Whisper transcribes ─► fixed commands (music, leave, "what song is this?")
+                                   or LM Studio streams a reply (with web search and tools)
+          ─► each finished sentence goes to the voice ─► Discord plays it
              (sentence N+1 is synthesized while N plays)
 ```
 
 If the wake word models fail to load, Luna falls back to transcribing everything and matching "hey Luna" in the text.
 
----
+Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes. If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`, and LM Studio keeps that connection open instead of Luna connecting on every question.
 
 ## Requirements
 
@@ -53,7 +170,7 @@ The wake word models (`hey_luna.onnx` plus openWakeWord's two feature models) an
 
 ### 2. LM Studio
 
-1. Download an instruction-tuned model sized for your machine, and load it with GPU offload at maximum and a context length of about 4096.
+1. Download an instruction-tuned model sized for your machine, and load it with GPU offload at maximum and a context length of 8,000 or more (16,000–24,000 if you use web search, which adds results to the conversation).
 2. Start the local server, bound to `0.0.0.0` so Docker can reach it.
 3. Enable authentication and copy the bearer token. Enable MCP too if you want web search.
 
@@ -61,7 +178,7 @@ The wake word models (`hey_luna.onnx` plus openWakeWord's two feature models) an
 
 1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and add a bot.
 2. Under **Privileged Gateway Intents**, enable **Message Content Intent**. It's the only privileged intent Luna needs.
-3. Invite the bot with these permissions: **View Channels**, **Send Messages**, **Connect**, **Speak**, **Use Voice Activity**.
+3. Invite the bot with these permissions: **View Channels**, **Send Messages**, **Add Reactions**, **Read Message History**, **Connect**, **Speak**, **Use Voice Activity**.
 
 ### 4. Configure `.env`
 
@@ -106,86 +223,47 @@ Ready! Wake phrase: "hey Luna"  •  text command: !luna
 
 ---
 
-## Usage
+## MusicBot integration
 
-1. Join a voice channel and type `!luna` in any text channel. Luna joins and introduces herself. With `AUTO_JOIN_CHANNELS` set, she joins those channels by herself when someone is there.
-2. Say **"hey Luna"** followed by your request. You can run it straight into the question, or pause after "hey Luna": she waits up to 4 seconds for the question (`WAKE_LISTEN_MS`). Either way, the chime means she has the question. If nothing follows, she asks "did you mean to ask me something?" and listens for your answer (no wake word needed). It works mid-sentence too ("…anyway, hey Luna, what's the weather?"): only what follows the wake phrase is the question. Keep "hey Luna" itself as one phrase; "hey… Luna" is harder to detect.
+How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music-bot) (or upstream [MusicBot](https://github.com/Just-Some-Bots/MusicBot)). What you can then say is in [Music with smakbot](#music-with-smakbot).
 
-| Say | What happens |
-| --- | ------------ |
-| "Hey Luna, leave" (or "go away", "bye", "you can go now") | A goodbye, then she leaves the channel. Wordier requests ("we're done for tonight, you can head out") work too, through the LLM. `!luna leave` in text does the same. With auto-join on, she stays out until the channel has emptied once, or someone types `!luna` |
-| "Hey Luna, tell me a joke" | LLM answer |
-| "Hey Luna, what's the weather today?" | Web search, then answer |
-| "Hey Luna, what did I just ask you?" | Uses your conversation memory |
-| "Hey Luna, play Bohemian Rhapsody" / "skip" / "stop" | Music bot commands (see [MusicBot](#musicbot-integration)) |
-| "Hey Luna, play the top 10" / "play our most played" | smakbot's most played songs (`!playtop`) |
-| "Hey Luna, what song is this?" / "what's playing?" | The song smakbot is playing, who asked for it, and what's next |
+1. **Let smakbot take commands from Luna.** MusicBot ignores other bots, so add Luna to its `config/options.ini`:
 
-When Luna starts searching the web, she says a short heads-up such as *"Hmm, let me take a look."* at that moment, so you always know when she's using the internet, and the Discord status changes to "searching the web". If an answer still hasn't started after 15–22 seconds, she adds a filler like *"Still thinking."* or, now and then, a personal one like *"Hey Sam, I'm still working on that. I didn't forget about you."* The next filler comes 22–30 seconds later, then one every 30–40 seconds until the answer starts.
+   ```ini
+   [Permissions]
+   BotExceptionIDs = <Luna's Discord user ID>
+   ```
 
-If the model spends more than a minute thinking (searching and reading results don't count), Luna stops it and asks again with reasoning switched off, saying something like *"Sorry, I was overthinking that one. Here's the quick answer."* She does the same if an answer comes back with no words in it.
+2. **Give Luna a permission group without per-person limits**, since everyone's requests arrive as hers. In smakbot's `config/permissions.ini`:
 
-Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes.
+   ```ini
+   [LunaBot]
+   UserList = <Luna's Discord user ID>
+   MaxSongs = 0
+   MaxSongLength = 0
+   MaxPlaylistLength = 0
+   AllowPlaylists = yes
+   ```
 
-If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`. LM Studio then keeps that connection open instead of Luna connecting on every question.
+3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `stop_music`, and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
-Luna leaves the voice channel automatically when the last person does.
+   ```json
+   "luna": { "url": "http://127.0.0.1:8895/mcp" }
+   ```
 
-### Custom greetings
+   When the model calls a tool, Luna posts the smakbot command and the model confirms out loud; a `[music] the LLM called …` line in the log shows each call. If LM Studio can't reach the tools, Luna answers without them and logs a warning. `LLM_TOOLS=false` turns them off.
 
-A few people can get their own join greeting, optionally in their own ElevenLabs voice. Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
+4. **"What song is this?"** needs smakbot's now playing API (`StatusApiPort = 8896` in smakbot, on by default there) and `MUSIC_STATUS_URL` in Luna (set in `docker-compose.metal.yml`).
 
-```json
-{
-  "371034505349169152": {
-    "name": "User X",
-    "voice": "OUBnvvuqEKdDWtapoJFn",
-    "phrases": ["Oh my, look who is here, {user}. [excited] Welcome in!"]
-  }
-}
-```
+Fixed commands ("play …", "skip", "stop", "play the top 10") need none of steps 3–4. Songs Luna queues end in `--for=@name` so smakbot credits whoever asked; upstream MusicBot doesn't know `--for` and would include it in the search, so it's smakbot-only. If `!play` fails with `HTTP Error 403`, that's YouTube's anti-download changes, not Luna; smakbot already includes the usual fix ([bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)).
 
-- Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
-- `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
-- `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). Leave it out to use Luna's normal voice.
-- `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
-- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down, out of credits, unknown voice), they get the normal greeting in the normal voice.
-- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voice IDs ElevenLabs doesn't know (checking costs no credits).
+---
 
-### Typing to Luna
-
-With `TEXT_CHAT_CHANNELS` set, you can also type to her: in one of those channels, a message that @mentions her or starts with "Luna" ("Luna, what's the weather in Irvine?") gets a written answer as a reply. She doesn't need to be in a voice channel for it.
-
-- She shows "Luna is typing…" while she works and reacts with 🔍 when she searches the web.
-- Everyone in a channel shares one conversation, each message labelled with its writer's name, so "Luna, and in Newport?" follows on from someone else's question. It's separate from voice, and forgotten after `LM_MEMORY_TTL_MS` of quiet.
-- Answers may use Discord formatting (bold, a short list, links) and are split if longer than Discord's 2,000-character limit. They can't ping anyone.
-- "Luna, play …", "skip" and "stop" go straight to smakbot, and the LLM's music tools work too.
-- She can speak for you in the voice channel she's in: "Luna, say hello in Chinese in the voice channel", "Luna, tell everyone in vc that dinner is ready". Requests like these (say / tell / announce … in the voice channel, vc, voice or audio channel) have the LLM write only the line; Luna speaks it and posts "🔊 Said in Talk Soup: 你好！". Other phrasings ("give Joel a warm welcome out loud") go through the LLM's `say_in_voice` tool. For exact words with no LLM involved, `!luna say <text>` in any channel. Lines are capped at 400 characters and queued behind whatever she's saying; each is logged with who asked. With Chatterbox (English only) as the voice, other languages won't sound right.
-
-### Announcements
-
-- **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
-- **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
-- **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
-- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
-
-Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam".
-
-To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
-
-```env
-GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
-FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
-BOT_JOIN_PHRASES={name} has joined.
-BOT_LEAVE_PHRASES={name} has left.
-INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
-```
-
-### Text-to-speech providers
+## Text-to-speech providers
 
 Kokoro is the default. There are three alternatives: Chatterbox Turbo, a local expressive voice for Apple Silicon Macs; Qwen3-TTS, a local voice of your own design for Apple Silicon Macs; and ElevenLabs, a paid cloud service.
 
-#### Chatterbox Turbo (Apple Silicon)
+### Chatterbox Turbo (Apple Silicon)
 
 [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) (Resemble AI, MIT license) runs on the Mac's GPU through MLX and performs audio tags in the text: emotions that set the tone of what follows (`[happy]`, `[sarcastic]`, `[surprised]`, `[whispering]`, `[angry]`, `[fear]`, `[crying]`, `[dramatic]`) and sounds (`[laugh]`, `[chuckle]`, `[sigh]`, `[gasp]`, `[groan]`, `[sniff]`, `[cough]`, `[clear throat]`, `[shush]`). While it is speaking, the LLM is told exactly these tags and uses them wherever they fit: none on plain facts, and laughs only for things that are actually funny.
 
@@ -205,7 +283,7 @@ TTS_PROVIDER=chatterbox
 - **Tags it doesn't know** are dropped before it speaks; ElevenLabs spellings such as `[laughs]` or `[whispers]` are mapped to its own.
 - **Fallback:** Kokoro still covers for it, with tags removed.
 
-#### Qwen3-TTS (Apple Silicon)
+### Qwen3-TTS (Apple Silicon)
 
 [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) runs on the Mac's GPU through MLX and speaks in a voice cloned from a short reference clip. You create that clip from a written description:
 
@@ -233,7 +311,7 @@ TTS_PROVIDER=qwen3
 - **No audio tags:** like Kokoro, it doesn't perform `[laughs]`-style tags; they're removed before it speaks.
 - **Fallback:** Kokoro still covers for it, so keep Kokoro running. If the Qwen3-TTS server isn't running, each sentence goes to Kokoro instead.
 
-#### ElevenLabs
+### ElevenLabs
 
 To use ElevenLabs, set this in `.env`:
 
@@ -536,46 +614,36 @@ Below the table, each model's problems are listed by question. The answers are s
 
 ---
 
-## MusicBot integration
+## FAQ
 
-Luna can control [Just-Some-Bots/MusicBot](https://github.com/Just-Some-Bots/MusicBot) running in the same server.  I've created my own version called [smakbot](https://github.com/smakus/smakbot-discord-music-bot) that runs in Docker and works great.  Smakbot and Luna are designed to work together. "Hey Luna, play *song*" posts `!play <song>` to the text channel, and sends `!summon` first if MusicBot isn't in the voice channel yet. "Skip" and "stop" post `!skip` and `!stop`. Songs Luna queues for someone end in `--for=@name` (a mention of them, sent without pinging), so smakbot credits them to that person ("added by", now playing) instead of to Luna; credit only, the command still runs as Luna. Polite versions count too: "can you play …", "could you skip this song", "please stop the music, thanks", "can you leave". "Play the top 10", "play the top twenty songs", "play our most played" or "play my favorites" post `!playtop <n>` (10 if no number is said, at most 50): smakbot's most played songs, from its cache. "Play top of the world" is still a song.
+**Is Luna free? Does she need the cloud?**
+Yes, she's free and open source (MIT). The language model, speech-to-text and the default voices all run on your own computer, so there's nothing to pay per question. Web search (Tavily's free tier is enough) and the ElevenLabs voice are optional and use those services.
 
-With smakbot's now-playing endpoint (`StatusApiPort` in smakbot, `MUSIC_STATUS_URL` in Luna), "what song is this?", "what's playing?" or "what are we listening to?" is answered at once: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* While a song plays, the LLM is told which one, so "what's this song about?", "who wrote it?" or "when did it come out?" need no title.
+**What hardware do I need?**
+A computer that can run a local LLM: an Apple Silicon Mac with 16 GB or more, or a Linux PC with a decent GPU. The LLM sets the pace; see [Hardware sizing](#hardware-sizing).
 
-Anything else about music goes to the LLM, which can play, skip and stop music itself ("put on something chill", "play the Lord of the Rings soundtrack", "turn that off"). Luna serves tools for it, `play_music`, `play_top_songs`, `skip_song` and `stop_music` (plus `leave_channel`, below), from inside her container over MCP (port 8895, published on `127.0.0.1` only). LM Studio needs to know them once: add this to LM Studio's `mcp.json` (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+**Which LLM should I use?**
+Any instruction-tuned model LM Studio can load that fits your RAM. Smaller models answer faster, and for short spoken answers a quick 8–14B model often beats a slow big one. The [LLM benchmark](#llm-benchmark) compares models on speed, accuracy and personality.
 
-```json
-"luna": { "url": "http://127.0.0.1:8895/mcp" }
-```
+**Can several people talk to her at once?**
+Yes. Each person has their own wake-word detector and conversation memory, and answers queue so nobody's question cancels someone else's.
 
-When the model calls a tool, Luna posts the smakbot command (`!summon` first for play) and the model confirms out loud. A `[music] the LLM called …` line in the log shows each call. LM Studio only connects to local MCP servers listed in `mcp.json`, which is why this step is needed. If it can't reach them, Luna answers without them and logs a warning. `LLM_TOOLS=false` turns them off.
+**Can she play music?**
+Yes, with [smakbot](https://github.com/smakus/smakbot-discord-music-bot): "hey Luna, play …", "skip", "play the top 10", "what song is this?". See [Music with smakbot](#music-with-smakbot).
 
-MusicBot normally ignores messages from other bots, so whitelist Luna in its config. In `config/options.ini`:
+**Can I change her name, personality or voice?**
+Her personality is a setting (`LM_PERSONALITY`, e.g. "fun, friendly and helpful"), and so is the voice (see [Text-to-speech providers](#text-to-speech-providers)). The wake word is a trained model; you can [train your own](#tuning-the-wake-word) for a different phrase.
 
-```ini
-[Permissions]
-BotExceptionIDs = <Luna's Discord user ID>
-```
+**Does she work in other languages?**
+She listens and answers in English. The LLM can write other languages, and an ElevenLabs voice can speak them ("Luna, say hello in Chinese in the voice channel").
 
-Commands relayed through Luna count as Luna's, so give her a permission group in `config/permissions.ini` without MusicBot's default song-length cap:
-
-```ini
-[LunaBot]
-UserList = <Luna's Discord user ID>
-MaxSongs = 0
-MaxSongLength = 0
-MaxPlaylistLength = 0
-AllowPlaylists = yes
-```
-
-If `!play` fails with `HTTP Error 403`, that's YouTube's ongoing anti-download changes, not Luna. The usual fix, on MusicBot's side, is the [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin and sidecar.
-
----
+**Why is the first answer after a quiet spell slow?**
+If the LLM doesn't comfortably fit in memory, the operating system squeezes it out while it's idle, and the next question waits while it's loaded back. A smaller model, or freeing memory, fixes it; see [Hardware sizing](#hardware-sizing).
 
 ## Known limitations
 
-- Memory is per speaker, so Luna can't follow a question about what someone *else* asked.
-- English only.
+- In voice, memory is per speaker, so Luna can't follow up on what someone *else* asked. (Text channels share one conversation.)
+- She listens in English only. The LLM and an ElevenLabs voice can speak other languages.
 
 ## Licensing note
 
