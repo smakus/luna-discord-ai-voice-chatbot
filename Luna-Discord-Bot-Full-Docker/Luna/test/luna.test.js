@@ -740,6 +740,12 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music and leave the voice channel\./);
     ok('the system prompt names the tools offered'); }
 
+  console.log('audio tags after the last sentence');
+  { const H = await setup({}); H.S.llmScript = sse('Expect rain today, so bring an umbrella.', '[chuckles]');
+    await H.T.handleQuery('what is the weather', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0); await H.wait(100);
+    assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Expect rain today, so bring an umbrella. [chuckles]']);
+    ok('"… umbrella." then "[chuckles]" → one sentence for the voice (ElevenLabs refuses a tag on its own)'); }
+
   console.log('now playing (smakbot)');
   const NP = { playing: true, paused: false, title: 'Seal - Crazy (Official Music Video)', artist: 'Seal', track: 'Crazy', url: 'https://youtu.be/x',
     requested_by: 'smakus', elapsed: 73, duration: 212, up_next: ['Kiss From a Rose (Official Video)'] };

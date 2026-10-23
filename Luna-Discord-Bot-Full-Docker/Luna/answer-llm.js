@@ -17,7 +17,7 @@
 // (now-playing.js), or ''.
 
 const { systemPrompt, SEARCH_PROMPT } = require('./prompt');
-const { takeSentences } = require('./sentences');
+const { takeSentences, createTagJoiner } = require('./sentences');
 const { LLM_TOOL_NAMES, VOICE_TOOL_NAMES, MUSIC_TOOL_NAMES } = require('./llm-tools');
 const { toolCommand } = require('./commands');
 
@@ -531,6 +531,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
         // So: exit on the terminal markers rather than waiting for the socket.
         let finished = false;
         const phase = { readingAt: 0 };
+        const joiner = createTagJoiner();   // keeps "… umbrella. [chuckles]" together
 
         try {
           while (!finished) {
@@ -553,6 +554,10 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
               try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
               handleEvent(parsed);
               logPhase(userId, parsed, phase);
+              // Reasoning or a tool call: no tag can follow the held sentence
+              // now, so say it. (The end of the answer flushes it below, with
+              // any tag still in the buffer.)
+              if (/^(?:reasoning|tool_call)\./.test(parsed.type || '')) for (const sentence of joiner.release()) yield sentence;
 
               // response_id lives inside chat.end result
               if (parsed.type === 'chat.end') {
@@ -568,10 +573,10 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
               // A message ends at a tool call or at the end of the answer: either
               // way a sentence boundary, so text before a search is never glued
               // onto the text after it.
-              if (parsed.type === 'message.end' && buffer.trim()) {
-                const rest = buffer.trim();
+              if (parsed.type === 'message.end') {
+                const rest = buffer;
                 buffer = '';
-                yield rest;
+                for (const sentence of joiner.flush(rest)) yield sentence;
                 continue;
               }
 
@@ -584,9 +589,14 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
 
               const split = takeSentences(buffer);
               buffer = split.rest;
-              for (const sentence of split.sentences) yield sentence;
+              for (const sentence of joiner.push(split.sentences, buffer)) yield sentence;
             }
           }
+        } catch (err) {
+          // Cut off (a stall, a timeout): a finished sentence the joiner was
+          // holding for a possible tag is still said, then the error goes on.
+          for (const sentence of joiner.flush('')) yield sentence;
+          throw err;
         } finally {
           // Cancel rather than only releasing the lock: if we exited on a terminal
           // marker the socket is still open, and without this it leaks until the
@@ -595,8 +605,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
           try { reader.releaseLock(); } catch (_) {}
         }
 
-        const remainder = buffer.trim();
-        if (remainder) yield remainder;
+        for (const sentence of joiner.flush(buffer)) yield sentence;
         rememberConversation(memoryKey, responseId);
 
       // ── Path B: Plain JSON fallback (responses API without true streaming) ───
@@ -622,8 +631,8 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
         // Split into sentences and yield each one so TTS starts immediately
         if (textMode) { yield fullText; return; }
         const split = takeSentences(fullText);
-        for (const sentence of split.sentences) yield sentence;
-        if (split.rest.trim()) yield split.rest.trim();
+        const joiner = createTagJoiner();
+        for (const sentence of [...joiner.push(split.sentences, ''), ...joiner.flush(split.rest)]) yield sentence;
       }
     } finally {
       clearTimeout(idleTimer);

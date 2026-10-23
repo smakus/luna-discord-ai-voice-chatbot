@@ -66,4 +66,54 @@ function takeSentences(text) {
   return { sentences, rest: text };
 }
 
-module.exports = { sentenceEnd, takeSentences, ABBREVIATIONS };
+// ─── Audio tags after a sentence's end ───────────────────────────────────────
+//
+// The model sometimes ends an answer with an audio tag after the last full
+// stop: "…bring an umbrella. [chuckles]". Split as usual, "[chuckles]" became
+// a sentence of its own, which ElevenLabs refuses (no words: "empty text"),
+// and the laugh was lost. A tag-only piece belongs to the sentence before it.
+//
+// createTagJoiner() holds each finished sentence until something other than
+// tags follows it (the next token, usually milliseconds later) or the answer
+// ends; a tag-only piece in between is appended to it. A tag that starts the
+// next sentence ("[sighs] Oh well.") stays with that one, as before.
+//   push(sentences, rest) → sentences to say now (rest: the text so far after them)
+//   release()             → the held sentence, now: something other than text
+//                           came next (reasoning, a tool call), so no tag will
+//   flush(rest)           → the last ones, when the answer (or a message) ends
+const TAG_ONLY     = /^\s*(?:\[[^\[\]\n]{1,40}\][\s.!?,]*)+$/;
+const PENDING_TAGS = /^\s*(?:\[[^\[\]\n]{0,40}(?:\][\s.!?,]*)?)*$/;   // nothing yet, or only (partial) tags
+
+function createTagJoiner() {
+  let held = null;
+  return {
+    push(sentences, rest) {
+      const out = [];
+      for (const s of sentences) {
+        if (held !== null && TAG_ONLY.test(s)) { held += ' ' + s.trim(); continue; }
+        if (held !== null) out.push(held);
+        held = s;
+      }
+      if (held !== null && !PENDING_TAGS.test(rest)) { out.push(held); held = null; }
+      return out;
+    },
+    release() {
+      const out = held !== null ? [held] : [];
+      held = null;
+      return out;
+    },
+    flush(rest = '') {
+      const out = [];
+      const last = rest.trim();
+      if (held !== null && last && TAG_ONLY.test(last)) out.push(held + ' ' + last);
+      else {
+        if (held !== null) out.push(held);
+        if (last) out.push(last);
+      }
+      held = null;
+      return out;
+    },
+  };
+}
+
+module.exports = { sentenceEnd, takeSentences, createTagJoiner, ABBREVIATIONS };
