@@ -36,7 +36,8 @@ module.exports = function boot(env = {}) {
       const t = setTimeout(() => rej(new Error('timeout')), Math.min(ms, 200));
       conn.once(st, () => { clearTimeout(t); res(conn); });
     }),
-    createAudioPlayer: () => { const p = new EventEmitter(); p.play = r => { S.played.push(r.text); setTimeout(() => p.emit('idle'), S.playMs ?? 20); }; p.stop = () => {}; return p; },
+    createAudioPlayer: () => { const p = new EventEmitter(); let playing = false; const idle = () => { if (!playing) return false; playing = false; p.emit('idle'); return true; };
+      p.play = r => { S.played.push(r.text); playing = true; setTimeout(idle, S.playMs ?? 20); }; p.stop = idle; return p; },   // like discord.js: stop() while playing goes idle at once; when idle, nothing
     createAudioResource: (stream) => ({ text: stream.ttsText, playbackDuration: 1200, playStream: { readableEnded: !S.audioRunsDry } }),
   };
 
@@ -76,7 +77,7 @@ module.exports = function boot(env = {}) {
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
-    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')), './now-playing': require(path.join(LUNA_DIR, 'now-playing.js')),
+    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')), './now-playing': require(path.join(LUNA_DIR, 'now-playing.js')), './wake-shadow': require(path.join(LUNA_DIR, 'wake-shadow.js')),
   };
 
   // ── fetch: LM Studio ──
@@ -119,7 +120,7 @@ module.exports = function boot(env = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(src + `
-;globalThis.__t = { client, handleQuery: answerer.answer, ...require('./commands'), condenseSearchResults: require('./answer-llm').condenseSearchResults, speakableName, nextGeneration: playback.nextGeneration, interruptOwnPlayback: playback.interrupt, spokenResponses: playback.responses,
+;globalThis.__t = { client, wakeShadow, answerMissedWake: answerer.answerMissedWake, handleQuery: answerer.answer, ...require('./commands'), condenseSearchResults: require('./answer-llm').condenseSearchResults, speakableName, nextGeneration: playback.nextGeneration, interruptOwnPlayback: playback.interrupt, spokenResponses: playback.responses,
   get activeConnection() { return session.connection; }, get activeVoiceChannel() { return session.channel; }, get ready() { return ready; },
   get model() { return llm.model; }, THINKING: answerer.settings.thinking, LLM: { reasoning: llm.reasoning, thinkLimit: answerer.settings.thinkLimit } };`, ctx);
   const T = ctx.__t;

@@ -379,6 +379,9 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `OWW_CANDIDATE_THRESHOLD` | `0.1` | Two-stage detection: an utterance that peaks at or above this but never reaches `OWW_THRESHOLD` is transcribed anyway, and kept only if Whisper hears "Luna" in it. Catches "hey Luna" run straight into the question, which the model scores low. `0` turns it off; it has no effect when it isn't below `OWW_THRESHOLD` |
 | `WAKE_LISTEN_MS` | `4000` | After a bare "hey Luna" and a pause, how long she waits for the question before answering the greeting. `0` ends the utterance after `SILENCE_MS`, as before |
 | `WAKE_FOLLOWUP_MS` | `8000` | After a bare "hey Luna" with no question even after `WAKE_LISTEN_MS`, she asks "did you mean to ask me something?" and that person's next words, if they start within this long of her finishing, are taken as the question without the wake word. `0` answers the bare "hey Luna" as a greeting instead |
+| `WAKE_SHADOW` | `false` | A measurement: also transcribe every utterance the wake-word model rejected, and log the ones where Whisper heard "hey Luna" (`[wake] Whisper heard "hey Luna" … that the model missed`). Nothing else anyone says is logged, and she doesn't act on them. See [Measuring missed wake words](#measuring-missed-wake-words) |
+| `WAKE_WHISPER_BACKUP` | `false` | A second chance for the wake word: Whisper also transcribes every utterance the wake-word model rejected, and when it hears "hey Luna" she answers, about 0.3 s behind a normal detection. Catches the model's misses (for some voices a third or more of their "hey Luna"s). Costs Whisper time: about 10% of it with 4–5 people talking. See [Measuring missed wake words](#measuring-missed-wake-words) |
+| `WAKE_SHADOW_REPORT_MS` | `1800000` | How often the shadow check logs its summary (30 minutes) |
 | `WAKE_REPROMPT_PHRASES` | built-in | What she says then, separated by a pipe character; `{name}` is the speaker |
 | `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
 | `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
@@ -461,6 +464,17 @@ utterance discarded — no wake word (2100ms, peak score 0.234, threshold 0.15)
 - **"Hey Luna" only works with a pause after it:** the model is trained on the phrase said on its own, so run-on "hey Luna what's the weather" scores lower (in testing, 0.28–0.41 typical instead of 0.7). Two-stage detection (`OWW_CANDIDATE_THRESHOLD`, on by default) catches these: look for `wake candidate … confirmed by Whisper` in the logs.
 - **Peak around `0.00x`:** the model didn't react at all. Retrain it rather than tuning.
 - **Triggers on background noise:** raise `OWW_THRESHOLD`. Compare against the baseline score printed at startup.
+
+### Measuring missed wake words
+
+The model's misses don't show up in the logs: a "hey Luna" it scores 0.001 is discarded like any chatter. `WAKE_SHADOW=true` measures them. Every rejected utterance is also sent to Whisper, one at a time, and the ones where Whisper heard "hey Luna" are logged:
+
+```
+[wake] Whisper heard "hey Luna" from appa that the model missed (scored 0.004; 2.1s utterance, Whisper 310ms, waited 0ms)
+[shadow] last 30 min: 412 discarded clips transcribed (21.3 min of speech), Whisper busy 7.4% (avg 320ms, max 1210ms), longest wait 2.3s, dropped 0, failed 0, backlog 0. Missed "hey Luna": smakus 3, appa 1. Other "Luna" mentions: joel 2.
+```
+
+The summary also answers whether Whisper could transcribe everyone all the time: "busy" well under 100% with no drops means it keeps up. Measured with 4–5 people talking for almost 4 hours: at most 10% busy (about 0.27 s per clip), nothing dropped, and the model missed about 3% of one person's "hey Luna"s but a third or more of everyone else's. `WAKE_WHISPER_BACKUP=true` then answers the misses instead of only logging them (the log line ends in "— answering"). A clip that waits more than 30 s is dropped rather than piling up, and only one shadow clip is ever with Whisper at a time, so a real question waits behind at most one.
 
 To train your own model, use the openWakeWord [Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing). It takes about an hour with synthetic data. Export it as ONNX and save it as `Luna/hey_luna.onnx`. Use a phrase of 3–4 syllables; a bare "luna" trains poorly. More detail is in [`openWakeWordNotes.md`](Luna-Discord-Bot-Full-Docker/Luna/openWakeWordNotes.md).
 

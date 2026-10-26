@@ -150,9 +150,13 @@ function createPlayback({ voice, fetchTTS, console, lookahead }) {
     const generation = nextGeneration(userId);
 
     if (currentPlayerUser === userId && currentPlayer) {
-      try { currentPlayer.stop(true); } catch (_) {}
+      // Let go of the player BEFORE stopping it: stop() fires its Idle event
+      // at once, and play() reports a sentence that goes idle while still
+      // ours as "cut short" — a false alarm on every interruption.
+      const player = currentPlayer;
       currentPlayer = null;
       currentPlayerUser = null;
+      try { player.stop(true); } catch (_) {}
     }
 
     return generation;

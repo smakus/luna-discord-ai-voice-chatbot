@@ -620,6 +620,12 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('again', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
     assert.ok(H.S.logs.some(l => /\[audio\] sentence cut short after 1\.2s — the audio stopped arriving in time/.test(l)), H.S.logs.slice(-5).join(' | '));
     ok('player stops before the audio ended → "[audio] sentence cut short" warning; a normal ending is not reported'); }
+  { const H = await setup({}); H.S.playMs = 2000; H.S.audioRunsDry = true; H.S.llmScript = sse('A long sentence that is still playing.');
+    await H.T.handleQuery('tell me something', H.S.lastConnection, H.text, Date.now(), 'u1');
+    await H.until(() => H.S.played.includes('A long sentence that is still playing.'));   // her sentence, not the chime
+    H.T.interruptOwnPlayback('u1'); await H.wait(50);
+    assert.ok(!H.S.logs.some(l => /sentence cut short/.test(l)), 'an interruption is not a playback failure');
+    ok('interrupting her (barge-in) → no false "sentence cut short" warning'); }
 
 
   console.log('"did you mean to ask me something?"');
@@ -651,6 +657,56 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(!H.S.tts.some(t => /didn't catch that/.test(t.text)) && H.S.llmRequests.length === 1);
     ok('a question before the wake phrase is answered, not re-prompted'); }
 
+
+  console.log('follow-up windows');
+  { const H = await bareRig({ WAKE_FOLLOWUP_MS: '1500' }); await H.bareWake();
+    // Discord closes a quiet speaker's audio stream (after 60 s of silence)…
+    H.S.audio.u1.destroy(); await H.until(() => H.S.logs.some(l => /\[u1\] capture stream closed/.test(l)));
+    // …and when they speak again it's a new capture.
+    H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.audio.u1 && !H.S.audio.u1.destroyed);
+    H.S.transcripts = ["what's the weather on Saturday"]; (H.S.peaks ??= {}).u1 = 0;
+    const loud = Buffer.alloc(1920); for (let k = 0; k < 960; k++) loud.writeInt16LE(2000, k * 2);
+    for (let t = 0; t < 500; t += 20) { H.S.audio.u1.write(loud); await H.wait(20); }   // into the new stream
+    await H.until(() => H.S.llmRequests.length > 0);
+    assert.strictEqual(H.S.llmRequests[0].input, "what's the weather on Saturday");
+    ok('"did you mean to ask me something?" → their audio stream closed and reopened → the window is still there'); }
+  { const H = await bareRig({ WAKE_FOLLOWUP_MS: '200' }); await H.bareWake(); await H.wait(700);
+    H.S.transcripts = ['random chatter']; (H.S.peaks ??= {}).u1 = 0; await H.speak(500); await H.wait(900);
+    assert.strictEqual(H.S.llmRequests.length, 0);
+    assert.ok(H.S.logs.some(l => /utterance discarded — no wake word .* — started \d+\.\ds after the follow-up window closed/.test(l)), H.S.logs.filter(l => /discarded/.test(l)).join(' | '));
+    ok('speech just after the window closed → discarded, and the log says by how much it missed'); }
+
+  console.log('wake-word shadow check');
+  { const H = await wakeRig({ WAKE_SHADOW: 'true' }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
+    await H.utter(0.004, "hey Luna what's the weather"); await H.until(() => H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna"/.test(l)));
+    assert.strictEqual(H.S.llmRequests.length, 0, 'measured, not answered');
+    assert.ok(H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna" from smakus that the model missed \(scored 0\.004;/.test(l)), H.S.logs.slice(-3).join(' | '));
+    await H.utter(0.001, 'pass me the chips'); await H.wait(100);
+    assert.ok(!H.S.logs.some(l => /\[shadow\].*chips/.test(l)), 'other speech is not logged');
+    H.T.wakeShadow.report();
+    assert.ok(H.S.logs.some(l => /\[shadow\] last \d+ min: 2 discarded clips transcribed .* dropped 0, failed 0, backlog 0\. Missed "hey Luna": smakus 1\./.test(l)), H.S.logs.slice(-2).join(' | '));
+    ok('WAKE_SHADOW: a rejected "hey Luna" Whisper hears → "[shadow] MISSED …" (not answered); other speech not logged; the summary counts clips and misses'); }
+  { const H = await wakeRig(); await H.utter(0.004, "hey Luna what's the weather"); await H.wait(100);
+    assert.ok(!H.S.logs.some(l => /\[shadow\]|\[wake\]/.test(l))); ok('WAKE_SHADOW and WAKE_WHISPER_BACKUP off (default) → nothing transcribed or logged'); }
+  { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
+    await H.utter(0.004, "hey Luna what's the weather"); await H.until(() => H.S.llmRequests.length > 0);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ["what's the weather"]);
+    assert.ok(H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna" from smakus that the model missed .* — answering/.test(l)));
+    await H.until(() => H.S.tts.some(t => t.text === 'Sunny all day.'));
+    ok('WAKE_WHISPER_BACKUP: a "hey Luna" the model scored 0.004 → Whisper hears it → answered ("what\'s the weather")'); }
+  { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' }); H.S.transcriptMs = 300;
+    await H.utter(0.004, 'pass me the chips'); await H.wait(200);
+    assert.strictEqual(H.S.llmRequests.length, 0); assert.ok(!H.S.logs.some(l => /\[wake\]|chips/.test(l.replace(/^\[u1\] (Processing|utterance).*/, ''))));
+    ok('WAKE_WHISPER_BACKUP: ordinary chatter → transcribed, not answered, not logged'); }
+  { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' });
+    H.T.wakeShadowAnswered = 0;
+    const { answerMissedWake } = H.T; const conn = H.S.lastConnection;
+    H.S.llmScript = sse('Sunny all day.'); await H.utter(0.9, "what's the weather", true);    // they said it again, and the model caught it
+    const before = H.S.llmRequests.length;
+    await answerMissedWake("hey Luna what's the weather", 'u1', conn, H.text, Date.now() - 5000);   // the miss, caught late
+    assert.strictEqual(H.S.llmRequests.length, before, 'not answered twice');
+    assert.ok(H.S.logs.some(l => /a missed "hey Luna" was caught, but they've asked again since/.test(l)));
+    ok('a missed "hey Luna" caught after they asked again (and were answered) → not answered twice'); }
 
   console.log('the asker\'s name');
   { const H = await setup({}); H.S.names = { u1: 'smak_99' }; H.put('u1', 'A'); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi smak.');

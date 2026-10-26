@@ -19,6 +19,7 @@ const { createVoiceSession } = require('./voice-session');
 const { createListener } = require('./voice-listen');
 const { createVoiceAnswerer } = require('./voice-answer');
 const { createWhisper } = require('./whisper');
+const { createWakeShadow } = require('./wake-shadow');
 const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const { createNowPlaying } = require('./now-playing');
 
@@ -91,16 +92,30 @@ const listener = createListener({
   isIgnored: id => IGNORED_USERS.has(id),
   onUtterance: (...args) => answerer.onUtterance(...args),
   onStuck: userId => answerer.release(userId),
+  onDiscard: (...args) => wakeShadow.onDiscard(...args),
 });
 setInterval(() => listener.healthReport(), 30000).unref?.();
+
+// Speech to text (whisper.js).
+const whisper = createWhisper({ config, fetch, console });
+
+// A second chance for the wake word (WAKE_WHISPER_BACKUP) and a measurement
+// of its misses (WAKE_SHADOW): Whisper also checks what the wake-word model
+// rejected (wake-shadow.js). Both off by default.
+const wakeShadow = createWakeShadow({
+  config, console, whisper,
+  nameOf: userId => session.channel?.members?.get(userId)?.displayName || userId,
+  onWake: (...args) => answerer.answerMissedWake(...args),
+});
+if (config.WAKE_SHADOW) setInterval(() => wakeShadow.report(), config.WAKE_SHADOW_REPORT_MS).unref?.();
 
 // From an utterance to Luna's spoken answer (voice-answer.js, whisper.js).
 const answerer = createVoiceAnswerer({
   config, console, llm, playback, session, fetchTTS,
-  whisper: createWhisper({ config, fetch, console }),
+  whisper,
   sendCommand: (channel, command, requesterId) => sendSmakbotCommand(channel, command, requesterId),
   leave: userId => leaveOnRequest(userId),
-  expectQuestion: (userId, ms) => listener.expectQuestion(userId, ms),
+  expectQuestion: (userId, ms, why) => listener.expectQuestion(userId, ms, why),
   nowPlaying,
 });
 

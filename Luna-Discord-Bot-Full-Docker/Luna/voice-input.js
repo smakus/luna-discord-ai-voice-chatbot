@@ -263,8 +263,21 @@ function decideSilentSpeaker({ verdict, now, lastReconnectAt, gapMs }) {
   return 'reconnect';
 }
 
+// ── Noise, not words ─────────────────────────────────────────────────────────
+//
+// What Whisper makes of a cough, a laugh or a click: "[BLANK_AUDIO]",
+// "(laughs)", "*coughs*", ".", "Um.", "Mm-hmm." Such a transcript is not a
+// question, and never goes to the LLM.
+const FILLERS = new Set(['um', 'umm', 'uh', 'uhh', 'hmm', 'hm', 'mm', 'mmm', 'mhm', 'mmhmm', 'uhhuh', 'ah', 'ahh',
+  'oh', 'ha', 'haha', 'hahaha', 'heh', 'hehe', 'lol', 'huh', 'eh', 'ooh', 'aw', 'ow', 'whoa']);
+function isJunkTranscript(text) {
+  const words = String(text || '').replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*/g, ' ').toLowerCase()
+    .match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || [];
+  return !words.some(w => !FILLERS.has(w.replace(/['-]/g, '')));
+}
+
 module.exports = {
-  WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord, isBareWake,
+  WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord, isBareWake, isJunkTranscript,
   createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 };
