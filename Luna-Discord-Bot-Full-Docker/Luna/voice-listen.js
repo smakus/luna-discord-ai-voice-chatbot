@@ -21,11 +21,12 @@
 //   isIgnored(id)    IGNORED_USER_IDS
 //   onUtterance(pcm, userId, connection, channel, wakeDetected, wakeCandidate) → Promise
 //   onStuck(userId)  a request never returned and the speaker was released
+//   onDiscard(pcm, userId, { peak, durationMs, connection, channel })  an utterance the wake word rejected (wake-shadow.js)
 
 const path = require('path');
 const { createPacketDecoder, createWakeFeeder, createSegmenter, decideWake, decideUtteranceEnd } = require('./voice-input');
 
-function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, timers, session, playback, botId, isIgnored, onUtterance, onStuck }) {
+function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, timers, session, playback, botId, isIgnored, onUtterance, onStuck, onDiscard = () => {} }) {
   const { EndBehaviorType } = voice;
   const listeningUsers = new Set();
 
@@ -169,6 +170,27 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
     });
   }
 
+  // Follow-up windows: speech from userId that starts in [from, until] is a
+  // question without the wake word (after "did you mean to ask me
+  // something?"); why is for the log. Kept here, per person, not in their
+  // capture: Discord closes a speaker's audio stream after 60 s of silence,
+  // so someone who stayed quiet gets a new capture when they speak — and the
+  // window has to be there for it.
+  const followUps = new Map();   // userId -> { from, until, why }
+  function openWindow(userId, ms, why = '', from = Date.now()) {
+    const now = Date.now();
+    const open = followUps.get(userId);
+    const stillOpen = open && open.until > now;
+    // Re-setting a window that is still open keeps its start, so speech that
+    // began early in it (an answer while she was still asking) still counts;
+    // its end is always now + ms.
+    followUps.set(userId, {
+      from:  stillOpen ? Math.min(open.from, from) : from,
+      until: now + ms,
+      why:   why || (stillOpen ? open.why : ''),
+    });
+  }
+
   // Live view of every active capture, for the health heartbeat below.
   const captureStates = new Map();
 
@@ -194,7 +216,8 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
     let lastWakeAt     = 0;       // when the model last fired, until an utterance consumes it
     let listening      = false;   // waiting for the question after a bare "hey Luna"
     let listenTimer    = null;    // ends that wait if no question comes
-    let followUpUntil  = 0;       // after "did you mean to ask me something?": answer without the wake word until then
+    // A question without the wake word (see followUps).
+    const expect = (ms, why = '', from = Date.now()) => openWindow(userId, ms, why, from);
 
     const segmenter = createSegmenter({
       energyThreshold: ENERGY_THRESHOLD,
@@ -250,7 +273,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
 
     captureStates.set(userId, {
       wakeStream,
-      expectQuestion(ms) { followUpUntil = Date.now() + ms; },
+      expectQuestion: expect,
       get flushing() { return flushing; },
       get buffered() { return segmenter.buffered; },
       get lastData() { return lastDataTime; },
@@ -339,12 +362,17 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
         return;
       }
 
-      // The answer to "did you mean to ask me something?": no wake word needed.
-      const followUp = Date.now() < followUpUntil;
-      followUpUntil = 0;
+      // Speech that started inside a follow-up window: no wake word needed.
+      // (When it started, not when it ended, so a long question still counts.)
+      const win = followUps.get(userId);
+      const followUp = !!win && speechStartedAt >= win.from - 300 && speechStartedAt <= win.until;
+      const followUpWhy = followUp ? win.why : '';
+      // Speech that just missed a window: say by how much, to tune its length.
+      const missedBy = win && !followUp ? speechStartedAt - win.until : 0;
+      if (win && (followUp || speechStartedAt > win.until)) followUps.delete(userId);   // used, or expired
       if (followUp) {
         wakeStream?.takePeak();
-        console.log(`[${userId}] the question after "did you mean to ask me something?" — no wake word needed`);
+        console.log(`[${userId}] ${followUpWhy || 'a follow-up'} — no wake word needed`);
       }
 
       let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
@@ -367,7 +395,8 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
           console.log(
             `[${userId}] utterance discarded — no wake word ` +
             `(${Math.round(durationMs)}ms, peak score ${peak.toFixed(3)}, ` +
-            `threshold ${OWW_THRESHOLD})`
+            `threshold ${OWW_THRESHOLD})` +
+            (missedBy > 0 && missedBy < 30000 ? ` — started ${(missedBy / 1000).toFixed(1)}s after the follow-up window closed` : '')
           );
           // A detection that exists but fails the window check is the single
           // most confusing failure mode — the user said the wake word, saw it
@@ -381,6 +410,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
               'Raise OWW_GRACE_MS if this looks wrong.'
             );
           }
+          onDiscard(pcm, userId, { peak, durationMs, connection, channel });
           flushing = false;
           return;
         }
@@ -504,12 +534,14 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
   function reset() {
     listeningUsers.clear();
     captureStates.clear();
+    followUps.clear();
   }
 
-  // After "did you mean to ask me something?": this speaker's next words, for
-  // `ms`, are the question without the wake word.
-  function expectQuestion(userId, ms) {
-    captureStates.get(userId)?.expectQuestion(ms);
+  // This speaker's next words, if they start within `ms`, are a question
+  // without the wake word (after "did you mean to ask me something?").
+  // `why` says which, in the log.
+  function expectQuestion(userId, ms, why = '') {
+    openWindow(userId, ms, why);
   }
 
   return { initWakeWord, start, reset, expectQuestion, healthReport };

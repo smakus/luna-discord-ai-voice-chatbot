@@ -15,7 +15,7 @@
 //   fetchTTS                          tts.js
 //   sendCommand(channel, command, requesterId)   post a smakbot command, credited to them
 //   leave(userId)                     leave the voice channel at their request
-//   expectQuestion(userId, ms)        voice-listen.js: their next words are the question
+//   expectQuestion(userId, ms, why)   voice-listen.js: their next words are the question
 //   nowPlaying                        now-playing.js: "what song is this?"
 
 const path = require('path');
@@ -24,7 +24,7 @@ const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
 const { QUICK_PROMPT } = require('./prompt');
 const { parseWaits } = require('./config');
-const { isBareWake, confirmWake } = require('./voice-input');
+const { isBareWake, confirmWake, isJunkTranscript } = require('./voice-input');
 const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
 function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying }) {
@@ -128,35 +128,65 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     try {
       const transcript = await whisper.transcribe(pcm);
       console.log(`[${userId}] [timing] Whisper done: ${Date.now() - t0}ms`);
-
-      if (!transcript) return;
-
-      // The question: the wake phrase removed, or nothing if a candidate turns
-      // out to have no "Luna" in it (see confirmWake in voice-input.js).
-      const confirmed = confirmWake(transcript, { detected: wakeDetected, candidate: wakeCandidate });
-      if (!confirmed.accepted) {
-        if (wakeCandidate) {
-          console.log(`[${userId}] [oww] wake candidate rejected — ${confirmed.reason} ` +
-            `(${transcript.split(/\s+/).length} words)`);
-        }
-        return;
-      }
-      if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
-      const query = confirmed.query;
-
-      // Only "hey Luna", even after waiting for more: ask what they wanted.
-      if (WAKE_FOLLOWUP_MS > 0 && isBareWake(transcript)) {
-        askForQuestion(userId, connection);
-        return;
-      }
-
-      console.log(`[${userId}] Query:`, query);
-      await handleQuery(query, connection, channel, t0, userId);
+      await handleTranscript(transcript, userId, connection, channel, t0, { wakeDetected, wakeCandidate });
     } catch (err) {
       console.error(`[${userId}] Error processing utterance:`, err);
     } finally {
       processingUsers.delete(userId);
     }
+  }
+
+  // A "hey Luna" the wake-word model missed, which Whisper heard in the
+  // rejected utterance (wake-shadow.js, WAKE_WHISPER_BACKUP). Answered like a
+  // detected one — unless the person has been answered again since (they said
+  // it again and the model caught it this time), or is being answered now.
+  const lastAskedAt = new Map();   // userId -> when their last question was accepted
+  async function answerMissedWake(transcript, userId, connection, channel, heardAt) {
+    if (processingUsers.has(userId) || (lastAskedAt.get(userId) || 0) > heardAt) {
+      console.log(`[${userId}] [wake] a missed "hey Luna" was caught, but they've asked again since — not answering it twice`);
+      return;
+    }
+    processingUsers.add(userId);
+    try {
+      await handleTranscript(transcript, userId, connection, channel, Date.now(), { wakeCandidate: true });
+    } catch (err) {
+      console.error(`[${userId}] Error answering a missed wake word:`, err);
+    } finally {
+      processingUsers.delete(userId);
+    }
+  }
+
+  // After transcription: noise, the wake word, a bare "hey Luna", or a question.
+  async function handleTranscript(transcript, userId, connection, channel, t0, { wakeDetected = false, wakeCandidate = false } = {}) {
+    if (!transcript) return;
+    // Noise, not words ("[BLANK_AUDIO]", "(coughs)", "Um."): nothing to answer.
+    if (isJunkTranscript(transcript)) {
+      console.log(`[${userId}] heard no words (${JSON.stringify(transcript.slice(0, 40))}) — nothing to answer`);
+      return;
+    }
+
+    // The question: the wake phrase removed, or nothing if a candidate turns
+    // out to have no "Luna" in it (see confirmWake in voice-input.js).
+    const confirmed = confirmWake(transcript, { detected: wakeDetected, candidate: wakeCandidate });
+    if (!confirmed.accepted) {
+      if (wakeCandidate) {
+        console.log(`[${userId}] [oww] wake candidate rejected — ${confirmed.reason} ` +
+          `(${transcript.split(/\s+/).length} words)`);
+      }
+      return;
+    }
+    if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
+    const query = confirmed.query;
+
+    // Only "hey Luna", even after waiting for more: ask what they wanted.
+    if (WAKE_FOLLOWUP_MS > 0 && isBareWake(transcript)) {
+      askForQuestion(userId, connection);
+      return;
+    }
+
+    console.log(`[${userId}] Query:`, query);
+    lastAskedAt.set(userId, Date.now());
+    await handleQuery(query, connection, channel, t0, userId);
   }
 
   // "Hey smakus, I didn't catch that. Did you mean to ask me something?" — then
@@ -168,7 +198,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     const fitting = REPROMPTS.filter(p => p.includes('{name}') === Boolean(name));
     const text = fillPhrase(fitting.length ? fitting : REPROMPTS, { name });
     console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
-    const expect = ms => expectQuestion(userId, ms);
+    const expect = ms => expectQuestion(userId, ms, 'the question after "did you mean to ask me something?"');
     expect(60000);
     playback.say(text, { connection, userId, generation: playback.interrupt(userId), then: () => expect(WAKE_FOLLOWUP_MS) });
   }
@@ -569,7 +599,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
   const release = userId => processingUsers.delete(userId);
 
   return {
-    onUtterance: processUtterance, answer: handleQuery, release,
+    onUtterance: processUtterance, answer: handleQuery, release, answerMissedWake,
     // The parsed settings, for the tests.
     settings: { thinking: { waits: THINKING_WAITS, cap: THINKING_MAX }, thinkLimit: LLM_THINK_LIMIT_MS },
   };

@@ -181,3 +181,14 @@ describe('decideSilentSpeaker', () => {
     assert.strictEqual(v.decideSilentSpeaker({ verdict: { problem: false, ok: 0 }, now: 1000, lastReconnectAt: 900, ...gap }), 'wait');
   });
 });
+
+describe('isJunkTranscript (noise, not words)', () => {
+  it('noise, fillers and punctuation are junk', () => {
+    for (const t of ['[BLANK_AUDIO]', '(coughs)', '*laughs*', '.', '', 'Um.', 'Mm-hmm.', 'Uh-huh', 'Haha!', '[Music] (sighs)'])
+      assert.strictEqual(v.isJunkTranscript(t), true, JSON.stringify(t));
+  });
+  it('any real word is not', () => {
+    for (const t of ['Wait.', 'stop', 'no, I meant tomorrow', 'Hey Luna.', 'um, what about tomorrow', 'the'])
+      assert.strictEqual(v.isJunkTranscript(t), false, JSON.stringify(t));
+  });
+});
