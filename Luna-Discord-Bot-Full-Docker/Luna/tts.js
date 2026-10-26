@@ -99,13 +99,21 @@ function stripAudioTags(text) {
   return text.replace(AUDIO_TAG, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// ElevenLabs v3/v4 take free-form tags ("any").
+// ElevenLabs v3/v4 take free-form tags ("any"), including combined directions
+// ("[warm, laughing softly]") and pacing ("[pause]"). The LLM is shown a range
+// across emotions, reactions and delivery: shown only six examples, Qwen used
+// little else ([chuckles] was 6 of 16 tags on 24 test answers); with this list
+// it used 21 different ones, pauses and combined tags included, and still none
+// on plain facts. No limit on how many: tags where the words need them.
 const ELEVENLABS_TAG_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_v3_conversational']);
 const ELEVENLABS_PROMPT =
-  'Your voice can perform audio tags written in square brackets, such as ' +
-  '[laughs], [chuckles], [sighs], [whispers], [excited] or [sarcastic]. Put one ' +
-  'right before the words it applies to, wherever it genuinely fits the moment, ' +
-  'and none at all for plain factual answers.';
+  'Your voice performs audio tags: short directions in square brackets, placed right before the words ' +
+  'they shape. Use them where the words alone would not carry the feeling, vary them to suit the moment, ' +
+  'and use none in plain factual answers. ' +
+  'Emotions: [excited], [playful], [curious], [thoughtful], [amazed], [proud], [warm], [sarcastic], ' +
+  '[tired], [worried], [disappointed]. Reactions: [laughs], [chuckles], [giggles], [sighs], [gasps]. ' +
+  'Delivery: [whispers], [mumbles], [pause], [short pause], [hesitates]. A tag can combine directions, ' +
+  'like [warm, laughing softly], and the tone can change partway through an answer.';
 
 // Chatterbox Turbo performs exactly the tags it was trained on (the server's
 // /health lists them). The LLM is told all of them; ElevenLabs-style spellings
