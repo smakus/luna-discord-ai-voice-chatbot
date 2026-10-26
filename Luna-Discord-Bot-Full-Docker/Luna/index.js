@@ -19,7 +19,7 @@ const { createVoiceSession } = require('./voice-session');
 const { createListener } = require('./voice-listen');
 const { createVoiceAnswerer } = require('./voice-answer');
 const { createWhisper } = require('./whisper');
-const { createWakeShadow } = require('./wake-shadow');
+const { createWakeBackup } = require('./wake-backup');
 const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const { createNowPlaying } = require('./now-playing');
 
@@ -46,11 +46,11 @@ const playback = createPlayback({ voice: voiceLib, fetchTTS, console, lookahead:
 // and trains badly. Every official openWakeWord model is 3–4 syllables.
 //
 // WAKE_RE matches the phrase at the START of a transcript, tolerating Whisper's
-// punctuation ("Hey, Luna, ...") and its usual mishearings. It is used for two
-// things only:
+// punctuation ("Hey, Luna, ...") and its usual mishearings. It is used for:
 //   1. the fallback path when the ONNX model is unavailable
 //   2. stripping the phrase off the front of a transcript before it reaches
 //      the LLM or the music-command parser
+//   3. the backup (WAKE_WHISPER_BACKUP): spotting a "hey Luna" the model missed
 // Detection itself is the ONNX model's job.
 // (WAKE_RE and the other voice-input stages live in voice-input.js.)
 
@@ -92,22 +92,22 @@ const listener = createListener({
   isIgnored: id => IGNORED_USERS.has(id),
   onUtterance: (...args) => answerer.onUtterance(...args),
   onStuck: userId => answerer.release(userId),
-  onDiscard: (...args) => wakeShadow.onDiscard(...args),
+  onDiscard: (...args) => wakeBackup.onDiscard(...args),
 });
 setInterval(() => listener.healthReport(), 30000).unref?.();
 
 // Speech to text (whisper.js).
 const whisper = createWhisper({ config, fetch, console });
 
-// A second chance for the wake word (WAKE_WHISPER_BACKUP) and a measurement
-// of its misses (WAKE_SHADOW): Whisper also checks what the wake-word model
-// rejected (wake-shadow.js). Both off by default.
-const wakeShadow = createWakeShadow({
+// A second chance for the wake word (WAKE_WHISPER_BACKUP) and, optionally, a
+// measurement of its misses (WAKE_SHADOW): Whisper also checks what the wake-word model
+// rejected (wake-backup.js). Both off by default.
+const wakeBackup = createWakeBackup({
   config, console, whisper,
   nameOf: userId => session.channel?.members?.get(userId)?.displayName || userId,
   onWake: (...args) => answerer.answerMissedWake(...args),
 });
-if (config.WAKE_SHADOW) setInterval(() => wakeShadow.report(), config.WAKE_SHADOW_REPORT_MS).unref?.();
+if (config.WAKE_SHADOW) setInterval(() => wakeBackup.report(), config.WAKE_SHADOW_REPORT_MS).unref?.();
 
 // From an utterance to Luna's spoken answer (voice-answer.js, whisper.js).
 const answerer = createVoiceAnswerer({

@@ -21,7 +21,7 @@
 //   isIgnored(id)    IGNORED_USER_IDS
 //   onUtterance(pcm, userId, connection, channel, wakeDetected, wakeCandidate) → Promise
 //   onStuck(userId)  a request never returned and the speaker was released
-//   onDiscard(pcm, userId, { peak, durationMs, connection, channel })  an utterance the wake word rejected (wake-shadow.js)
+//   onDiscard(pcm, userId, { peak, durationMs, connection, channel })  an utterance the wake word rejected (wake-backup.js)
 
 const path = require('path');
 const { createPacketDecoder, createWakeFeeder, createSegmenter, decideWake, decideUtteranceEnd } = require('./voice-input');

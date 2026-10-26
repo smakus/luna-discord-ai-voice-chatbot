@@ -137,8 +137,8 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
   }
 
   // A "hey Luna" the wake-word model missed, which Whisper heard in the
-  // rejected utterance (wake-shadow.js, WAKE_WHISPER_BACKUP). Answered like a
-  // detected one — unless the person has been answered again since (they said
+  // rejected utterance (wake-backup.js, WAKE_WHISPER_BACKUP). Answered as if
+  // the model had detected it (the question is what follows "hey Luna") — unless the person has been answered again since (they said
   // it again and the model caught it this time), or is being answered now.
   const lastAskedAt = new Map();   // userId -> when their last question was accepted
   async function answerMissedWake(transcript, userId, connection, channel, heardAt) {
@@ -148,7 +148,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     }
     processingUsers.add(userId);
     try {
-      await handleTranscript(transcript, userId, connection, channel, Date.now(), { wakeCandidate: true });
+      await handleTranscript(transcript, userId, connection, channel, Date.now(), { wakeDetected: true });
     } catch (err) {
       console.error(`[${userId}] Error answering a missed wake word:`, err);
     } finally {
