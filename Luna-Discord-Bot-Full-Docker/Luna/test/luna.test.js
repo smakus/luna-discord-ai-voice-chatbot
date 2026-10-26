@@ -676,14 +676,14 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.logs.some(l => /utterance discarded — no wake word .* — started \d+\.\ds after the follow-up window closed/.test(l)), H.S.logs.filter(l => /discarded/.test(l)).join(' | '));
     ok('speech just after the window closed → discarded, and the log says by how much it missed'); }
 
-  console.log('wake-word shadow check');
+  console.log('wake-word backup and shadow check');
   { const H = await wakeRig({ WAKE_SHADOW: 'true' }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
     await H.utter(0.004, "hey Luna what's the weather"); await H.until(() => H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna"/.test(l)));
     assert.strictEqual(H.S.llmRequests.length, 0, 'measured, not answered');
     assert.ok(H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna" from smakus that the model missed \(scored 0\.004;/.test(l)), H.S.logs.slice(-3).join(' | '));
     await H.utter(0.001, 'pass me the chips'); await H.wait(100);
     assert.ok(!H.S.logs.some(l => /\[shadow\].*chips/.test(l)), 'other speech is not logged');
-    H.T.wakeShadow.report();
+    H.T.wakeBackup.report();
     assert.ok(H.S.logs.some(l => /\[shadow\] last \d+ min: 2 discarded clips transcribed .* dropped 0, failed 0, backlog 0\. Missed "hey Luna": smakus 1\./.test(l)), H.S.logs.slice(-2).join(' | '));
     ok('WAKE_SHADOW: a rejected "hey Luna" Whisper hears → "[shadow] MISSED …" (not answered); other speech not logged; the summary counts clips and misses'); }
   { const H = await wakeRig(); await H.utter(0.004, "hey Luna what's the weather"); await H.wait(100);
@@ -694,12 +694,16 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna" from smakus that the model missed .* — answering/.test(l)));
     await H.until(() => H.S.tts.some(t => t.text === 'Sunny all day.'));
     ok('WAKE_WHISPER_BACKUP: a "hey Luna" the model scored 0.004 → Whisper hears it → answered ("what\'s the weather")'); }
+  { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' });
+    await H.utter(0.004, 'So anyway. Okay Luna, what time is it'); await H.until(() => H.S.llmRequests.length > 0);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['what time is it']);
+    assert.ok(!H.S.logs.some(l => /\[oww\] wake candidate/.test(l)), 'not reported as the model\'s candidate');
+    ok('WAKE_WHISPER_BACKUP: "So anyway. Okay Luna, what time is it" → the question is what follows "okay Luna"; no [oww] candidate log'); }
   { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' }); H.S.transcriptMs = 300;
     await H.utter(0.004, 'pass me the chips'); await H.wait(200);
     assert.strictEqual(H.S.llmRequests.length, 0); assert.ok(!H.S.logs.some(l => /\[wake\]|chips/.test(l.replace(/^\[u1\] (Processing|utterance).*/, ''))));
     ok('WAKE_WHISPER_BACKUP: ordinary chatter → transcribed, not answered, not logged'); }
   { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' });
-    H.T.wakeShadowAnswered = 0;
     const { answerMissedWake } = H.T; const conn = H.S.lastConnection;
     H.S.llmScript = sse('Sunny all day.'); await H.utter(0.9, "what's the weather", true);    // they said it again, and the model caught it
     const before = H.S.llmRequests.length;

@@ -35,9 +35,9 @@
 const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona)\b[\s,.]*/i;
 // The same phrase anywhere in a transcript ("so anyway, hey Luna, what's…").
 const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
-// Mid-sentence, only the full "hey Luna": "Luna" alone there is more likely
-// part of the question ("what does luna mean in Spanish").
-const WAKE_PHRASE_RE = /\b(?:hey|hay|hi)[\s,.]*(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
+// Mid-sentence, only the full "hey Luna" (or "okay Luna"): "Luna" alone there
+// is more likely part of the question ("what does luna mean in Spanish").
+const WAKE_PHRASE_RE = /\b(?:hey|hay|hi|okay|ok)[\s,.]*(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
 
 // Removes a leading wake phrase; a no-op when there is none.
 const stripWakeWord = text => text.replace(WAKE_RE, '').trim();
@@ -277,7 +277,7 @@ function isJunkTranscript(text) {
 }
 
 module.exports = {
-  WAKE_RE, WAKE_ANYWHERE_RE, stripWakeWord, isBareWake, isJunkTranscript,
+  WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE, stripWakeWord, isBareWake, isJunkTranscript,
   createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 };

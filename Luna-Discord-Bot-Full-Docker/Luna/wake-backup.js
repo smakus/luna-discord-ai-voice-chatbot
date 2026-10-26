@@ -1,10 +1,10 @@
-// ─── Wake-word shadow check ───────────────────────────────────────────────────
+// ─── Wake-word backup ─────────────────────────────────────────────────────────
 //
 // The wake-word model's misses: a "hey Luna" it scores 0.001 is discarded
 // like any chatter (measured: rarely for smakus, a third or more of the time
 // for others). Here every discarded utterance is also transcribed by Whisper,
-// one at a time, and when Whisper hears "hey Luna" (or the utterance starts
-// with "Luna"):
+// one at a time, and when Whisper hears "hey Luna" (WAKE_PHRASE_RE, or the
+// utterance starts with "Luna": WAKE_RE — both in voice-input.js):
 //   - WAKE_WHISPER_BACKUP=true: she answers it, as if the model had caught it
 //     (voice-answer.js answerMissedWake) — a second chance, about 0.3 s
 //     behind a normal detection;
@@ -14,21 +14,20 @@
 // Nothing else anyone said is logged or acted on.
 //
 // A clip waiting longer than MAX_WAIT_MS is dropped (and counted) rather than
-// piling up: at most one shadow request is ever with Whisper, so a real
+// piling up: at most one backup request is ever with Whisper, so a real
 // question waits behind at most one clip.
 //
-// createWakeShadow({ config, console, whisper, nameOf }) → { onDiscard(pcm, userId, info), report() }
+// createWakeBackup({ config, console, whisper, nameOf }) → { onDiscard(pcm, userId, info), report() }
 // (report() is called every WAKE_SHADOW_REPORT_MS by index.js.)
 
-const { WAKE_RE, WAKE_ANYWHERE_RE } = require('./voice-input');
+const { WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE } = require('./voice-input');
 
 const MAX_WAIT_MS = 30000;
 // A caught "hey Luna" older than this is not answered (only counted): an
 // answer that late would land in the middle of something else.
 const MAX_ANSWER_WAIT_MS = 8000;
-const HEY_LUNA_RE = /\b(?:hey|hay|hi|okay|ok)[\s,.]*(?:luna|loona|runa|roona)\b/i;
 
-function createWakeShadow({ config, console, whisper, nameOf = id => id, onWake = () => {} }) {
+function createWakeBackup({ config, console, whisper, nameOf = id => id, onWake = () => {} }) {
   const enabled = () => config.WAKE_SHADOW || config.WAKE_WHISPER_BACKUP;
   const queue = [];        // { pcm, userId, peak, durationMs, at }
   let busy = false;
@@ -62,7 +61,7 @@ function createWakeShadow({ config, console, whisper, nameOf = id => id, onWake 
         stats.maxWhisperMs = Math.max(stats.maxWhisperMs, took);
         if (text == null) { stats.failed++; continue; }
         const who = nameOf(clip.userId);
-        if (HEY_LUNA_RE.test(text) || WAKE_RE.test(text)) {
+        if (WAKE_PHRASE_RE.test(text) || WAKE_RE.test(text)) {
           bump(stats.misses, who);
           const late = Date.now() - clip.at > MAX_ANSWER_WAIT_MS;
           const answering = config.WAKE_WHISPER_BACKUP && clip.connection && !late;
@@ -101,4 +100,4 @@ function createWakeShadow({ config, console, whisper, nameOf = id => id, onWake 
   return { onDiscard, report };
 }
 
-module.exports = { createWakeShadow, HEY_LUNA_RE };
+module.exports = { createWakeBackup };
