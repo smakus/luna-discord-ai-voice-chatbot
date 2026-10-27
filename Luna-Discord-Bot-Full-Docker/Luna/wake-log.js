@@ -22,7 +22,10 @@
 // (replacing the one before) and a new one started. If it can't be written,
 // that is logged once and the log turns itself off.
 //
-// createWakeLog({ config, fs, path, console, nameOf }) → { record(event, userId, fields) }
+// "!luna wakestats" reads it back (summary(sinceMs)): per person, how many of
+// their "hey Luna"s she heard and how — see summarizeWakeEvents.
+//
+// createWakeLog({ config, fs, path, console, nameOf }) → { record(event, userId, fields), summary(sinceMs) }
 // fs is require('fs').promises, passed in so the tests can fake it.
 
 function createWakeLog({ config, fs, path, console, nameOf = id => id }) {
@@ -61,7 +64,68 @@ function createWakeLog({ config, fs, path, console, nameOf = id => id }) {
     size += bytes;
   }
 
-  return { record };
+  // The events since `sinceMs` (from the file and the one before it), summarized.
+  async function summary(sinceMs) {
+    if (!file) return 'The wake-word log is off (WAKE_LOG_FILE is empty).';
+    await queue;                          // what's been recorded so far, written
+    const events = [];
+    for (const f of [`${file}.1`, file]) {
+      const text = await fs.readFile(f, 'utf8').catch(() => '');
+      for (const line of text.split('\n')) {
+        if (!line) continue;
+        try {
+          const e = JSON.parse(line);
+          if (Date.parse(e.t) >= sinceMs) events.push(e);
+        } catch (_) { /* a line cut off mid-write */ }
+      }
+    }
+    return summarizeWakeEvents(events);
+  }
+
+  return { record, summary };
 }
 
-module.exports = { createWakeLog };
+// Per person: their "hey Luna"s — caught by the model (detected), by the
+// near-threshold check Whisper confirmed (confirmed), or missed by both and
+// caught by the backup (missed) — and how many she answered; the typical
+// detection score; near misses. Busiest first, at most 15 people.
+function summarizeWakeEvents(events) {
+  const people = new Map();
+  for (const e of events) {
+    const p = people.get(e.id) ?? { who: e.who, detected: 0, confirmed: 0, caught: 0, late: 0, scores: [], near: new Map() };
+    p.who = e.who || p.who;
+    if (e.event === 'detected') { p.detected++; if (typeof e.score === 'number') p.scores.push(e.score); }
+    else if (e.event === 'confirmed') p.confirmed++;
+    else if (e.event === 'missed') { if (e.answered === 'yes') p.caught++; else p.late++; }
+    else if (e.event === 'near-miss' && e.heard) {
+      const heard = e.heard.toLowerCase();
+      p.near.set(heard, (p.near.get(heard) || 0) + 1);
+    }
+    people.set(e.id, p);
+  }
+  const lines = [];
+  const rows = [...people.values()]
+    .map(p => ({ ...p, total: p.detected + p.confirmed + p.caught + p.late }))
+    .filter(p => p.total || p.near.size)
+    .sort((a, b) => b.total - a.total);
+  for (const p of rows.slice(0, 15)) {
+    const heard = p.detected + p.confirmed + p.caught;
+    const how = [p.detected && `model ${p.detected}`, p.confirmed && `near-threshold check ${p.confirmed}`,
+      p.caught && `backup ${p.caught}`].filter(Boolean).join(', ');
+    let line = `• **${p.who}** — answered ${heard} of ${p.total} "hey Luna"${p.total === 1 ? '' : 's'}`;
+    if (how) line += ` (${how})`;
+    if (p.late) line += `; ${p.late} caught too late to answer`;
+    if (p.scores.length) {
+      const sorted = [...p.scores].sort((a, b) => a - b);
+      line += `. Typical model score ${sorted[Math.floor(sorted.length / 2)].toFixed(2)}`;
+    }
+    if (p.near.size) {
+      line += `. Near misses: ${[...p.near].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([w, n]) => `"${w}"${n > 1 ? ` ×${n}` : ''}`).join(', ')}`;
+    }
+    lines.push(line + '.');
+  }
+  return lines.length ? lines.join('\n') : 'No wake-word events in that time.';
+}
+
+module.exports = { createWakeLog, summarizeWakeEvents };

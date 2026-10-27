@@ -220,9 +220,11 @@ function createPlayback({ voice, fetchTTS, console, lookahead }) {
   // its own like the intro's) at `generation` (a new one by default, which
   // supersedes that id's earlier lines). Skipped if `wanted()` is false by
   // the time it comes up — Luna left the channel, say. `render` makes the
-  // audio (fetchTTS by default); `then` runs after it has played.
+  // audio (fetchTTS by default); `then` runs after it has played. Lines are
+  // cached once rendered (tts-cache.js) unless `cache` is false: pass that for
+  // one-off text, like a song title or someone's "!luna say".
   function say(text, { connection, userId, generation = nextGeneration(userId), wanted = () => true,
-                       render = line => fetchTTS(line), then = null }) {
+                       cache = true, render = line => fetchTTS(line, { cache }), then = null }) {
     queue(async () => {
       if (!wanted()) return;
       const pt = await render(text);

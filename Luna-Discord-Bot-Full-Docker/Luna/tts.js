@@ -29,11 +29,18 @@
 // fallback, resolves null), and destroying a returned stream cancels its
 // download. Used to drop sentences that will never be played.
 //
-// createTTS({ config, fetch, console }) → { fetchTTS, fetchTTSInVoice,
-// checkElevenLabsVoice, describeTTS, expressivePrompt, pronounce }. fetch and
-// console are passed in so the tests can fake them.
+// fetchTTS(text, { cache: true }) — a line said again and again (greetings,
+// fillers, the search heads-up): kept on disk once rendered and played from
+// there next time, in the same voice (tts-cache.js). A cached line plays even
+// while its provider is benched — out of credits, say — since it costs nothing.
+//
+// createTTS({ config, fetch, console, fs }) → { fetchTTS, fetchTTSInVoice,
+// checkElevenLabsVoice, describeTTS, expressivePrompt, pronounce }. fetch,
+// console and fs are passed in so the tests can fake them; without fs there
+// is no phrase cache.
 
 const { PassThrough } = require('stream');
+const { createTtsCache } = require('./tts-cache');
 
 // ─── Expressiveness ───────────────────────────────────────────────────────────
 //
@@ -164,7 +171,7 @@ function classifyElevenLabs(status, detail) {
   return 'transient'; // 400 text issues, 409, 429, 5xx
 }
 
-function createTTS({ config, fetch, console }) {
+function createTTS({ config, fetch, console, fs = null }) {
   // ─── Settings ─────────────────────────────────────────────────────────────
 
   const KOKORO_URL        = config.KOKORO_URL;
@@ -297,6 +304,7 @@ function createTTS({ config, fetch, console }) {
       tagPrompt,
       speakable: text => keepTags(text, tags, aliases),
       configured: () => Boolean(url),
+      voiceKey: () => `${name}/${voice || 'default'}/${url}`,
       async synthesize(text, signal) {
         const res = await request(name, url, {
           method: 'POST',
@@ -330,6 +338,7 @@ function createTTS({ config, fetch, console }) {
     tagPrompt: ELEVENLABS_TAGS ? ELEVENLABS_PROMPT : '',
     speakable: text => keepTags(text, ELEVENLABS_TAGS ? 'any' : null),
     configured: () => Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
+    voiceKey: (voiceId = ELEVENLABS_VOICE_ID) => `ElevenLabs/${ELEVENLABS_MODEL}/${voiceId}/${ELEVENLABS_FORMAT}`,
     async synthesize(text, signal, voiceId = ELEVENLABS_VOICE_ID) {
       const url = `${ELEVENLABS_BASE_URL}/v1/text-to-speech/${encodeURIComponent(voiceId)}` +
         `/stream?output_format=${encodeURIComponent(ELEVENLABS_FORMAT)}`;
@@ -390,6 +399,9 @@ function createTTS({ config, fetch, console }) {
     if (fallback === null && chain.length) break; // TTS_FALLBACK=none
   }
 
+  // Lines said again and again, kept once rendered (tts-cache.js).
+  const phraseCache = createTtsCache({ dir: config.TTS_CACHE_DIR, maxBytes: config.TTS_CACHE_MAX_MB * 1024 * 1024, fs, console });
+
   const benchedUntil = new Map(); // provider -> ms timestamp
 
   const isBenched = p => Date.now() < (benchedUntil.get(p) || 0);
@@ -416,19 +428,24 @@ function createTTS({ config, fetch, console }) {
     return config.TTS_EXPRESSIVE_PROMPT || p.tagPrompt;
   }
 
-  async function fetchTTS(text, { signal } = {}) {
+  async function fetchTTS(text, { signal, cache = false } = {}) {
     for (let i = 0; i < chain.length; i++) {
       if (signal && signal.aborted) return null;
       const provider = chain[i];
       const isLast = i === chain.length - 1;
 
-      // A benched provider is skipped — unless it is the only one left, where
-      // trying is strictly better than certain silence.
-      if (isBenched(provider) && !isLast) continue;
-
       const spoken = pronounce(TTS_EXPRESSIVE ? provider.speakable(text) : stripAudioTags(text));
       // A sentence that was only a tag ("[laughs]") has nothing left to say.
       if (!spoken) return null;
+
+      if (cache) {
+        const cached = await phraseCache.get(provider.voiceKey(), spoken);
+        if (cached) return cached;
+      }
+
+      // A benched provider is skipped — unless it is the only one left, where
+      // trying is strictly better than certain silence.
+      if (isBenched(provider) && !isLast) continue;
 
       try {
         const stream = await provider.synthesize(spoken, signal);
@@ -436,7 +453,7 @@ function createTTS({ config, fetch, console }) {
           benchedUntil.delete(provider);
           console.log(`[tts] ${provider.name} is working again`);
         }
-        return stream;
+        return cache ? phraseCache.store(provider.voiceKey(), spoken, stream) : stream;
       } catch (err) {
         if (err instanceof TTSError && err.kind === 'cancelled') return null;
         const next = chain[i + 1];
@@ -462,12 +479,18 @@ function createTTS({ config, fetch, console }) {
   // resolves null on any problem — not configured, benched (out of credits, bad
   // key), the request failing — so the caller can fall back to its normal line
   // in the normal voice instead of this one in the wrong voice.
-  async function fetchTTSInVoice(text, voiceId, { signal } = {}) {
-    if (!voiceId || !elevenlabs.configured() || isBenched(elevenlabs)) return null;
+  async function fetchTTSInVoice(text, voiceId, { signal, cache = false } = {}) {
+    if (!voiceId || !elevenlabs.configured()) return null;
     const spoken = pronounce(TTS_EXPRESSIVE ? elevenlabs.speakable(text) : stripAudioTags(text));
     if (!spoken) return null;
+    if (cache) {
+      const cached = await phraseCache.get(elevenlabs.voiceKey(voiceId), spoken);
+      if (cached) return cached;
+    }
+    if (isBenched(elevenlabs)) return null;
     try {
-      return await elevenlabs.synthesize(spoken, signal, voiceId);
+      const stream = await elevenlabs.synthesize(spoken, signal, voiceId);
+      return cache ? phraseCache.store(elevenlabs.voiceKey(voiceId), spoken, stream) : stream;
     } catch (err) {
       if (!(err instanceof TTSError && err.kind === 'cancelled')) console.error(`[tts] voice ${voiceId}: ${err.message}`);
       return null;

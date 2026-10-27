@@ -969,10 +969,35 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
       reply: async r => { H.S.replies.push(r); }, react: async e => { (H.S.reactions ??= []).push(e); } };
     H.T.client.emit('messageCreate', msg); await H.until(() => H.S.tts.length > 0);
     assert.strictEqual(H.S.tts[0].text, 'Hey smakus, dinner is ready!'); assert.strictEqual(H.S.llmRequests.length, 0);
+    assert.ok(!H.S.tts[0].cache, 'one-off text is not cached');
     assert.strictEqual(JSON.stringify(H.S.reactions), '["🔊"]');
     msg.content = '!luna say ' + 'x'.repeat(600); H.T.client.emit('messageCreate', msg); await H.until(() => H.S.tts.length > 1);
     assert.strictEqual(H.S.tts[1].text.length, 400, 'capped');
     ok('"!luna say …" → those exact words spoken (no LLM), 🔊 reaction; capped at 400 characters'); }
+  { const H = await textRig(); const at = new Date().toISOString(), old = new Date(Date.now() - 3 * 86400000).toISOString();
+    H.S.wakeLog = [
+      { t: at, event: 'detected', who: 'smakus', id: 'u1', score: 0.7 }, { t: at, event: 'detected', who: 'smakus', id: 'u1', score: 0.8 },
+      { t: at, event: 'detected', who: 'smakus', id: 'u1', score: 0.6 }, { t: at, event: 'confirmed', who: 'smakus', id: 'u1' },
+      { t: at, event: 'missed', who: 'appa', id: 'u2', answered: 'yes' }, { t: at, event: 'missed', who: 'appa', id: 'u2', answered: 'late' },
+      { t: at, event: 'detected', who: 'appa', id: 'u2', score: 0.41 }, { t: at, event: 'near-miss', who: 'appa', id: 'u2', heard: 'hey Lena' },
+      { t: at, event: 'near-miss', who: 'appa', id: 'u2', heard: 'Hey Lena' }, { t: at, event: 'discarded', who: 'joel', id: 'u3', peak: 0.01 },
+      { t: old, event: 'detected', who: 'smakus', id: 'u1', score: 0.9 },
+    ];
+    const msg = { content: '!luna wakestats', author: { id: 'u1', bot: false }, channel: H.chan(), reply: async r => { H.S.replies.push(r); } };
+    H.T.client.emit('messageCreate', msg); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0], '**Wake word, last 1 day**\n' +
+      '• **smakus** — answered 4 of 4 "hey Luna"s (model 3, near-threshold check 1). Typical model score 0.70.\n' +
+      '• **appa** — answered 2 of 3 "hey Luna"s (model 1, backup 1); 1 caught too late to answer. Typical model score 0.41. Near misses: "hey lena" ×2.');
+    msg.content = '!luna wakestats 7d'; H.T.client.emit('messageCreate', msg); await H.until(() => H.S.replies.length > 1);
+    assert.match(H.S.replies[1], /^\*\*Wake word, last 7 days\*\*\n• \*\*smakus\*\* — answered 5 of 5/);
+    assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('"!luna wakestats" → per person from the wake-word log: answered of "hey Luna"s, how, typical score, near misses; "7d" widens it'); }
+  { const H = await textRig(); H.S.llmScript = [[50, null], ...TOOL, [50, null], ...sse('It is sunny.')];
+    await H.T.handleQuery("what's the weather", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
+    const headsUp = H.S.tts.find(t => BUILTIN.includes(t.text)), answer = H.S.tts.find(t => t.text === 'It is sunny.');
+    assert.ok(headsUp && answer, H.S.tts.map(t => t.text).join(' | '));
+    assert.strictEqual(headsUp.cache, true); assert.ok(!answer.cache);
+    ok('phrase cache: the search heads-up is asked for cached, the answer is not'); }
   { const H = await textRig(); const msg = { content: '!luna say hi', author: { id: 'u2', bot: false }, member: null, channel: H.chan(), reply: async r => { H.S.replies.push(r); }, react: async () => {} };
     H.T.client.emit('messageCreate', msg); await H.wait(50);
     assert.deepStrictEqual(H.S.replies, ["I'm not in a voice channel."]); ok('"!luna say" when not in a voice channel → says so'); }

@@ -224,7 +224,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
       await sendCommand(channel, what.command, userId);
 
-      if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration });
+      if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration, cache: !!what.command.fixedAck });
       return;
     }
 
@@ -235,7 +235,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
       const text = nowPlaying.describe(await nowPlaying.get(session.channel?.guild?.id || ''));
       console.log(`[${userId}] [music] now playing → "${text}"`);
-      playback.say(text, { connection, userId, generation });
+      playback.say(text, { connection, userId, generation, cache: false });
       return;
     }
 
@@ -288,7 +288,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       console.log(`[${userId}] [${tag}] "${phrase}"`);
       playback.queue(async () => {
         if (!wanted()) return;
-        const pt = await fetchTTS(phrase);
+        const pt = await fetchTTS(phrase, { cache: true });
         if (!pt) return;
         if (!wanted() || !playback.isCurrent(userId, myGeneration)) { pt.destroy(); return; }
         await playback.play(pt, connection);

@@ -13,3 +13,5 @@ Luna-Discord-Bot-Full-Docker/Luna/bench/results/
 Luna-Discord-Bot-Full-Docker/Luna/local/
 # The wake-word log (WAKE_LOG_FILE)
 Luna-Discord-Bot-Full-Docker/Luna/logs/
+# Rendered phrases (TTS_CACHE_DIR)
+Luna-Discord-Bot-Full-Docker/Luna/cache/

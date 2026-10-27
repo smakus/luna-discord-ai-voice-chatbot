@@ -59,7 +59,7 @@ module.exports = function boot(env = {}) {
       const st = new PassThrough(); st.ttsText = `[voice ${voice}] ${text}`; S.tts.push({ text: st.ttsText }); return st; },
     checkElevenLabsVoice: async voice => (S.badVoices || []).includes(voice) ? { name: null, reason: 'ElevenLabs says 404' } : { name: 'Some Voice' },
     fetchTTS: (text, opts = {}) => {
-      const rec = { text, signal: opts.signal, destroyed: false };
+      const rec = { text, signal: opts.signal, cache: opts.cache, destroyed: false };
       S.tts.push(rec);
       return new Promise(res => setTimeout(() => {
         if (opts.signal?.aborted) return res(null);
@@ -76,6 +76,7 @@ module.exports = function boot(env = {}) {
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
     fs: { promises: {   // the wake-word log (wake-log.js): S.wakeLog has its lines, S.wakeLogDown makes writes fail
       mkdir: async () => {}, stat: async () => ({ size: 0 }), rename: async () => {},
+      readFile: async file => file.endsWith('.1') ? '' : (S.wakeLog || []).map(({ file: _, ...e }) => JSON.stringify(e) + '\n').join(''),
       appendFile: async (file, line) => { if (S.wakeLogDown) throw new Error('EROFS: read-only file system'); (S.wakeLog ??= []).push({ file, ...JSON.parse(line) }); } } },
     './wake-log': require(path.join(LUNA_DIR, 'wake-log.js')),
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },

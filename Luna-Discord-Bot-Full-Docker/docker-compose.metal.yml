@@ -35,6 +35,8 @@ services:
       - ./Luna/local:/app/local:ro
       # The wake-word log (WAKE_LOG_FILE), kept across rebuilds.
       - ./Luna/logs:/app/logs
+      # Rendered phrases (TTS_CACHE_DIR), kept across rebuilds.
+      - ./Luna/cache:/app/cache
     env_file:
       - ./Luna/.env
     environment:

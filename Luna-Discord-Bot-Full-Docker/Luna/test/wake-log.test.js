@@ -52,3 +52,13 @@ describe('wake-word log', () => {
     assert.deepStrictEqual([S.lines.length, S.dirs.length], [0, 0]);
   });
 });
+
+describe('summarizeWakeEvents', () => {
+  const { summarizeWakeEvents } = require('../wake-log');
+  it('nothing → says so', () => assert.strictEqual(summarizeWakeEvents([]), 'No wake-word events in that time.'));
+  it('only chatter (discarded) → nobody listed', () =>
+    assert.strictEqual(summarizeWakeEvents([{ event: 'discarded', id: 'u1', who: 'x', peak: 0.01 }]), 'No wake-word events in that time.'));
+  it('one "hey Luna", singular', () =>
+    assert.strictEqual(summarizeWakeEvents([{ event: 'detected', id: 'u1', who: 'smakus', score: 0.5 }]),
+      '• **smakus** — answered 1 of 1 "hey Luna" (model 1). Typical model score 0.50.'));
+});
