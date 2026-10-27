@@ -661,7 +661,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   console.log('follow-up windows');
   { const H = await bareRig({ WAKE_FOLLOWUP_MS: '1500' }); await H.bareWake();
     // Discord closes a quiet speaker's audio stream (after 60 s of silence)…
-    H.S.audio.u1.destroy(); await H.until(() => H.S.logs.some(l => /\[u1\] capture stream closed/.test(l)));
+    H.S.audio.u1.destroy(); await H.until(() => H.S.logs.some(l => /\[smakus\] capture stream closed/.test(l)));
     // …and when they speak again it's a new capture.
     H.S.lastConnection.receiver.speaking.emit('start', 'u1'); await H.until(() => H.S.audio.u1 && !H.S.audio.u1.destroyed);
     H.S.transcripts = ["what's the weather on Saturday"]; (H.S.peaks ??= {}).u1 = 0;

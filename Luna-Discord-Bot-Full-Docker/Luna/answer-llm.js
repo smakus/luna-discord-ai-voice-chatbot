@@ -10,7 +10,7 @@
 //     play, leaving, something to say — read here once, so voice and text
 //     only decide what to do about them.
 //
-// createLlm({ config, fetch, console, expressivePrompt, musicLine }) → llm.
+// createLlm({ config, fetch, console, expressivePrompt, musicLine, nameOf }) → llm.
 // fetch and console are passed in (not the globals) so the test harness can
 // fake them; expressivePrompt() is the audio-tag instruction of the voice
 // speaking now; musicLine() resolves to the prompt line about the song playing
@@ -111,7 +111,7 @@ function condenseSearchResults(calls, maxChars = 6000) {
 
 const TOOLS_PLUGIN_ID = 'mcp/luna';
 
-function createLlm({ config, fetch, console, expressivePrompt = () => '', musicLine = async () => '' }) {
+function createLlm({ config, fetch, console, expressivePrompt = () => '', musicLine = async () => '', nameOf = id => id }) {
   const LM_STUDIO_URL = config.LM_STUDIO_URL;
 
   // The LLM gets two limits, because a single overall timeout cannot tell a
@@ -197,7 +197,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
       return null;
     }
     if (c.turns >= LM_MEMORY_MAX_TURNS) {
-      console.log(`[${key}] conversation reset after ${c.turns} turns (context cap)`);
+      console.log(`[${nameOf(key)}] conversation reset after ${c.turns} turns (context cap)`);
       conversations.delete(key);
       return null;
     }
@@ -299,13 +299,13 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
   // read of a prompt or of tool results (~90 tokens/s on this hardware).
   function logPhase(userId, e, phase) {
     if (e.type === 'tool_call.arguments') {
-      console.log(`[${userId}] [LLM] tool: ${e.tool} ${JSON.stringify(e.arguments || {}).slice(0, 160)}`);
+      console.log(`[${nameOf(userId)}] [LLM] tool: ${e.tool} ${JSON.stringify(e.arguments || {}).slice(0, 160)}`);
     } else if (e.type === 'prompt_processing.start') {
       phase.readingAt = Date.now();
     } else if (e.type === 'prompt_processing.end' && phase.readingAt) {
       const ms = Date.now() - phase.readingAt;
       phase.readingAt = 0;
-      if (ms >= 2000) console.log(`[${userId}] [LLM] read prompt/results in ${(ms / 1000).toFixed(1)}s`);
+      if (ms >= 2000) console.log(`[${nameOf(userId)}] [LLM] read prompt/results in ${(ms / 1000).toFixed(1)}s`);
     }
   }
 
@@ -318,7 +318,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
     const f = v => (typeof v === 'number' ? v.toFixed(1) : '?');
     const turn = (conversations.get(memoryKey)?.turns || 0) + 1;
     console.log(
-      `[${userId}] [LLM] stats: memory turn ${turn}, prompt ${n(stats.input_tokens)} tokens, ` +
+      `[${nameOf(userId)}] [LLM] stats: memory turn ${turn}, prompt ${n(stats.input_tokens)} tokens, ` +
       `reasoning ${n(stats.reasoning_output_tokens)}, output ${n(stats.total_output_tokens)}, ` +
       `first token ${f(stats.time_to_first_token_seconds)}s, ${f(stats.tokens_per_second)} tok/s`
     );
@@ -348,7 +348,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
         if (e.tool === 'leave_channel') { onTool({ type: 'leave' }); return; }
         if (e.tool === 'say_in_voice') { onTool({ type: 'say', text: e.arguments?.text }); return; }
         if (MUSIC_TOOL_NAMES.has(e.tool)) {
-          console.log(`[${tag}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
+          console.log(`[${nameOf(tag)}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
           onTool({ type: 'music', tool: e.tool, args: e.arguments || {}, command: toolCommand(e.tool, e.arguments) });
           return;
         }
@@ -490,7 +490,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
         // failed until LM_MEMORY_TTL_MS expired. Start a fresh conversation.
         if (!retriedConversation && body.previous_response_id && /previous_response_id/i.test(errText)) {
           retriedConversation = true;
-          console.warn(`[${userId}] [LLM] conversation memory not found in LM Studio — starting a fresh one`);
+          console.warn(`[${nameOf(userId)}] [LLM] conversation memory not found in LM Studio — starting a fresh one`);
           conversations.delete(memoryKey);
           delete body.previous_response_id;
           continue;

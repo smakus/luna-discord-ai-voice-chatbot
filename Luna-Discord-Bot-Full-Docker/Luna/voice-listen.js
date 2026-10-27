@@ -203,7 +203,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
   const userGainState = new Map();
 
   function continuousCapture(connection, userId, channel) {
-    console.log(`[${userId}] capture started`);
+    console.log(`[${nameOf(userId)}] capture started`);
     const audioStream = connection.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: 60000 },
     });
@@ -255,7 +255,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
             // phrase so the new question is not prefixed by whatever was said
             // during the wait.
             if (flushing) {
-              console.log(`[${userId}] barge-in — cancelling the previous question`);
+              console.log(`[${nameOf(userId)}] barge-in — cancelling the previous question`);
               playback.interrupt(userId);
               segmenter.keepLast(Math.ceil((PREROLL_MS + 1500) / DECODER_CHUNK_MS));
             }
@@ -268,7 +268,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
 
     const decodePacket = createPacketDecoder(new OpusEncoder(48000, 1), {
       onPcm,
-      onUndecodable: count => console.warn(`[${userId}] ${count} audio packet(s) could not be decoded — dropped ` +
+      onUndecodable: count => console.warn(`[${nameOf(userId)}] ${count} audio packet(s) could not be decoded — dropped ` +
         '(normal for a moment while the encryption session is set up)'),
     });
     audioStream.setMaxListeners(20);
@@ -311,7 +311,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
         if (now - blockedWarnAt > 10000) {
           blockedWarnAt = now;
           console.warn(
-            `[${userId}] flush blocked — still processing a previous request ` +
+            `[${nameOf(userId)}] flush blocked — still processing a previous request ` +
             `(${Math.round((now - flushStartedAt) / 1000)}s). Speech is buffering, not lost.`
           );
         }
@@ -331,7 +331,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
           wakeAt: lastWakeAt, listenMs: WAKE_LISTEN_MS }) === 'listen') {
         if (!listening) {
           listening = true;
-          console.log(`[${userId}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
+          console.log(`[${nameOf(userId)}] heard "hey Luna" — listening for the question (up to ${WAKE_LISTEN_MS / 1000}s)`);
         }
         clearTimeout(listenTimer);
         listenTimer = setTimeout(() => {
@@ -375,7 +375,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
       if (win && (followUp || speechStartedAt > win.until)) followUps.delete(userId);   // used, or expired
       if (followUp) {
         wakeStream?.takePeak();
-        console.log(`[${userId}] ${followUpWhy || 'a follow-up'} — no wake word needed`);
+        console.log(`[${nameOf(userId)}] ${followUpWhy || 'a follow-up'} — no wake word needed`);
       }
 
       let verdict = 'detected';   // no model: every utterance goes on, and the transcript decides
@@ -421,7 +421,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
         }
       }
 
-      console.log(`[${userId}] Processing ${Math.round(durationMs)}ms utterance...`);
+      console.log(`[${nameOf(userId)}] Processing ${Math.round(durationMs)}ms utterance...`);
       onUtterance(pcm, userId, connection, channel, followUp || (wakeStream ? verdict === 'detected' : false), verdict === 'candidate' && !followUp)
         .finally(() => { flushing = false; });
     }
@@ -437,7 +437,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
       // …an utterance that never sees a silence gap is cut off;
       if (segmenter.speaking && Date.now() - segmenter.speechStartedAt > MAX_SPEECH_MS) {
         console.warn(
-          `[${userId}] ${Math.round(MAX_SPEECH_MS / 1000)}s of continuous speech with no ` +
+          `[${nameOf(userId)}] ${Math.round(MAX_SPEECH_MS / 1000)}s of continuous speech with no ` +
           'silence gap — forcing flush. ENERGY_THRESHOLD is likely below your background ' +
           'noise floor, or Luna is hearing herself through your speakers.'
         );
@@ -454,7 +454,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
       // with no error logged. Self-heal, and say so loudly.
       if (flushing && Date.now() - flushStartedAt > STUCK_FLUSH_MS) {
         console.error(
-          `[${userId}] flush stuck for ${Math.round((Date.now() - flushStartedAt) / 1000)}s ` +
+          `[${nameOf(userId)}] flush stuck for ${Math.round((Date.now() - flushStartedAt) / 1000)}s ` +
           '— releasing. A Whisper or LM Studio request almost certainly never returned.'
         );
         flushing = false;
@@ -467,7 +467,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
     }, 100);
 
     audioStream.once('close', () => {
-      console.log(`[${userId}] capture stream closed — will resume on next speech`);
+      console.log(`[${nameOf(userId)}] capture stream closed — will resume on next speech`);
       timers.clearInterval(dataWatchdog);
       clearTimeout(listenTimer);
       segmenter.close();
@@ -481,7 +481,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
     });
 
     audioStream.once('error', err => {
-      console.error(`[${userId}] capture stream error:`, err);
+      console.error(`[${nameOf(userId)}] capture stream error:`, err);
       timers.clearInterval(dataWatchdog);
       clearTimeout(listenTimer);
       segmenter.close();
@@ -509,7 +509,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
       // teardown would otherwise discard everything learned about this speaker.
       if (ws) userGainState.set(uid, ws.exportGainState());
       parts.push(
-        `${uid.slice(-5)}[` +
+        `${nameOf(uid)}[` +
         `audio ${((now - s.lastData) / 1000).toFixed(0)}s ago, ` +
         `frames ${ws ? ws.chunksProcessed : 'n/a'}, ` +
         `peak30s ${ws ? ws.takeHealthPeak().toFixed(3) : 'n/a'}, ` +
