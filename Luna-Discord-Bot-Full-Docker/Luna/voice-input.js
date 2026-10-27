@@ -39,6 +39,30 @@ const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona
 // is more likely part of the question ("what does luna mean in Spanish").
 const WAKE_PHRASE_RE = /\b(?:hey|hay|hi|okay|ok)[\s,.]*(?:luna|loona|runa|roona)\b[\s,.!?]*/i;
 
+// Close to the wake phrase but not it: "hey Lena", "hi Luma" — a greeting and
+// then a word within two letters of "luna". What Whisper writes when it
+// mishears "hey Luna"; logged, so the regular ones can be added to the
+// patterns above. Returns those two words, or null.
+const NEAR_WAKE_RE = /\b(hey|hay|hi|okay|ok)[\s,.]+([a-z']{3,6})\b/gi;
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+function nearWakePhrase(text) {
+  for (const m of String(text || '').matchAll(NEAR_WAKE_RE)) {
+    const word = m[2].toLowerCase().replace(/'s$/, '');
+    if (editDistance(word, 'luna') <= 2) return `${m[1]} ${m[2]}`;
+  }
+  return null;
+}
+
 // Removes a leading wake phrase; a no-op when there is none.
 const stripWakeWord = text => text.replace(WAKE_RE, '').trim();
 
@@ -277,7 +301,7 @@ function isJunkTranscript(text) {
 }
 
 module.exports = {
-  WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE, stripWakeWord, isBareWake, isJunkTranscript,
+  WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE, nearWakePhrase, stripWakeWord, isBareWake, isJunkTranscript,
   createPacketDecoder, createWakeFeeder, createSegmenter,
   decideWake, decideUtteranceEnd, confirmWake, decideSilentSpeaker,
 };

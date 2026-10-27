@@ -20,6 +20,7 @@ const { createListener } = require('./voice-listen');
 const { createVoiceAnswerer } = require('./voice-answer');
 const { createWhisper } = require('./whisper');
 const { createWakeBackup } = require('./wake-backup');
+const { createWakeLog } = require('./wake-log');
 const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const { createNowPlaying } = require('./now-playing');
 
@@ -27,6 +28,12 @@ const { createNowPlaying } = require('./now-playing');
 
 // Every setting, parsed and checked in one place (config.js).
 const config = loadConfig(process.env, { warn: message => console.warn(message) });
+
+// A person's display name in the channel, for the logs (their ID if unknown).
+const nameOf = userId => session.channel?.members?.get(userId)?.displayName || userId;
+
+// Wake-word events, one JSON line each, kept across rebuilds (wake-log.js).
+const wakeLog = createWakeLog({ config, fs: require('fs').promises, path: require('path'), console, nameOf });
 
 // Text to speech: ElevenLabs, local voices and the fallback between them (tts.js).
 const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } =
@@ -97,6 +104,7 @@ const listener = createListener({
   onUtterance: (...args) => answerer.onUtterance(...args),
   onStuck: userId => answerer.release(userId),
   onDiscard: (...args) => wakeBackup.onDiscard(...args),
+  nameOf, wakeLog,
 });
 setInterval(() => listener.healthReport(), 30000).unref?.();
 
@@ -107,8 +115,7 @@ const whisper = createWhisper({ config, fetch, console });
 // measurement of its misses (WAKE_SHADOW): Whisper also checks what the wake-word model
 // rejected (wake-backup.js). Both off by default.
 const wakeBackup = createWakeBackup({
-  config, console, whisper,
-  nameOf: userId => session.channel?.members?.get(userId)?.displayName || userId,
+  config, console, whisper, nameOf, wakeLog,
   onWake: (...args) => answerer.answerMissedWake(...args),
 });
 if (config.WAKE_SHADOW) setInterval(() => wakeBackup.report(), config.WAKE_SHADOW_REPORT_MS).unref?.();
@@ -120,7 +127,7 @@ const answerer = createVoiceAnswerer({
   sendCommand: (channel, command, requesterId) => sendSmakbotCommand(channel, command, requesterId),
   leave: userId => leaveOnRequest(userId),
   expectQuestion: (userId, ms, why) => listener.expectQuestion(userId, ms, why),
-  nowPlaying,
+  nowPlaying, nameOf, wakeLog,
 });
 
 // Her intro, join greetings and farewells (announce.js).

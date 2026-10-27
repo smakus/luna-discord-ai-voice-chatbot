@@ -74,6 +74,9 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # The wake-word log (WAKE_LOG_FILE), kept across rebuilds.
+    volumes:
+      - ./Luna/logs:/app/logs
     env_file:
       - ./Luna/.env
     environment:

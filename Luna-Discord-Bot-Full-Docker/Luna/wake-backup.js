@@ -8,26 +8,30 @@
 //   - WAKE_WHISPER_BACKUP=true: she answers it, as if the model had caught it
 //     (voice-answer.js answerMissedWake) — a second chance, about 0.3 s
 //     behind a normal detection;
+//   - either way, something close to "hey Luna" that isn't it ("hey Lena":
+//     nearWakePhrase in voice-input.js) is logged as a near miss — just
+//     those two words — so regular mishearings can be added to the patterns;
 //   - WAKE_SHADOW=true: the miss is logged — who, the model's score, how
 //     long — and every WAKE_SHADOW_REPORT_MS a summary: how much audio, how
 //     busy Whisper was, how long clips waited, drops, misses per person.
+// Misses and near misses also go to the wake-word log (wake-log.js).
 // Nothing else anyone said is logged or acted on.
 //
 // A clip waiting longer than MAX_WAIT_MS is dropped (and counted) rather than
 // piling up: at most one backup request is ever with Whisper, so a real
 // question waits behind at most one clip.
 //
-// createWakeBackup({ config, console, whisper, nameOf }) → { onDiscard(pcm, userId, info), report() }
+// createWakeBackup({ config, console, whisper, nameOf, onWake, wakeLog }) → { onDiscard(pcm, userId, info), report() }
 // (report() is called every WAKE_SHADOW_REPORT_MS by index.js.)
 
-const { WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE } = require('./voice-input');
+const { WAKE_RE, WAKE_ANYWHERE_RE, WAKE_PHRASE_RE, nearWakePhrase } = require('./voice-input');
 
 const MAX_WAIT_MS = 30000;
 // A caught "hey Luna" older than this is not answered (only counted): an
 // answer that late would land in the middle of something else.
 const MAX_ANSWER_WAIT_MS = 8000;
 
-function createWakeBackup({ config, console, whisper, nameOf = id => id, onWake = () => {} }) {
+function createWakeBackup({ config, console, whisper, nameOf = id => id, onWake = () => {}, wakeLog = { record() {} } }) {
   const enabled = () => config.WAKE_SHADOW || config.WAKE_WHISPER_BACKUP;
   const queue = [];        // { pcm, userId, peak, durationMs, at }
   let busy = false;
@@ -68,7 +72,15 @@ function createWakeBackup({ config, console, whisper, nameOf = id => id, onWake 
           console.log(`[wake] Whisper heard "hey Luna" from ${who} that the model missed (scored ` +
             `${clip.peak.toFixed(3)}; ${(clip.durationMs / 1000).toFixed(1)}s utterance, Whisper ${took}ms, waited ${waited}ms)` +
             (answering ? ' — answering' : config.WAKE_WHISPER_BACKUP ? ' — too late to answer' : ''));
+          wakeLog.record('missed', clip.userId, { peak: clip.peak, ms: Math.round(clip.durationMs),
+            answered: answering ? 'yes' : config.WAKE_WHISPER_BACKUP && late ? 'late' : 'no' });
           if (answering) onWake(text, clip.userId, clip.connection, clip.channel, clip.at);
+          continue;
+        }
+        const near = nearWakePhrase(text);
+        if (near) {
+          console.log(`[wake] near miss from ${who}: Whisper heard "${near}" — not counted as "hey Luna" (model scored ${clip.peak.toFixed(3)})`);
+          wakeLog.record('near-miss', clip.userId, { heard: near, peak: clip.peak, ms: Math.round(clip.durationMs) });
         } else if (config.WAKE_SHADOW && WAKE_ANYWHERE_RE.test(text)) {
           // "Luna" somewhere, without "hey": talking about her, or to her without the wake phrase.
           bump(stats.mentions, who);

@@ -22,3 +22,6 @@ bench
 
 # Server-specific files (custom greetings): mounted at runtime instead.
 local
+
+# The wake-word log: written at runtime to a mounted folder.
+logs

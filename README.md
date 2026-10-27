@@ -382,6 +382,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `WAKE_SHADOW` | `false` | A measurement: also transcribe every utterance the wake-word model rejected, and log the ones where Whisper heard "hey Luna" (`[wake] Whisper heard "hey Luna" … that the model missed`). Nothing else anyone says is logged, and she doesn't act on them. See [Measuring missed wake words](#measuring-missed-wake-words) |
 | `WAKE_WHISPER_BACKUP` | `false` | A second chance for the wake word: Whisper also transcribes every utterance the wake-word model rejected, and when it hears "hey Luna" she answers, about 0.3 s behind a normal detection. Catches the model's misses (for some voices a third or more of their "hey Luna"s). Costs Whisper time: about 10% of it with 4–5 people talking. See [Measuring missed wake words](#measuring-missed-wake-words) |
 | `WAKE_SHADOW_REPORT_MS` | `1800000` | How often the shadow check logs its summary (30 minutes) |
+| `WAKE_LOG_FILE` | `logs/wake.jsonl` | The wake-word log: one line per wake-word event, kept across rebuilds. Empty turns it off. See [The wake-word log](#the-wake-word-log) |
+| `WAKE_LOG_MAX_MB` | `20` | When the wake-word log passes this size it's renamed to `wake.jsonl.1` (replacing the previous one) and a new one started |
 | `WAKE_REPROMPT_PHRASES` | built-in | What she says then, separated by a pipe character; `{name}` is the speaker |
 | `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
 | `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
@@ -475,6 +477,21 @@ The model's misses don't show up in the logs: a "hey Luna" it scores 0.001 is di
 ```
 
 The summary also answers whether Whisper could transcribe everyone all the time: "busy" well under 100% with no drops means it keeps up. Measured with 4–5 people talking for almost 4 hours: at most 10% busy (about 0.27 s per clip), nothing dropped, and the model missed about 3% of one person's "hey Luna"s but a third or more of everyone else's. `WAKE_WHISPER_BACKUP=true` then answers the misses instead of only logging them (the log line ends in "— answering"). A clip that waits more than 30 s is dropped rather than piling up, and only one shadow clip is ever with Whisper at a time, so a real question waits behind at most one.
+
+With the backup on, Whisper also spots near misses: a greeting followed by a word close to "Luna" ("hey Lena", "hi Luma"). It logs just those two words and doesn't answer them. A mishearing that keeps coming up can be added to the wake patterns in `voice-input.js`.
+
+```
+[wake] near miss from Fevering: Whisper heard "hey Lena" — not counted as "hey Luna" (model scored 0.006)
+```
+
+#### The wake-word log
+
+Docker's log is wiped every time Luna is rebuilt. The wake-word log (`WAKE_LOG_FILE`, `Luna/logs/wake.jsonl` on the host with the Docker Compose setup) is kept, so detection can be looked at per person over days. It has one JSON line per event: `detected` (score), `candidate` and then `confirmed` or `rejected`, `discarded` (ordinary speech: peak score and length), `missed` (caught by the backup; `answered` is `yes`, `late` or `no`) and `near-miss` (`heard`). Every line has the time, the person's display name and their Discord ID. What people said is never written, except a near miss's two words. Writes are small and asynchronous, so they don't slow listening.
+
+```
+{"t":"2026-10-26T21:04:11.902Z","event":"discarded","who":"appa","id":"225160648877801472","peak":0.004,"ms":2140}
+{"t":"2026-10-26T21:04:12.231Z","event":"missed","who":"appa","id":"225160648877801472","peak":0.004,"ms":2140,"answered":"yes"}
+```
 
 To train your own model, use the openWakeWord [Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing). It takes about an hour with synthetic data. Export it as ONNX and save it as `Luna/hey_luna.onnx`. Use a phrase of 3–4 syllables; a bare "luna" trains poorly. More detail is in [`openWakeWordNotes.md`](Luna-Discord-Bot-Full-Docker/Luna/openWakeWordNotes.md).
 

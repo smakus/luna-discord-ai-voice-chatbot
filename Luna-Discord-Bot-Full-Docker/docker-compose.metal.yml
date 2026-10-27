@@ -33,6 +33,8 @@ services:
     # restart Luna — no rebuild.
     volumes:
       - ./Luna/local:/app/local:ro
+      # The wake-word log (WAKE_LOG_FILE), kept across rebuilds.
+      - ./Luna/logs:/app/logs
     env_file:
       - ./Luna/.env
     environment:
