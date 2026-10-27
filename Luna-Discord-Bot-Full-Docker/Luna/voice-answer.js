@@ -119,7 +119,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
   async function processUtterance(pcm, userId, connection, channel, wakeDetected = false, wakeCandidate = false) {
     if (processingUsers.has(userId)) {
-      console.warn(`[${userId}] utterance dropped — previous one still being processed`);
+      console.warn(`[${nameOf(userId)}] utterance dropped — previous one still being processed`);
       return;
     }
     processingUsers.add(userId);
@@ -128,10 +128,10 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
     try {
       const transcript = await whisper.transcribe(pcm);
-      console.log(`[${userId}] [timing] Whisper done: ${Date.now() - t0}ms`);
+      console.log(`[${nameOf(userId)}] [timing] Whisper done: ${Date.now() - t0}ms`);
       await handleTranscript(transcript, userId, connection, channel, t0, { wakeDetected, wakeCandidate });
     } catch (err) {
-      console.error(`[${userId}] Error processing utterance:`, err);
+      console.error(`[${nameOf(userId)}] Error processing utterance:`, err);
     } finally {
       processingUsers.delete(userId);
     }
@@ -151,7 +151,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     try {
       await handleTranscript(transcript, userId, connection, channel, Date.now(), { wakeDetected: true });
     } catch (err) {
-      console.error(`[${userId}] Error answering a missed wake word:`, err);
+      console.error(`[${nameOf(userId)}] Error answering a missed wake word:`, err);
     } finally {
       processingUsers.delete(userId);
     }
@@ -162,7 +162,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     if (!transcript) return;
     // Noise, not words ("[BLANK_AUDIO]", "(coughs)", "Um."): nothing to answer.
     if (isJunkTranscript(transcript)) {
-      console.log(`[${userId}] heard no words (${JSON.stringify(transcript.slice(0, 40))}) — nothing to answer`);
+      console.log(`[${nameOf(userId)}] heard no words (${JSON.stringify(transcript.slice(0, 40))}) — nothing to answer`);
       return;
     }
 
@@ -189,7 +189,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       return;
     }
 
-    console.log(`[${userId}] Query:`, query);
+    console.log(`[${nameOf(userId)}] Query:`, query);
     lastAskedAt.set(userId, Date.now());
     await handleQuery(query, connection, channel, t0, userId);
   }
@@ -202,7 +202,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     const name = speakableName(session.channel?.members?.get(userId)?.displayName);
     const fitting = REPROMPTS.filter(p => p.includes('{name}') === Boolean(name));
     const text = fillPhrase(fitting.length ? fitting : REPROMPTS, { name });
-    console.log(`[${userId}] only "hey Luna" — asking: "${text}"`);
+    console.log(`[${nameOf(userId)}] only "hey Luna" — asking: "${text}"`);
     const expect = ms => expectQuestion(userId, ms, 'the question after "did you mean to ask me something?"');
     expect(60000);
     playback.say(text, { connection, userId, generation: playback.interrupt(userId), then: () => expect(WAKE_FOLLOWUP_MS) });
@@ -234,7 +234,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       const generation = playback.interrupt(userId);
       if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
       const text = nowPlaying.describe(await nowPlaying.get(session.channel?.guild?.id || ''));
-      console.log(`[${userId}] [music] now playing → "${text}"`);
+      console.log(`[${nameOf(userId)}] [music] now playing → "${text}"`);
       playback.say(text, { connection, userId, generation, cache: false });
       return;
     }
@@ -285,7 +285,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     // wait, blocking other speakers. Same generation as the answer, so a barge-in
     // skips it too, as does `wanted()` turning false while it waits.
     const sayAside = (tag, phrase, wanted = () => true) => {
-      console.log(`[${userId}] [${tag}] "${phrase}"`);
+      console.log(`[${nameOf(userId)}] [${tag}] "${phrase}"`);
       playback.queue(async () => {
         if (!wanted()) return;
         const pt = await fetchTTS(phrase, { cache: true });
@@ -398,7 +398,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
               if (passThrough) {
                 if (firstAudio) {
                   firstAudio = false;
-                  console.log(`[${userId}] [timing] First audio start: ${Date.now() - t0}ms`);
+                  console.log(`[${nameOf(userId)}] [timing] First audio start: ${Date.now() - t0}ms`);
                 }
                 await playback.play(passThrough, connection);
               }
@@ -466,11 +466,11 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           reasoning: reasoning !== 'off',
           holdUntilEnd: reasoningRetried && useSearch,
           speak,
-          drop: (kind, text) => console.log(`[${userId}] [LLM] dropped ${{
+          drop: (kind, text) => console.log(`[${nameOf(userId)}] [LLM] dropped ${{
             narration: 'narration before a search',
             planning:  'its plan, written as the answer',
           }[kind] || 'reasoning that leaked into the answer'} (not spoken): ${text.slice(0, 160)}`),
-          cleaned: raw => console.log(`[${userId}] [LLM] cleaned up for speech; as written: ${JSON.stringify(raw.slice(0, 200))}`),
+          cleaned: raw => console.log(`[${nameOf(userId)}] [LLM] cleaned up for speech; as written: ${JSON.stringify(raw.slice(0, 200))}`),
         });
         const onEvent = e => {
           if (e.type === 'reasoning.start' && !reasoningAt) {
@@ -499,7 +499,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           } else if (t.type === 'music') {
             if (t.command) sendCommand(channel, t.command, userId);
           } else if (t.type === 'leave') {
-            console.log(`[${userId}] [voice] the LLM called leave_channel — leaving after the reply`);
+            console.log(`[${nameOf(userId)}] [voice] the LLM called leave_channel — leaving after the reply`);
             leaveAfterAnswer = true;
           }
         };
@@ -516,7 +516,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
             // with search on.
             if (verdict === 'tool-call-as-text') {
               fakeToolCall = true;
-              console.warn(`[${userId}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
+              console.warn(`[${nameOf(userId)}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
               break;
             }
             // The answer has started: the thinking limit no longer applies.
@@ -536,16 +536,16 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
         if (superseded()) break;
         if (fakeToolCall && !useSearch && llm.canSearch()) {
-          console.warn(`[${userId}] [LLM] model tried to search without the search tool — asking again with web search`);
+          console.warn(`[${nameOf(userId)}] [LLM] model tried to search without the search tool — asking again with web search`);
           useSearch = true;
           continue;
         }
         if (!firstSentence || reasoning === 'off' || reasoningRetried) break;
         if (thinkLimitHit) {
-          console.warn(`[${userId}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
+          console.warn(`[${nameOf(userId)}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
           sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
         } else {
-          console.warn(`[${userId}] [LLM] answer had ${fakeToolCall ? 'only a tool call written as text' : 'no words'} — asking again with reasoning off`);
+          console.warn(`[${nameOf(userId)}] [LLM] answer had ${fakeToolCall ? 'only a tool call written as text' : 'no words'} — asking again with reasoning off`);
         }
         reasoning = 'off';
         reasoningRetried = true;
@@ -555,7 +555,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           context = 'Web search results already found for this question (answer from these; do not search again):\n' +
             condenseSearchResults(searchCalls);
           useSearch = false;
-          console.log(`[${userId}] [LLM] quick answer reuses ${searchCalls.length} search result set(s); search not offered again`);
+          console.log(`[${nameOf(userId)}] [LLM] quick answer reuses ${searchCalls.length} search result set(s); search not offered again`);
         }
       }
 
@@ -569,7 +569,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       stopFillers();
       if (superseded()) {
         // Barge-in or a newer question: the cancel is the point, not an error.
-        console.log(`[${userId}] previous question cancelled`);
+        console.log(`[${nameOf(userId)}] previous question cancelled`);
       } else {
         console.error('handleQuery error:', err.message);
         // Only when nothing has been said yet. After part of an answer has

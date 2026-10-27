@@ -44,7 +44,7 @@ const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressive
 const nowPlaying = createNowPlaying({ config, fetch, console });
 
 // Talking to LM Studio: model, prompt, memory, search and tool offers (answer-llm.js).
-const llm = createLlm({ config, fetch, console, expressivePrompt,
+const llm = createLlm({ config, fetch, console, expressivePrompt, nameOf,
   musicLine: async () => nowPlaying.promptLine(await nowPlaying.get(session.channel?.guild?.id || '')) });
 
 // Everything said in the voice channel goes through one queue (voice-playback.js).
