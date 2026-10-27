@@ -10,7 +10,7 @@ const { createMcpServer } = require('./mcp-server');
 const { createTextChat, SAY_MAX_CHARS } = require('./text-chat');
 const { sendSmakbotCommand: postSmakbotCommand } = require('./commands');
 const { LLM_TOOLS, LLM_TOOL_NAMES } = require('./llm-tools');
-const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } = require('./tts');
+const { createTTS } = require('./tts');
 const { speakableName } = require('./phrases');
 const { createAnnouncer } = require('./announce');
 const { loadConfig } = require('./config');
@@ -27,6 +27,10 @@ const { createNowPlaying } = require('./now-playing');
 
 // Every setting, parsed and checked in one place (config.js).
 const config = loadConfig(process.env, { warn: message => console.warn(message) });
+
+// Text to speech: ElevenLabs, local voices and the fallback between them (tts.js).
+const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } =
+  createTTS({ config, fetch, console });
 
 // What smakbot is playing (now-playing.js): answers "what song is this?", and
 // names the song in the LLM's prompt while one plays.

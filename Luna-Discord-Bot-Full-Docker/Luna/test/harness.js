@@ -52,7 +52,7 @@ module.exports = function boot(env = {}) {
   const discord = { Events: { ClientReady: 'ready', MessageCreate: 'messageCreate', VoiceStateUpdate: 'voiceStateUpdate', Error: 'error' }, Client };
 
   // ── tts.js ──
-  const tts = {
+  const tts = { createTTS: () => tts,
     describeTTS: () => 'Fake', expressivePrompt: () => '',
     // A specific ElevenLabs voice (custom greetings): S.voiceDown makes it unavailable.
     fetchTTSInVoice: async (text, voice) => { (S.voiceTts ??= []).push({ text, voice }); if (S.voiceDown) return null;
@@ -71,7 +71,7 @@ module.exports = function boot(env = {}) {
   const mods = {
     '@discordjs/voice': voice, 'discord.js': discord, 'discord-api-types/v10': { GatewayIntentBits: {} },
     'prism-media': { opus: { Decoder: class extends PassThrough {} } }, '@discordjs/opus': { OpusEncoder: class { decode(b) { if (b[0] === 0xBA && b[1] === 0xD0) throw new Error('The compressed data passed is corrupted'); return b; } } }, dotenv: { config() {} },
-    './wakeword': { WakeWordEngine: { load: async () => { await new Promise(r => setTimeout(r, S.wakeLoadMs ?? 0));
+    './wakeword': { WakeWordEngine: { load: async (opts) => { S.wakeLoad = opts; await new Promise(r => setTimeout(r, S.wakeLoadMs ?? 0));
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },

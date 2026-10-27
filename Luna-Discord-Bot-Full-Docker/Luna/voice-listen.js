@@ -140,6 +140,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
         melspecPath:   OWW_MELSPEC,
         embeddingPath: OWW_EMBEDDING,
         featureFrames: OWW_FEATURE_FRAMES || undefined,
+        agcTargetRms:  config.OWW_AGC_TARGET_RMS,
       });
       console.log(`[oww] active — threshold=${OWW_THRESHOLD}, Whisper gated on detection` +
         (OWW_CANDIDATE_THRESHOLD > 0 && OWW_CANDIDATE_THRESHOLD < OWW_THRESHOLD

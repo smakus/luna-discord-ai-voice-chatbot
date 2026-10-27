@@ -81,4 +81,4 @@ function createNowPlaying({ config, fetch, console }) {
   return { enabled: !!STATUS_URL, get, describe, promptLine };
 }
 
-module.exports = { createNowPlaying, cleanTitle, songName };
+module.exports = { createNowPlaying };

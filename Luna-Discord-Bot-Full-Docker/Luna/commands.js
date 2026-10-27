@@ -196,6 +196,6 @@ async function sendSmakbotCommand(channel, command, { musicBotPresent = false, c
 }
 
 module.exports = {
-  route, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest, isNowPlayingQuestion,
+  route, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest,
   LEAVE_RE, LEAVE_PHRASES,
 };

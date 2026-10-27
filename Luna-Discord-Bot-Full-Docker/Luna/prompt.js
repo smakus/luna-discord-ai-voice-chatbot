@@ -103,4 +103,4 @@ function systemPrompt({ config, timeZone, now = new Date(), expressive = '', sea
     (flavor ? ' ' + flavor : '');
 }
 
-module.exports = { basePrompt, textBasePrompt, todayLine, speakerLine, toolsLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };
+module.exports = { todayLine, speakerLine, toolsLine, systemPrompt, SEARCH_PROMPT, QUICK_PROMPT };

@@ -71,4 +71,4 @@ function createWhisper({ config, fetch, console }) {
   return { transcribe };
 }
 
-module.exports = { createWhisper, buildWavBuffer };
+module.exports = { createWhisper };

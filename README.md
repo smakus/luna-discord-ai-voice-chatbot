@@ -558,7 +558,7 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 | ----- | ----- |
 | Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
 | Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
-| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `tts.js`, `whisper.js`, `mcp-server.js` |
+| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `tts.js`, `whisper.js`, `mcp-server.js` |
 | Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
 
 Modules that need a library, `fetch`, timers or each other get them as arguments (`createX({ ... })`), which is how the test harness swaps in fakes.

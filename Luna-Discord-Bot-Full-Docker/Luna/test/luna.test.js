@@ -676,6 +676,9 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.logs.some(l => /utterance discarded — no wake word .* — started \d+\.\ds after the follow-up window closed/.test(l)), H.S.logs.filter(l => /discarded/.test(l)).join(' | '));
     ok('speech just after the window closed → discarded, and the log says by how much it missed'); }
 
+  { const H = await wakeRig({ OWW_AGC_TARGET_RMS: '5200' });
+    assert.strictEqual(H.S.wakeLoad.agcTargetRms, 5200); ok('OWW_AGC_TARGET_RMS reaches the wake-word engine (not read from the environment by wakeword.js)'); }
+
   console.log('wake-word backup and shadow check');
   { const H = await wakeRig({ WAKE_SHADOW: 'true' }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
     await H.utter(0.004, "hey Luna what's the weather"); await H.until(() => H.S.logs.some(l => /\[wake\] Whisper heard "hey Luna"/.test(l)));
