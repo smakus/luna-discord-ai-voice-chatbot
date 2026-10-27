@@ -211,4 +211,4 @@ function createAnswerFilter({ reasoning = true, holdUntilEnd = false, speak, dro
   };
 }
 
-module.exports = { createAnswerFilter, stripMarkdown, stripEmoji, FAKE_TOOL_CALL };
+module.exports = { createAnswerFilter, stripMarkdown, stripEmoji };

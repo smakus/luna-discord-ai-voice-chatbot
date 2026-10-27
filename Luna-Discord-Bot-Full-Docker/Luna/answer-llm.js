@@ -654,4 +654,4 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
   };
 }
 
-module.exports = { createLlm, condenseSearchResults, needsWebSearch, TOOLS_PLUGIN_ID };
+module.exports = { createLlm, condenseSearchResults, TOOLS_PLUGIN_ID };

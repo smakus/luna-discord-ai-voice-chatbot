@@ -78,7 +78,8 @@ const MAX_QUEUE_DEPTH = 25;
 // Target is deliberately well above conversational Discord levels (~1500-2500
 // RMS). Synthetic TTS training data is typically normalised loud, so matching
 // that distribution means boosting past "normal speech", not toward it.
-const AGC_TARGET_RMS   = require('./config').loadConfig(process.env).OWW_AGC_TARGET_RMS;
+// OWW_AGC_TARGET_RMS, passed to WakeWordEngine.load() as agcTargetRms.
+const DEFAULT_AGC_TARGET_RMS = 4000;
 const AGC_MAX_GAIN     = 8;
 const AGC_NOISE_FLOOR  = 60;     // below this, assume silence and don't amplify hiss
 const AGC_SMOOTHING    = 0.1;    // EMA weight; low = slow gain changes, less pumping
@@ -158,7 +159,7 @@ class Decimator3 {
 // ─── Engine: owns the three ONNX sessions, shared across all users ───────────
 
 class WakeWordEngine {
-  constructor({ melspec, embedding, model, featureFrames, inputNames, outputNames, modelName }) {
+  constructor({ melspec, embedding, model, featureFrames, inputNames, outputNames, modelName, agcTargetRms = DEFAULT_AGC_TARGET_RMS }) {
     this.melspec       = melspec;
     this.embedding     = embedding;
     this.model         = model;
@@ -166,6 +167,7 @@ class WakeWordEngine {
     this.inputNames    = inputNames;
     this.outputNames   = outputNames;
     this.modelName     = modelName;
+    this.agcTargetRms  = agcTargetRms;
     this.seedFeatures  = null; // filled by _buildSeed(), shared by every stream
 
     // A non-finite window size would silently disable detection: it makes the
@@ -215,7 +217,7 @@ class WakeWordEngine {
     );
   }
 
-  static async load({ modelPath, melspecPath, embeddingPath, featureFrames }) {
+  static async load({ modelPath, melspecPath, embeddingPath, featureFrames, agcTargetRms }) {
     if (!ort) {
       throw new Error(
         'onnxruntime-node is not installed. Run `npm install onnxruntime-node`.'
@@ -281,6 +283,7 @@ class WakeWordEngine {
       featureFrames: frames,
       inputNames, outputNames,
       modelName: path.basename(modelPath, '.onnx'),
+      agcTargetRms,
     });
 
     await engine._buildSeed();
@@ -512,7 +515,7 @@ class WakeWordStream {
     return result;
   }
 
-  // Normalises a chunk toward AGC_TARGET_RMS. Never attenuates.
+  // Normalises a chunk toward the engine's agcTargetRms. Never attenuates.
   _applyGain(chunk) {
     if (this.gainMode === 'off') return chunk;
 
@@ -560,7 +563,7 @@ class WakeWordStream {
         this.lastGain = 1;
         return chunk;
       }
-      gain = AGC_TARGET_RMS / this.smoothedRms;
+      gain = this.engine.agcTargetRms / this.smoothedRms;
     }
 
      // Cap so peaks stay below the clipping ceiling.
@@ -694,14 +697,4 @@ class WakeWordStream {
   }
 }
 
-module.exports = {
-  WakeWordEngine,
-  WakeWordStream,
-  Decimator3,
-  designLowPass,
-  CHUNK,
-  SAMPLE_RATE,
-  EMB_DIM,
-  EMB_FRAMES,
-  MEL_BINS,
-};
+module.exports = { WakeWordEngine };

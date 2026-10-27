@@ -116,4 +116,4 @@ function createTagJoiner() {
   };
 }
 
-module.exports = { sentenceEnd, takeSentences, createTagJoiner, ABBREVIATIONS };
+module.exports = { sentenceEnd, takeSentences, createTagJoiner };

@@ -163,4 +163,4 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
   return { onMessage };
 }
 
-module.exports = { createTextChat, textQuestion, splitMessage, isSayRequest, NAME_RE, SAY_MAX_CHARS };
+module.exports = { createTextChat, textQuestion, splitMessage, isSayRequest, SAY_MAX_CHARS };

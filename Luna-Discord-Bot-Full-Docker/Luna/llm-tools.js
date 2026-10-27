@@ -108,4 +108,4 @@ function smakbotCommandFor(tool, args = {}) {
   return null;
 }
 
-module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOLS, MUSIC_TOOL_NAMES, smakbotCommandFor };
+module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor };

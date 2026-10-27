@@ -9,7 +9,7 @@ let calls, logs, script;
 const body = s => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(s)); c.close(); } });
 const res = (status, payload, audio) => () => ({ ok: status < 300, status,
   text: async () => typeof payload === 'string' ? payload : JSON.stringify(payload), body: body(audio || '') });
-global.fetch = async (url, init) => {
+const fakeFetch = async (url, init) => {
   const who = url.includes('kokoro') ? 'kokoro' : url.includes('qwen') ? 'qw' : url.includes('chatterbox') ? 'cb' : 'el';
   const sent = JSON.parse(init.body); calls.push({ who, url, voice: sent.voice, stream: sent.stream, text: sent.text ?? sent.input, model: sent.model_id, key: init.headers['xi-api-key'] });
   const r = script[who].length > 1 ? script[who].shift() : script[who][0];
@@ -18,13 +18,13 @@ global.fetch = async (url, init) => {
   return r();
 };
 const read = async s => { let out = ''; for await (const c of s) out += Buffer.from(c).toString(); return out; };
+const { createTTS, stripAudioTags, createLimiter } = require('../tts');
+const { loadConfig } = require('../config');
 function load(env, s = {}) {
-  for (const k of Object.keys(process.env)) if (/^(TTS_|ELEVENLABS_|KOKORO_|QWEN3_|CHATTERBOX_|NAME_PRONUNCIATIONS)/.test(k)) delete process.env[k];
-  Object.assign(process.env, env);
   calls = []; logs = []; script = { kokoro: [res(200, '', 'KOKORO-AUDIO')], el: [res(200, '', 'EL-AUDIO')], qw: [res(200, '', 'QW-AUDIO')], cb: [res(200, '', 'CB-AUDIO')], ...s };
-  console.error = console.warn = console.log = (...a) => logs.push(a.join(' '));
-  delete require.cache[require.resolve(require('path').join(__dirname, '..', 'tts.js'))];
-  return require(require('path').join(__dirname, '..', 'tts.js'));
+  const record = (...a) => logs.push(a.join(' '));
+  const tts = createTTS({ config: loadConfig(env), fetch: fakeFetch, console: { log: record, warn: record, error: record } });
+  return { ...tts, stripAudioTags, createLimiter };
 }
 const real = console.log, realErr = console.error;
 const say = m => real('  ✓ ' + m);
