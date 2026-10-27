@@ -158,7 +158,9 @@ const isNowPlayingQuestion = question => NOW_PLAYING_RE.test(bare(question));
 
 function route(question, { voice }) {
   const cmd = extractSmakbotCommand(question);
-  if (cmd) return { type: 'music', command: { text: cmd.build(cmd.arg), summon: !!cmd.summon, ack: cmd.ack(cmd.arg) } };
+  // fixedAck: the ack doesn't name what was asked for ("Skipping."), so it's
+  // worth keeping rendered; "Okay, playing <song>." isn't.
+  if (cmd) return { type: 'music', command: { text: cmd.build(cmd.arg), summon: !!cmd.summon, ack: cmd.ack(cmd.arg), fixedAck: cmd.ack.length === 0 } };
   if (voice && LEAVE_RE.test(bare(question))) return { type: 'leave' };
   if (!voice && isSayRequest(question)) return { type: 'say' };
   if (isNowPlayingQuestion(question)) return { type: 'now-playing' };

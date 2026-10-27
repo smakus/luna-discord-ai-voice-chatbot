@@ -20,10 +20,11 @@ const fakeFetch = async (url, init) => {
 const read = async s => { let out = ''; for await (const c of s) out += Buffer.from(c).toString(); return out; };
 const { createTTS, stripAudioTags, createLimiter } = require('../tts');
 const { loadConfig } = require('../config');
-function load(env, s = {}) {
+// With `fs`, the phrase cache works (in a temporary folder: env.TTS_CACHE_DIR).
+function load(env, s = {}, fs = null) {
   calls = []; logs = []; script = { kokoro: [res(200, '', 'KOKORO-AUDIO')], el: [res(200, '', 'EL-AUDIO')], qw: [res(200, '', 'QW-AUDIO')], cb: [res(200, '', 'CB-AUDIO')], ...s };
   const record = (...a) => logs.push(a.join(' '));
-  const tts = createTTS({ config: loadConfig(env), fetch: fakeFetch, console: { log: record, warn: record, error: record } });
+  const tts = createTTS({ config: loadConfig(env), fetch: fakeFetch, console: { log: record, warn: record, error: record }, fs });
   return { ...tts, stripAudioTags, createLimiter };
 }
 const real = console.log, realErr = console.error;
@@ -251,6 +252,48 @@ const keepAlive = setInterval(() => {}, 1000);
   t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus|=x|ok=fine' });
   assert.strictEqual(t.pronounce('ok smakus'), 'fine smakus');
   assert.strictEqual(logs.filter(l => /NAME_PRONUNCIATIONS entry .* ignored/.test(l)).length, 2); say('malformed entries → warned and ignored, the rest still apply');
+  real('phrase cache');
+  { const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luna-tts-cache-'));
+    const cached = (env, s) => load({ ...env, TTS_CACHE_DIR: dir }, s, fs);
+    const settle = () => wait(50);
+    t = cached(EL);
+    assert.strictEqual(await read(await t.fetchTTS('[curious] Let me look.', { cache: true })), 'EL-AUDIO'); await settle();
+    assert.strictEqual(fs.readdirSync(dir).filter(f => f.endsWith('.audio')).length, 1, 'kept once complete');
+    calls = [];
+    assert.strictEqual(await read(await t.fetchTTS('[curious] Let me look.', { cache: true })), 'EL-AUDIO');
+    assert.strictEqual(calls.length, 0, 'the repeat costs nothing');
+    say('a cached line: rendered once, then played from disk with no request');
+    assert.strictEqual(await read(await t.fetchTTS('Some answer.')), 'EL-AUDIO'); await settle();
+    assert.strictEqual(fs.readdirSync(dir).filter(f => f.endsWith('.audio')).length, 1); say('answers (no cache option) are not kept');
+    t = cached({ ...EL, ELEVENLABS_VOICE_ID: 'other' }); calls = [];
+    await read(await t.fetchTTS('[curious] Let me look.', { cache: true })); assert.strictEqual(calls.length, 1); await settle();
+    say('another voice → a miss, rendered afresh');
+    t = cached(EL, { el: [res(402, { detail: { code: 'insufficient_credits' } })] }); await t.fetchTTS('Fill the bench.'); calls = [];
+    assert.strictEqual(await read(await t.fetchTTS('[curious] Let me look.', { cache: true })), 'EL-AUDIO');
+    assert.strictEqual(calls.length, 0); say('ElevenLabs out of credits → a cached line still plays in its voice');
+    t = cached(EL); calls = [];
+    await read(await t.fetchTTSInVoice('Howdy appa.', 'V9', { cache: true })); await settle();
+    assert.strictEqual(await read(await t.fetchTTSInVoice('Howdy appa.', 'V9', { cache: true })), 'EL-AUDIO');
+    assert.strictEqual(calls.length, 1); say('custom-voice greetings cached per voice');
+    // A line cut off part-way leaves nothing behind.
+    const slow = () => ({ ok: true, status: 200, text: async () => '', body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('PART')); } }) });
+    t = cached(EL, { el: [slow] }); const before = fs.readdirSync(dir).length;
+    const st = await t.fetchTTS('Cut off.', { cache: true }); await wait(20); st.destroy(); await settle();
+    assert.strictEqual(fs.readdirSync(dir).length, before); say('a line superseded part-way → nothing kept');
+    // Past TTS_CACHE_MAX_MB, the least recently played go.
+    const big = () => res(200, '', 'X'.repeat(400 * 1024))();
+    t = load({ ...EL, TTS_CACHE_DIR: dir, TTS_CACHE_MAX_MB: '1' }, { el: [big] }, fs);
+    for (const line of ['A.', 'B.', 'C.', 'D.']) { await read(await t.fetchTTS(line, { cache: true })); await settle(); }
+    const total = fs.readdirSync(dir).reduce((n, f) => n + fs.statSync(path.join(dir, f)).size, 0);
+    assert.ok(total <= 1024 * 1024, `kept under the cap (${total})`); calls = [];
+    await read(await t.fetchTTS('D.', { cache: true })); assert.strictEqual(calls.length, 0, 'the newest stays');
+    say('past TTS_CACHE_MAX_MB → least recently played deleted');
+    fs.writeFileSync(path.join(dir, 'a-file'), '');   // a folder inside a file can't be made
+    t = load({ ...EL, TTS_CACHE_DIR: path.join(dir, 'a-file', 'cache') }, {}, fs); await read(await t.fetchTTS('Hi.', { cache: true })); await t.fetchTTS('Hi.', { cache: true });
+    assert.strictEqual(logs.filter(l => /phrase cache off/.test(l)).length, 1); say("folder can't be used → warned once, lines still play");
+    fs.rmSync(dir, { recursive: true, force: true }); }
+
   real('ALL PASS');
   clearInterval(keepAlive);
 })().catch(e => { realErr('FAIL:', e.stack); process.exit(1); });

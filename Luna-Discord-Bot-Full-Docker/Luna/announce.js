@@ -163,10 +163,10 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
       // Their own line in their own voice; if that voice can't be had, the
       // normal greeting in the normal voice.
       return announce(member, connection, own, async line => {
-        const pt = await fetchTTSInVoice(line, custom.voice);
+        const pt = await fetchTTSInVoice(line, custom.voice, { cache: true });
         if (pt) return pt;
         console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
-        return fetchTTS(text);
+        return fetchTTS(text, { cache: true });
       });
     }
     console.log(`[greet] ${member.user.tag} joined — "${text}"`);

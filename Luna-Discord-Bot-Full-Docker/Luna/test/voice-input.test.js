@@ -164,6 +164,12 @@ describe('confirmWake', () => {
     for (const t of ["Hey Luna, what's up?", 'what is the weather', 'Lunar eclipse.', '']) assert.strictEqual(v.isBareWake(t), false, t);
   });
   it('stripWakeWord leaves "lunar" alone', () => assert.strictEqual(v.stripWakeWord('lunar eclipse tonight'), 'lunar eclipse tonight'));
+  it('"Luna\'s …" is a question about her, not the wake word', () => {
+    assert.strictEqual(v.stripWakeWord("Luna's favorite food is what?"), "Luna's favorite food is what?");
+    assert.deepStrictEqual(v.confirmWake("Luna's favorite food is what?", { detected: true }), { accepted: true, query: "Luna's favorite food is what?" });
+    assert.deepStrictEqual(v.confirmWake("Hey Luna, what's Luna's favorite food?", { detected: true }), { accepted: true, query: "what's Luna's favorite food?" });
+    assert.strictEqual(v.WAKE_PHRASE_RE.test("hey Luna's here"), false);
+  });
 });
 
 describe('decideSilentSpeaker', () => {

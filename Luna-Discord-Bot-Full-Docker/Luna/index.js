@@ -37,7 +37,7 @@ const wakeLog = createWakeLog({ config, fs: require('fs').promises, path: requir
 
 // Text to speech: ElevenLabs, local voices and the fallback between them (tts.js).
 const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } =
-  createTTS({ config, fetch, console });
+  createTTS({ config, fetch, console, fs: require('fs') });
 
 // What smakbot is playing (now-playing.js): answers "what song is this?", and
 // names the song in the LLM's prompt while one plays.
@@ -158,6 +158,9 @@ client.on(Events.ClientReady, async () => {
 client.on(Events.MessageCreate, async message => {
   if (textChat.onMessage(message)) return;
   if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
+  // "!luna wakestats [7d|12h]": how well the wake word works for each person.
+  const statsMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+wakestats(?:\\s+(\\d+)\\s*([dh]))?\\s*$`, 'i'));
+  if (statsMatch) return wakeStats(message, statsMatch[1] ? Number(statsMatch[1]) : 24, (statsMatch[2] || 'h').toLowerCase());
   // "!luna say <text>": exactly those words, out loud, no LLM.
   const sayMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+say\\s+([\\s\\S]+)$`, 'i'));
   if (sayMatch && !message.author?.bot) {
@@ -327,6 +330,14 @@ const textChat = createTextChat({
   nowPlaying,
 });
 
+// "!luna wakestats": the wake-word log (wake-log.js) summed up per person.
+async function wakeStats(message, amount, unit) {
+  const hours = Math.min(unit === 'd' ? amount * 24 : amount, 90 * 24) || 24;
+  const span = hours % 24 === 0 ? `${hours / 24} day${hours === 24 ? '' : 's'}` : `${hours} h`;
+  const text = await wakeLog.summary(Date.now() - hours * 3600000).catch(err => `Couldn't read the wake-word log: ${err.message}`);
+  message.reply(`**Wake word, last ${span}**\n${text}`.slice(0, 1990)).catch(() => {});
+}
+
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or
 // "!luna say …"). Queued like their own answer — after whatever is playing,
 // superseded if they then ask something by voice — not interrupting anyone.
@@ -338,7 +349,7 @@ function sayInVoice(text, userId, who) {
   console.log(`[text] ${who} had Luna say: ${JSON.stringify(line)}`);
   // Their current generation: after whatever of theirs is already queued.
   playback.say(line, { connection, userId, generation: playback.generationOf(userId) ?? playback.nextGeneration(userId),
-                       wanted: () => session.connection === connection });
+                       wanted: () => session.connection === connection, cache: false });
   return true;
 }
 

@@ -45,6 +45,8 @@ const SETTINGS = [
   { name: 'WAKE_WHISPER_BACKUP', type: 'bool', default: false },
   { name: 'WAKE_SHADOW_REPORT_MS', type: 'int', default: 1800000, min: 60000 },
   { name: 'WAKE_LOG_FILE', type: 'string', default: 'logs/wake.jsonl' },
+  { name: 'TTS_CACHE_DIR', type: 'string', default: 'cache/tts' },
+  { name: 'TTS_CACHE_MAX_MB', type: 'int', default: 200, min: 1 },
   { name: 'WAKE_LOG_MAX_MB', type: 'int', default: 20, min: 1 },
   { name: 'WAKE_REPROMPT_PHRASES', type: 'phrases' },
   { name: 'OWW_TRIGGER_FRAMES', type: 'int', default: 1, min: 1 },

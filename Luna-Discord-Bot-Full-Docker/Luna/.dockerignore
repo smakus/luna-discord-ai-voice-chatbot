@@ -25,3 +25,6 @@ local
 
 # The wake-word log: written at runtime to a mounted folder.
 logs
+
+# Rendered phrases: written at runtime to a mounted folder.
+cache

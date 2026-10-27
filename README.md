@@ -72,6 +72,7 @@ With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that sta
 | `!luna leave` | Leaves the voice channel. With auto-join on, she stays away until the channel has emptied once, or someone types `!luna` |
 | `!luna say <text>` | Says exactly that text out loud in her voice channel, with no LLM involved, and reacts 🔊 |
 | `!luna voicecheck` | Shows, for each person, whether Luna can decrypt their voice (see [Troubleshooting](#troubleshooting)) |
+| `!luna wakestats` | How well the wake word worked for each person over the last day: how many of their "hey Luna"s she answered, and how (the model, the near-threshold check or the backup), their typical score and near misses. `!luna wakestats 7d` or `12h` for another span. Read from [the wake-word log](#the-wake-word-log) |
 
 ### Music with smakbot
 
@@ -422,6 +423,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 | `TTS_FALLBACK` | `kokoro` | Tried after `TTS_PROVIDER`, before Kokoro. `none` disables falling back |
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
 | `TTS_PROVIDER_RETRY_MS` | `1800000` | How long ElevenLabs is skipped after a key, voice or plan error |
+| `TTS_CACHE_DIR` | `cache/tts` | Where lines she says again and again (greetings, farewells, her intro, the search heads-up, "still thinking" fillers, "did you mean to ask me something?") are kept once rendered, so repeats cost no ElevenLabs credits and start at once. Answers are never cached. A changed voice, model or pronunciation renders afresh; a cached line still plays in the ElevenLabs voice while ElevenLabs is out of credits. Empty turns it off |
+| `TTS_CACHE_MAX_MB` | `200` | Past this, the cached lines played least recently are deleted (a line is roughly 20–60 KB) |
 | `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags while a voice that performs them (Chatterbox, an expressive ElevenLabs model) is speaking |
 | `TTS_EXPRESSIVE_PROMPT` | per voice | Replaces the audio-tag instruction given to the LLM (each expressive voice has its own, listing its tags) |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
@@ -575,7 +578,7 @@ Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.
 | ----- | ----- |
 | Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
 | Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
-| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `tts.js`, `whisper.js`, `mcp-server.js` |
+| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `wake-log.js` (the wake-word log), `tts.js` and `tts-cache.js` (rendered phrases), `whisper.js`, `mcp-server.js` |
 | Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
 
 Modules that need a library, `fetch`, timers or each other get them as arguments (`createX({ ... })`), which is how the test harness swaps in fakes.
