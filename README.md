@@ -19,7 +19,7 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 💬 **Text chat.** Type "Luna, …" in a chat channel for a written answer. She can also say something out loud in the voice channel for you.
 - 🎵 **Voice-controlled music** with smakbot: play, skip, stop, "play the top 10", "what song is this?", and questions about the song that's playing.
 - 👋 **Greets people.** She introduces herself, greets people who join by name (with custom greetings in their own voice if you like), and says goodbye when they leave.
-- 🍎 **Apple Silicon acceleration** for Whisper and the voices; Linux and Intel Macs run everything in Docker.
+- 🍎 **Apple Silicon acceleration** for Whisper and the voices; on Linux everything runs in Docker.
 
 ## Using Luna
 
@@ -152,75 +152,120 @@ Luna offers the model web search on every question, and the model decides when i
 
 ## Requirements
 
-- macOS or Linux, with Docker
-- [LM Studio](https://lmstudio.ai) with a model loaded. See [Hardware sizing](#hardware-sizing); a model too big for your RAM is the most common cause of slow replies.
-- A Discord bot token
-- Optional: a [Tavily](https://tavily.com) API key (the free tier is enough) for web search
-- Apple Silicon only: Homebrew, `cmake` (`brew install cmake`) and the Xcode command line tools (`xcode-select --install`)
+| | **Apple Silicon Mac** (M1 or later) | **Linux PC** |
+| --- | --- | --- |
+| Recommended for | The best experience | Works well |
+| Speech-to-text and voice | On the Mac's GPU | In Docker, on the CPU |
+| Recommended free voice | **Chatterbox** (laughs, sighs, whispers) | Kokoro |
+| RAM | 16 GB minimum, 32 GB+ recommended | 16 GB+ |
+
+- **Both:** [Docker](https://www.docker.com/products/docker-desktop/), [LM Studio](https://lmstudio.ai) and a Discord account.
+- **Optional:** a [Tavily](https://tavily.com) key for web search (free tier), and an [ElevenLabs](https://elevenlabs.io) key for the best (paid) voice.
+- **Not supported:** Intel Macs (LM Studio needs Apple Silicon). Windows isn't tested.
 
 ## Setup
 
-### 1. Clone
+### 1. Install
+
+Install and open [Docker](https://www.docker.com/products/docker-desktop/) and [LM Studio](https://lmstudio.ai). On a Mac, also install [Homebrew](https://brew.sh), then:
+
+```bash
+xcode-select --install; brew install cmake
+```
+
+Then download Luna:
 
 ```bash
 git clone https://github.com/smakus/luna-discord-ai-voice-chatbot
 cd luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker
-```
-
-The wake word models (`hey_luna.onnx` plus openWakeWord's two feature models) and the activation chime are already included in `Luna/`.
-
-### 2. LM Studio
-
-1. Download an instruction-tuned model sized for your machine, and load it with GPU offload at maximum and a context length of 8,000 or more (16,000–24,000 if you use web search, which adds results to the conversation).
-2. Start the local server, bound to `0.0.0.0` so Docker can reach it.
-3. Enable authentication and copy the bearer token. Enable MCP too if you want web search.
-
-### 3. Discord bot
-
-1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and add a bot.
-2. Under **Privileged Gateway Intents**, enable **Message Content Intent**. It's the only privileged intent Luna needs.
-3. Invite the bot with these permissions: **View Channels**, **Send Messages**, **Add Reactions**, **Read Message History**, **Connect**, **Speak**, **Use Voice Activity**.
-
-### 4. Configure `.env`
-
-```bash
 cp Luna/example.env Luna/.env
 ```
 
-Fill in at least `DISCORD_TOKEN` and `LM_STUDIO_MCP_BEARER_TOKEN`, and add `TAVILY_API_KEY` if you want web search. Under Docker Compose, `LM_STUDIO_URL`, `KOKORO_URL` and `WHISPER_SERVER_URLS` come from the compose file, which overrides whatever `.env` says. `.env` is kept out of the Docker image, so your tokens are never baked into it.
+### 2. Set up LM Studio
 
-### 5. Start it
+1. Download a model that fits your RAM ([Hardware sizing](#hardware-sizing)) and load it with GPU offload at maximum and a context length of 16,000.
+2. In the **Developer** tab, start the server, bound to `0.0.0.0`, with **authentication on** (and **MCP on** if you'll use web search). Copy the token.
 
-**Apple Silicon (recommended on any M-series Mac).** Whisper and Kokoro run natively on the GPU; only Luna runs in Docker. Docker's Linux VM can't use Metal, so running them in containers would leave them CPU-only.
+### 3. Create the Discord bot
 
-Use three terminals, all in `Luna-Discord-Bot-Full-Docker/`, and start them in this order:
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application, add a bot and copy its token.
+2. Turn on **Message Content Intent** (under Privileged Gateway Intents).
+3. Invite it to your server with **View Channels**, **Send Messages**, **Add Reactions**, **Read Message History**, **Connect**, **Speak** and **Use Voice Activity**.
 
-```bash
-./scripts/whisper-metal.sh      # 1. first run builds whisper.cpp and downloads the model
-./scripts/kokoro-metal.sh       # 2. first run creates a venv; wait for "Starting Kokoro TTS server"
-docker compose -f docker-compose.metal.yml up --build   # 3. Luna
+### 4. Fill in `Luna/.env`
+
+Open it (`open -e Luna/.env` on a Mac, `nano Luna/.env` on Linux) and set:
+
+```env
+DISCORD_TOKEN=your_bot_token
+LM_STUDIO_MCP_BEARER_TOKEN=your_lm_studio_token
+TAVILY_API_KEY=your_tavily_key
 ```
 
-Luna has no health check to wait on for the native services, so start terminal 3 only after the first two report they're ready. In terminal 2, `[kokoro] warm — device=mps` confirms Kokoro is actually on the GPU.
+`TAVILY_API_KEY` is optional (web search).
 
-To use a Qwen3-TTS or Chatterbox voice (see [Text-to-speech providers](#text-to-speech-providers)), also run `./scripts/qwen3-tts-metal.sh` or `./scripts/chatterbox-metal.sh` in a fourth terminal and wait for its "Starting … server" line.
+Then set the voice, using the lines for your setup:
 
-**Linux or Intel Mac ONLY:** Everything runs in containers:
+**Mac, free (recommended):**
+
+```env
+TTS_PROVIDER=chatterbox
+```
+
+**Mac with ElevenLabs:**
+
+```env
+TTS_PROVIDER=elevenlabs
+TTS_FALLBACK=chatterbox
+ELEVENLABS_API_KEY=your_key
+ELEVENLABS_VOICE_ID=your_voice_id
+```
+
+**Linux:** leave `TTS_PROVIDER=kokoro`, or use the ElevenLabs lines above without `TTS_FALLBACK`.
+
+Kokoro is always the backup voice. The voices are compared in [Text-to-speech providers](#text-to-speech-providers).
+
+### 5. Start Luna
+
+**Mac:** open four terminal tabs in `Luna-Discord-Bot-Full-Docker/` and run one line in each, in order. Wait for each to finish starting; the first run of each downloads and builds for a few minutes.
+
+```bash
+./scripts/whisper-metal.sh
+```
+
+```bash
+./scripts/kokoro-metal.sh
+```
+
+```bash
+./scripts/chatterbox-metal.sh
+```
+
+```bash
+docker compose -f docker-compose.metal.yml up --build
+```
+
+Whisper is ready when it says it's listening on port 8081, Kokoro at `Starting Kokoro TTS server`, and Chatterbox at `Starting … server`. Skip the Chatterbox tab if you're not using it.
+
+**Linux:**
 
 ```bash
 docker compose up --build
 ```
 
-Add `--build` whenever you've changed a source file. To stop, press `Ctrl-C` and run `docker compose down` (with `-f docker-compose.metal.yml` on Apple Silicon).
+### 6. Try it
 
-A healthy start looks like:
+Luna is ready when her log shows `Ready! Wake phrase: "hey Luna"`. Join a voice channel and type `!luna` in a text channel. When she has introduced herself, say **"Hey Luna, what's two plus two?"** If she doesn't answer, see [Troubleshooting](#troubleshooting).
 
-```
-Using LM Studio model: <your-model>
-[oww] seeded feature buffer with 50 noise embeddings (baseline score 0.0009)
-[oww] active — threshold=0.15, Whisper gated on detection
-Ready! Wake phrase: "hey Luna"  •  text command: !luna
-```
+### Stop, restart and update
+
+| To | Run |
+| --- | --- |
+| Stop | `Ctrl-C` in each tab |
+| Apply a `.env` change | Run the `docker compose … up --build` line again |
+| Update Luna | `git pull`, then the `docker compose … up --build` line |
+
+Custom greetings (`Luna/local/`), the wake-word log (`Luna/logs/`) and cached phrases (`Luna/cache/`) are kept when you rebuild.
 
 ---
 
@@ -262,7 +307,14 @@ Fixed commands ("play …", "skip", "stop", "play the top 10") need none of step
 
 ## Text-to-speech providers
 
-Kokoro is the default. There are three alternatives: Chatterbox Turbo, a local expressive voice for Apple Silicon Macs; Qwen3-TTS, a local voice of your own design for Apple Silicon Macs; and ElevenLabs, a paid cloud service.
+| Voice | Runs on | Expressive? | Cost | Best for |
+| --- | --- | --- | --- | --- |
+| **ElevenLabs** | Cloud | The most: any emotion or delivery, combined freely | Paid, per character | The best voice, if you'll pay for it |
+| **Chatterbox Turbo** | Apple Silicon | Yes: 8 emotions and 9 sounds (laughs, sighs, whispers …) | Free | **The recommended free voice on a Mac** |
+| **Qwen3-TTS** | Apple Silicon | No, but in a voice you design | Free | A unique voice; expect short pauses between sentences |
+| **Kokoro** | Everywhere | No | Free | Linux, or the simplest setup. Always the last-resort backup |
+
+`TTS_PROVIDER` picks the voice and `TTS_FALLBACK` the one tried next; Kokoro is always last. Lines she says again and again (greetings, the search heads-up, fillers) are kept once rendered (`TTS_CACHE_DIR`), so with ElevenLabs they only cost credits the first time.
 
 ### Chatterbox Turbo (Apple Silicon)
 
@@ -342,6 +394,8 @@ Luna checks her settings at startup, and every setting is listed in [`config.js`
 - **An invalid value** is reported and the default is used: `[config] OWW_THRESHOLD="abc" is invalid (expected a number) — using the default (0.5)`.
 - **A misspelled name** is reported with the closest real one: `[config] OWW_THRESHHOLD is not one of Luna's settings and is ignored — did you mean OWW_THRESHOLD?`.
 - **On/off settings** accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`.
+
+The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER_URLS`, `KOKORO_URL`) are set by the compose file and override `.env`; change them there if yours run elsewhere.
 
 ### Announcement settings
 
@@ -504,13 +558,13 @@ To train your own model, use the openWakeWord [Colab notebook](https://colab.res
 
 **The LLM is almost always the bottleneck.** Whisper and Kokoro are sub-second; a model that doesn't fit in memory can take 25 seconds to reply. On Macs, the GPU can only use about two thirds of total RAM.
 
-| Total RAM | Realistic LLM |
-| --------- | ------------- |
-| 16 GB | 7–8B at Q4 |
-| 24 GB | 12–14B at Q4 |
-| 32 GB+ | 24–27B at Q4 |
+| Total RAM | Realistic LLM | Voice |
+| --------- | ------------- | ----- |
+| 16 GB | 7–8B at Q4 | Kokoro or ElevenLabs. Chatterbox's extra 4 GB doesn't fit comfortably |
+| 24 GB | 12–14B at Q4 | Any |
+| 32 GB+ | 24–27B at Q4, or a mixture-of-experts model like Qwen3.6 35B-A3B | Any |
 
-Leave roughly 5–6 GB for the OS, Docker, Whisper and Kokoro. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
+Leave roughly 5–6 GB for the OS, Docker, Whisper and Kokoro, plus about 4 GB if you run Chatterbox. Mixture-of-experts models (names ending in something like `A3B`) write much faster than their size suggests, but still need the memory of their full size. Luna was developed on Qwen3.6 35B-A3B on a 32 GB Mac. It fits, but the first answer after a quiet spell can be slow while macOS swaps it back in. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
 
 ---
 
