@@ -192,3 +192,15 @@ describe('isJunkTranscript (noise, not words)', () => {
       assert.strictEqual(v.isJunkTranscript(t), false, JSON.stringify(t));
   });
 });
+
+describe('nearWakePhrase (close to "hey Luna", not it)', () => {
+  it('a greeting and a word within two letters of "luna" → those two words', () => {
+    for (const [t, near] of [['Hey Lena, what time is it?', 'Hey Lena'], ['so, hi Luma.', 'hi Luma'], ['okay, Lunar what', 'okay Lunar'],
+                             ['hey Nina', 'hey Nina'], ["hey Lena's here", "hey Lena's"]])
+      assert.strictEqual(v.nearWakePhrase(t), near, t);
+  });
+  it('ordinary chatter, or a word without the greeting → null', () => {
+    for (const t of ['hey man what is up', 'hey look at this', 'Lena is here', 'the tuna sandwich', 'hey buddy', ''])
+      assert.strictEqual(v.nearWakePhrase(t), null, t);
+  });
+});

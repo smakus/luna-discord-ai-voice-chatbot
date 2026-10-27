@@ -715,6 +715,35 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.logs.some(l => /a missed "hey Luna" was caught, but they've asked again since/.test(l)));
     ok('a missed "hey Luna" caught after they asked again (and were answered) → not answered twice'); }
 
+  console.log('wake-word log');
+  { const H = await wakeRig({ WAKE_WHISPER_BACKUP: 'true' }); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
+    await H.utter(0.012, 'pass me the chips'); await H.wait(150);
+    await H.utter(0.006, "hey Lena, what's up"); await H.until(() => H.S.logs.some(l => /near miss/.test(l)));
+    await H.utter(0.004, "hey Luna what's the weather"); await H.until(() => H.S.llmRequests.length > 0);
+    await H.until(() => (H.S.wakeLog || []).some(e => e.event === 'missed'));
+    const events = H.S.wakeLog.map(({ event, who, peak, answered, heard }) => ({ event, who, peak, ...(answered && { answered }), ...(heard && { heard }) }));
+    assert.deepStrictEqual(events, [
+      { event: 'discarded', who: 'smakus', peak: 0.012 },
+      { event: 'discarded', who: 'smakus', peak: 0.006 },
+      { event: 'near-miss', who: 'smakus', peak: 0.006, heard: 'hey Lena' },
+      { event: 'discarded', who: 'smakus', peak: 0.004 },
+      { event: 'missed', who: 'smakus', peak: 0.004, answered: 'yes' },
+    ]);
+    assert.ok(H.S.wakeLog.every(e => e.file === 'logs/wake.jsonl' && e.id === 'u1' && !('text' in e)), 'no transcripts');
+    assert.ok(H.S.logs.some(l => /^\[smakus\] utterance discarded — no wake word/.test(l)), 'names, not IDs');
+    assert.ok(H.S.logs.some(l => /\[wake\] near miss from smakus: Whisper heard "hey Lena"/.test(l)));
+    assert.strictEqual(H.S.llmRequests.length, 1, 'the near miss is not answered');
+    ok('wake-word log: chatter → discarded; "hey Lena" → near miss (logged, not answered); a missed "hey Luna" → missed, answered; names in the log lines; no transcripts'); }
+  { const H = await wakeRig(); H.S.names = { u1: 'smakus' }; H.put('u1', 'A');
+    await H.utter(0.2, "hey Luna what's the weather"); await H.until(() => H.S.llmRequests.length > 0);
+    await H.utter(0.9, "what's the time", true); await H.until(() => H.S.llmRequests.length > 1);
+    assert.deepStrictEqual(H.S.wakeLog.map(e => e.event), ['candidate', 'confirmed', 'detected']);
+    ok('wake-word log: a candidate Whisper confirms → candidate, confirmed; a detection → detected'); }
+  { const H = await wakeRig(); H.S.wakeLogDown = true;
+    await H.utter(0.01, 'pass me the chips'); await H.wait(100); await H.utter(0.01, 'more chips'); await H.wait(100);
+    assert.strictEqual(H.S.logs.filter(l => /\[wake-log\] can't write/.test(l)).length, 1);
+    ok("the wake-word log can't be written → warned once, Luna carries on"); }
+
   console.log('the asker\'s name');
   { const H = await setup({}); H.S.names = { u1: 'smak_99' }; H.put('u1', 'A'); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi smak.');
     await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);

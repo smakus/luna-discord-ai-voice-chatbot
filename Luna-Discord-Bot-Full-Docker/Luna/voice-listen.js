@@ -26,7 +26,8 @@
 const path = require('path');
 const { createPacketDecoder, createWakeFeeder, createSegmenter, decideWake, decideUtteranceEnd } = require('./voice-input');
 
-function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, timers, session, playback, botId, isIgnored, onUtterance, onStuck, onDiscard = () => {} }) {
+function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, timers, session, playback, botId, isIgnored, onUtterance, onStuck, onDiscard = () => {},
+                         nameOf = id => id, wakeLog = { record() {} } }) {
   const { EndBehaviorType } = voice;
   const listeningUsers = new Set();
 
@@ -241,7 +242,8 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
           label:         userId,
           onDetect: (score, at) => {
             lastWakeAt = at;
-            console.log(`[${userId}] [oww] wake word detected (score=${score.toFixed(3)})`);
+            console.log(`[${nameOf(userId)}] [oww] wake word detected (score=${score.toFixed(3)})`);
+            wakeLog.record('detected', userId, { score });
 
             // Barge-in while this speaker's previous question is still with the
             // LLM. Before, `flushing` held the new request back until the old
@@ -288,7 +290,7 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
         feedWake(frame).then(score => {
           if (OWW_DEBUG_SCORE > 0 && score !== null && score >= OWW_DEBUG_SCORE) {
             console.log(
-              `[${userId}] [oww] score=${score.toFixed(3)} ` +
+              `[${nameOf(userId)}] [oww] score=${score.toFixed(3)} ` +
               `gain=${wakeStream.lastGain.toFixed(1)}x rms=${Math.round(wakeStream.lastRms)}`
             );
           }
@@ -386,15 +388,16 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
           graceMs: OWW_GRACE_MS, candidateThreshold: OWW_CANDIDATE_THRESHOLD });
         verdict = decision.verdict;
         if (verdict === 'candidate') {
-          console.log(`[${userId}] [oww] wake candidate (peak score ${peak.toFixed(3)}, ` +
+          console.log(`[${nameOf(userId)}] [oww] wake candidate (peak score ${peak.toFixed(3)}, ` +
             `threshold ${OWW_THRESHOLD}) — transcribing to confirm`);
+          wakeLog.record('candidate', userId, { peak });
         } else if (verdict === 'discard') {
           // The model's best score across the discarded utterance. If you spoke
           // the wake word and this reads 0.2x, the threshold is too high. If it
           // reads 0.00x, the model did not react to your voice at all and no
           // threshold will help.
           console.log(
-            `[${userId}] utterance discarded — no wake word ` +
+            `[${nameOf(userId)}] utterance discarded — no wake word ` +
             `(${Math.round(durationMs)}ms, peak score ${peak.toFixed(3)}, ` +
             `threshold ${OWW_THRESHOLD})` +
             (missedBy > 0 && missedBy < 30000 ? ` — started ${(missedBy / 1000).toFixed(1)}s after the follow-up window closed` : '')
@@ -405,12 +408,13 @@ function createListener({ config, console, voice, OpusEncoder, WakeWordEngine, t
           // normal: that is just ordinary conversation being filtered out.)
           if (wakeAt > 0) {
             console.warn(
-              `[${userId}] DISCARDED despite detection — ` +
+              `[${nameOf(userId)}] DISCARDED despite detection — ` +
               `wake was ${now - wakeAt}ms ago, speech began ${now - speechStartedAt}ms ago, ` +
               `utterance ${Math.round(durationMs)}ms, span ${Math.round(decision.span)}ms. ` +
               'Raise OWW_GRACE_MS if this looks wrong.'
             );
           }
+          wakeLog.record('discarded', userId, { peak, ms: Math.round(durationMs) });
           onDiscard(pcm, userId, { peak, durationMs, connection, channel });
           flushing = false;
           return;

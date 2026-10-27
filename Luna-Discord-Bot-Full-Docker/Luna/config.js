@@ -44,6 +44,8 @@ const SETTINGS = [
   { name: 'WAKE_SHADOW', type: 'bool', default: false },
   { name: 'WAKE_WHISPER_BACKUP', type: 'bool', default: false },
   { name: 'WAKE_SHADOW_REPORT_MS', type: 'int', default: 1800000, min: 60000 },
+  { name: 'WAKE_LOG_FILE', type: 'string', default: 'logs/wake.jsonl' },
+  { name: 'WAKE_LOG_MAX_MB', type: 'int', default: 20, min: 1 },
   { name: 'WAKE_REPROMPT_PHRASES', type: 'phrases' },
   { name: 'OWW_TRIGGER_FRAMES', type: 'int', default: 1, min: 1 },
   { name: 'OWW_REFRACTORY_MS', type: 'int', default: 1500, min: 0 },

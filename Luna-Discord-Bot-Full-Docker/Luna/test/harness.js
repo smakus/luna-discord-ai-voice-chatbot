@@ -74,6 +74,10 @@ module.exports = function boot(env = {}) {
     './wakeword': { WakeWordEngine: { load: async (opts) => { S.wakeLoad = opts; await new Promise(r => setTimeout(r, S.wakeLoadMs ?? 0));
       return { createStream: (opts) => { (S.wake ??= {})[opts.label] = opts;
         return { write: () => Promise.resolve(null), takePeak: () => { const p = (S.peaks ??= {})[opts.label] || 0; S.peaks[opts.label] = 0; return p; }, takeHealthPeak: () => 0, close() {}, exportGainState: () => ({}), chunksProcessed: 0, queueDepth: 0, lastGain: 1, lastRms: 0 }; } }; } } },
+    fs: { promises: {   // the wake-word log (wake-log.js): S.wakeLog has its lines, S.wakeLogDown makes writes fail
+      mkdir: async () => {}, stat: async () => ({ size: 0 }), rename: async () => {},
+      appendFile: async (file, line) => { if (S.wakeLogDown) throw new Error('EROFS: read-only file system'); (S.wakeLog ??= []).push({ file, ...JSON.parse(line) }); } } },
+    './wake-log': require(path.join(LUNA_DIR, 'wake-log.js')),
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),

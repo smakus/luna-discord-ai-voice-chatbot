@@ -27,7 +27,8 @@ const { parseWaits } = require('./config');
 const { isBareWake, confirmWake, isJunkTranscript } = require('./voice-input');
 const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
-function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying }) {
+function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying,
+                               nameOf = id => id, wakeLog = { record() {} } }) {
   // ─── Settings ───────────────────────────────────────────────────────────────
 
   // A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
@@ -143,7 +144,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
   const lastAskedAt = new Map();   // userId -> when their last question was accepted
   async function answerMissedWake(transcript, userId, connection, channel, heardAt) {
     if (processingUsers.has(userId) || (lastAskedAt.get(userId) || 0) > heardAt) {
-      console.log(`[${userId}] [wake] a missed "hey Luna" was caught, but they've asked again since — not answering it twice`);
+      console.log(`[${nameOf(userId)}] [wake] a missed "hey Luna" was caught, but they've asked again since — not answering it twice`);
       return;
     }
     processingUsers.add(userId);
@@ -170,12 +171,16 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     const confirmed = confirmWake(transcript, { detected: wakeDetected, candidate: wakeCandidate });
     if (!confirmed.accepted) {
       if (wakeCandidate) {
-        console.log(`[${userId}] [oww] wake candidate rejected — ${confirmed.reason} ` +
+        console.log(`[${nameOf(userId)}] [oww] wake candidate rejected — ${confirmed.reason} ` +
           `(${transcript.split(/\s+/).length} words)`);
+        wakeLog.record('rejected', userId, { reason: confirmed.reason });
       }
       return;
     }
-    if (wakeCandidate) console.log(`[${userId}] [oww] wake candidate confirmed by Whisper`);
+    if (wakeCandidate) {
+      console.log(`[${nameOf(userId)}] [oww] wake candidate confirmed by Whisper`);
+      wakeLog.record('confirmed', userId);
+    }
     const query = confirmed.query;
 
     // Only "hey Luna", even after waiting for more: ask what they wanted.

@@ -11,3 +11,5 @@ Luna-Discord-Bot-Full-Docker/Luna/bench/results/
 
 # Server-specific Luna files (custom greetings: Discord IDs, voice IDs)
 Luna-Discord-Bot-Full-Docker/Luna/local/
+# The wake-word log (WAKE_LOG_FILE)
+Luna-Discord-Bot-Full-Docker/Luna/logs/
