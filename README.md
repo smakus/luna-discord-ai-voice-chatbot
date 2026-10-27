@@ -204,48 +204,58 @@ TAVILY_API_KEY=your_tavily_key
 
 `TAVILY_API_KEY` is optional (web search).
 
-Then set the voice, using the lines for your setup:
+Then pick **one** voice. You need one local voice server, or none at all with ElevenLabs:
 
-**Mac, free (recommended):**
+**Chatterbox** (Mac, free, laughs and sighs; recommended):
 
 ```env
 TTS_PROVIDER=chatterbox
 ```
 
-**Mac with ElevenLabs:**
+**Kokoro** (any computer, free, plain): leave `TTS_PROVIDER=kokoro` as it is.
+
+**ElevenLabs** (paid, the most expressive; no local voice server):
 
 ```env
 TTS_PROVIDER=elevenlabs
-TTS_FALLBACK=chatterbox
+TTS_FALLBACK=none
 ELEVENLABS_API_KEY=your_key
 ELEVENLABS_VOICE_ID=your_voice_id
 ```
 
-**Linux:** leave `TTS_PROVIDER=kokoro`, or use the ElevenLabs lines above without `TTS_FALLBACK`.
+A backup voice is only needed with ElevenLabs, and only if you might run out of credits: without one, she goes quiet until ElevenLabs works again. For a backup on a Mac, change `TTS_FALLBACK=none` to `TTS_FALLBACK=chatterbox` (or `kokoro`) and also start that server in step 5. On Linux, Kokoro already runs in Docker, so just delete the `TTS_FALLBACK=none` line.
 
-Kokoro is always the backup voice. The voices are compared in [Text-to-speech providers](#text-to-speech-providers).
+The voices are compared in [Text-to-speech providers](#text-to-speech-providers).
 
 ### 5. Start Luna
 
-**Mac:** open four terminal tabs in `Luna-Discord-Bot-Full-Docker/` and run one line in each, in order. Wait for each to finish starting; the first run of each downloads and builds for a few minutes.
+**Mac:** open a terminal tab for each step in `Luna-Discord-Bot-Full-Docker/`, and wait for each to finish starting before the next. The first run of each downloads and builds for a few minutes.
 
-```bash
-./scripts/whisper-metal.sh
-```
+1. Whisper (always), ready when it says it's listening on port 8081:
 
-```bash
-./scripts/kokoro-metal.sh
-```
+   ```bash
+   ./scripts/whisper-metal.sh
+   ```
 
-```bash
-./scripts/chatterbox-metal.sh
-```
+2. Your voice server: the **one** you picked in step 4. Skip this with ElevenLabs and no backup.
 
-```bash
-docker compose -f docker-compose.metal.yml up --build
-```
+   ```bash
+   ./scripts/chatterbox-metal.sh
+   ```
 
-Whisper is ready when it says it's listening on port 8081, Kokoro at `Starting Kokoro TTS server`, and Chatterbox at `Starting … server`. Skip the Chatterbox tab if you're not using it.
+   or
+
+   ```bash
+   ./scripts/kokoro-metal.sh
+   ```
+
+   Ready at `Starting … server`.
+
+3. Luna:
+
+   ```bash
+   docker compose -f docker-compose.metal.yml up --build
+   ```
 
 **Linux:**
 
@@ -312,9 +322,9 @@ Fixed commands ("play …", "skip", "stop", "play the top 10") need none of step
 | **ElevenLabs** | Cloud | The most: any emotion or delivery, combined freely | Paid, per character | The best voice, if you'll pay for it |
 | **Chatterbox Turbo** | Apple Silicon | Yes: 8 emotions and 9 sounds (laughs, sighs, whispers …) | Free | **The recommended free voice on a Mac** |
 | **Qwen3-TTS** | Apple Silicon | No, but in a voice you design | Free | A unique voice; expect short pauses between sentences |
-| **Kokoro** | Everywhere | No | Free | Linux, or the simplest setup. Always the last-resort backup |
+| **Kokoro** | Everywhere | No | Free | Linux, or the simplest setup |
 
-`TTS_PROVIDER` picks the voice and `TTS_FALLBACK` the one tried next; Kokoro is always last. Lines she says again and again (greetings, the search heads-up, fillers) are kept once rendered (`TTS_CACHE_DIR`), so with ElevenLabs they only cost credits the first time.
+`TTS_PROVIDER` picks the voice. You only need that one running; `TTS_FALLBACK` adds an optional backup for when it fails (then Kokoro, if it's running; `TTS_FALLBACK=none` for no backup at all). Lines she says again and again (greetings, the search heads-up, fillers) are kept once rendered (`TTS_CACHE_DIR`), so with ElevenLabs they only cost credits the first time.
 
 ### Chatterbox Turbo (Apple Silicon)
 
@@ -334,7 +344,7 @@ TTS_PROVIDER=chatterbox
 - **Leave `CHATTERBOX_STREAM` off.** Streaming renders in small pieces, which is far slower (0.6× real time while the LLM writes): playback runs out of audio and Discord's player ends the sentence early, so words are lost.
 - **Voices:** `default` is the voice built into the model. Any `<name>.wav` in `~/.luna/chatterbox-voices` (10–20 seconds of clear speech by one speaker, no transcript needed) is a clone; pick one with `CHATTERBOX_VOICE`. `curl localhost:8891/health` lists the voices and tags.
 - **Tags it doesn't know** are dropped before it speaks; ElevenLabs spellings such as `[laughs]` or `[whispers]` are mapped to its own.
-- **Fallback:** Kokoro still covers for it, with tags removed.
+- **Fallback:** none needed. If Kokoro happens to be running, it covers for a failed sentence, with tags removed.
 
 ### Qwen3-TTS (Apple Silicon)
 
@@ -362,7 +372,7 @@ TTS_PROVIDER=qwen3
 - **Voices:** any `<name>.wav` + `<name>.txt` pair in the voices folder is a voice: about 10 seconds of clear speech and exactly what it says. Pick one with `QWEN3_TTS_VOICE` in `.env`, or set the server's default when starting the script. `curl localhost:8890/health` lists them.
 - **Closer clones:** `QWEN3_TTS_MODEL=mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` when starting the script clones more closely but is slower, so the pauses get longer.
 - **No audio tags:** like Kokoro, it doesn't perform `[laughs]`-style tags; they're removed before it speaks.
-- **Fallback:** Kokoro still covers for it, so keep Kokoro running. If the Qwen3-TTS server isn't running, each sentence goes to Kokoro instead.
+- **Fallback:** none needed. If Kokoro happens to be running, it covers for a failed sentence.
 
 ### ElevenLabs
 
@@ -374,13 +384,14 @@ ELEVENLABS_API_KEY=your_key
 ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
 ```
 
-- **Fallback:** keep Kokoro running, because it's the fallback.
-  - When ElevenLabs runs out of credits, Luna switches to Kokoro for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
-  - Rate limits, outages and timeouts only move the affected sentence to Kokoro.
+- **Fallback (optional):** no local voice server is needed. A backup only matters if you might run out of credits; set `TTS_FALLBACK` to `chatterbox` or `kokoro` and run that server (on Linux, Kokoro already runs in Docker). With a backup:
+  - When ElevenLabs runs out of credits, Luna switches to the backup for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
+  - Rate limits, outages and timeouts only move the affected sentence to the backup.
+  - Lines she has said before (greetings, fillers, the search heads-up) still play in the ElevenLabs voice from the [phrase cache](#voices-tts-and-timeouts), backup or not.
 - **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add audio tags wherever they fit: emotions (`[curious]`, `[warm]`, `[playful]`, `[worried]` …), reactions (`[laughs]`, `[sighs]`, `[gasps]` …), delivery (`[whispers]`, `[pause]`, `[hesitates]` …) and combined directions like `[warm, laughing softly]`. Kokoro and Qwen3-TTS never get that instruction, and any tag that does reach them is removed, so they never read "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
 
-To fall back to Chatterbox or Qwen3-TTS before Kokoro, add `TTS_FALLBACK=chatterbox` or `TTS_FALLBACK=qwen3`. Luna then tries ElevenLabs, then that voice, then Kokoro.
+With `TTS_FALLBACK=chatterbox` (or `qwen3`), Luna tries ElevenLabs, then that voice, then Kokoro if it's running.
 
 The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4_turbo) → fallback Kokoro, expressive`.
 
@@ -564,7 +575,7 @@ To train your own model, use the openWakeWord [Colab notebook](https://colab.res
 | 24 GB | 12–14B at Q4 | Any |
 | 32 GB+ | 24–27B at Q4, or a mixture-of-experts model like Qwen3.6 35B-A3B | Any |
 
-Leave roughly 5–6 GB for the OS, Docker, Whisper and Kokoro, plus about 4 GB if you run Chatterbox. Mixture-of-experts models (names ending in something like `A3B`) write much faster than their size suggests, but still need the memory of their full size. Luna was developed on Qwen3.6 35B-A3B on a 32 GB Mac. It fits, but the first answer after a quiet spell can be slow while macOS swaps it back in. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
+Leave roughly 5–6 GB for the OS, Docker, Whisper and a voice, or about 4 GB more if that voice is Chatterbox. Mixture-of-experts models (names ending in something like `A3B`) write much faster than their size suggests, but still need the memory of their full size. Luna was developed on Qwen3.6 35B-A3B on a 32 GB Mac. It fits, but the first answer after a quiet spell can be slow while macOS swaps it back in. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
 
 ---
 
@@ -616,7 +627,7 @@ Voice encryption: active, epoch 7 — privacy code `12345 67890 …`
 | `kokoro-metal.sh` reports port 8880 in use | Another Kokoro is running: a leftover container (`docker compose down`) or a second copy of the script |
 | `MPS available: False` | Metal needs macOS 12.3+ on Apple Silicon; otherwise Kokoro runs on CPU |
 | Slow Whisper or Kokoro on a Mac | You're on the Docker path. Use the Metal scripts instead |
-| Voice switches to Kokoro mid-session | ElevenLabs ran out of credits or rejected the key or voice. The `[tts]` log line says which |
+| Voice switches to the backup mid-session, or goes quiet with no backup | ElevenLabs ran out of credits or rejected the key or voice. The `[tts]` log line says which |
 
 Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.sh` rebuilds a build that can't start (for example after the folder was moved). Kokoro works around espeak-ng's path-length limit when its venv sits in a deeply nested folder.
 
