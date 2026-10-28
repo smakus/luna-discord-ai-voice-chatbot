@@ -7,6 +7,7 @@
 //     { type: 'leave' }            "leave", "bye" (by voice only)
 //     { type: 'say' }              "say … in the voice channel" (typed only)
 //     { type: 'now-playing' }      "what song is this?" (answered from smakbot)
+//     { type: 'top-songs', count } "what are our top songs?" (read from smakbot, not played)
 //     { type: 'ask' }              everything else: the LLM answers
 //
 // A smakbot command, whether from a fixed command here or from the LLM's
@@ -154,6 +155,28 @@ const isSayRequest = question => SAY_RE.test(String(question || ''));
 const NOW_PLAYING_RE = /^(?:what|which)(?:'s|\s+is)?\s+(?:(?:the\s+)?(?:song|track|music|tune)(?:\s+is)?(?:\s+(?:this|that|playing|on))?|this\s+(?:song|track|tune)(?:\s+called)?|playing|that\s+(?:song|track|tune)|the\s+name\s+of\s+(?:this|that|the)\s+(?:song|track|tune)|are\s+we\s+listening\s+to|(?:song|track)\s+are\s+we\s+listening\s+to)(?:\s+(?:right\s+)?now)?[\s,.!?]*$/i;
 const isNowPlayingQuestion = question => NOW_PLAYING_RE.test(bare(question));
 
+// ─── The most played songs, read out ──────────────────────────────────────────
+//
+// "What are our top songs?", "what are the top 5 hits?", "which are our most
+// played tracks?", "list our top ten", "tell me the 3 most played songs",
+// "what's our top song?" (just the one):
+// smakbot's most played list, said or typed but not played ("play the top 5"
+// is the music command above). The whole question, like NOW_PLAYING_RE, so
+// "what's the top song by Queen?" still reaches the LLM. How many: as said;
+// else one for "song" said singular ("what's our top song?"), or TOP_LISTED.
+const TOP_LISTED = 5;
+const TOP_SONGS_RE = new RegExp(
+  `^(?:(?:what|which)(?:'s|\\s+is|\\s+are|\\s+were)?|list|name|tell\\s+me|read(?:\\s+(?:me|out))?|give\\s+me)\\s+` +
+  `(?:the\\s+|our\\s+|my\\s+)?(?:(?:top|most[\\s-]played)(?:\\s+(${NUMBER}))?|(${NUMBER})\\s+most[\\s-]played)` +
+  `(?:\\s+(?:(songs|tracks|hits|jams)|song|track|hit|jam))?(?:\\s+(?:so\\s+far|lately|right\\s+now|on\\s+here))?[\\s,.!?]*$`, 'i');
+function topSongsQuestion(question) {
+  const m = TOP_SONGS_RE.exec(bare(question));
+  if (!m) return null;
+  const said = m[1] || m[2];
+  const plural = m[3] || !/\b(?:song|track|hit|jam)\b/i.test(m[0]);
+  return { count: said ? topCount(said) : plural ? TOP_LISTED : 1 };
+}
+
 // ─── Routing ──────────────────────────────────────────────────────────────────
 
 function route(question, { voice }) {
@@ -164,6 +187,8 @@ function route(question, { voice }) {
   if (voice && LEAVE_RE.test(bare(question))) return { type: 'leave' };
   if (!voice && isSayRequest(question)) return { type: 'say' };
   if (isNowPlayingQuestion(question)) return { type: 'now-playing' };
+  const top = topSongsQuestion(question);
+  if (top) return { type: 'top-songs', count: top.count };
   return { type: 'ask' };
 }
 

@@ -1,7 +1,7 @@
 // ─── Tools for the LLM ────────────────────────────────────────────────────────
 //
 // Things the LLM can make Luna do: play, skip and stop music through smakbot,
-// leave the voice channel, and (from text chat) say something in it. The
+// look up the most played songs, leave the voice channel, and (from text chat) say something in it. The
 // fixed commands in commands.js ("play …", "skip", "stop", "leave") handle the
 // plain requests instantly, before the LLM; these tools cover everything else ("put on something chill", "we're
 // done for tonight, you can head out").
@@ -33,8 +33,8 @@ const MUSIC_TOOLS = [
   {
     name: 'play_top_songs',
     description: "Play the most played songs: the music bot's own favourites, the ones played most " +
-      'in this server. Use it when someone asks for the top songs, the most played, the usual, or ' +
-      'their favourites rather than a particular song.',
+      'in this server. Use it when someone asks you to play the top songs, the most played, the usual, or ' +
+      'their favourites rather than a particular song. To only say which songs those are, use list_top_songs.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -57,6 +57,23 @@ const MUSIC_TOOLS = [
     run: () => 'Stopped the music.',
   },
 ];
+
+// Read-only: which songs are played most, without playing anything ("is
+// Tom Sawyer in our top ten?", "what do we listen to most?"). index.js
+// replaces run() with one that asks smakbot (now-playing.js).
+const TOP_TOOL = {
+  name: 'list_top_songs',
+  description: "Look up the most played songs in this server and their play counts, without playing " +
+    'anything. Use it when someone asks which songs are played most, what their favourites are, or ' +
+    'whether a song is among them.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      count: { type: 'integer', description: 'How many (default 10, at most 50)', minimum: 1, maximum: 50 },
+    },
+  },
+  run: () => 'The most played songs are not available right now.',
+};
 
 const LEAVE_TOOL = {
   name: 'leave_channel',
@@ -85,12 +102,12 @@ const SAY_TOOL = {
   run: () => 'Said in the voice channel.',
 };
 
-const LLM_TOOLS = [...MUSIC_TOOLS, LEAVE_TOOL, SAY_TOOL];
+const LLM_TOOLS = [...MUSIC_TOOLS, TOP_TOOL, LEAVE_TOOL, SAY_TOOL];
 const LLM_TOOL_NAMES = new Set(LLM_TOOLS.map(t => t.name));
 // Which are offered where: leaving makes sense only by voice, saying
 // something in voice only from text.
-const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), LEAVE_TOOL.name]);
-const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), SAY_TOOL.name]);
+const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, LEAVE_TOOL.name]);
+const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, SAY_TOOL.name]);
 const MUSIC_TOOL_NAMES = new Set(MUSIC_TOOLS.map(t => t.name));
 
 // The smakbot command for a tool call: { text, summon }, or null.

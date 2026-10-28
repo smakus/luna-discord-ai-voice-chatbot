@@ -239,6 +239,16 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       return;
     }
 
+    // "What are our top songs?": read from smakbot, not played.
+    if (what.type === 'top-songs' && nowPlaying?.enabled) {
+      const generation = playback.interrupt(userId);
+      if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
+      const text = nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
+      console.log(`[${nameOf(userId)}] [music] top songs → "${text}"`);
+      playback.say(text, { connection, userId, generation, cache: false });
+      return;
+    }
+
     // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
     // music commands. (Wordier requests reach the LLM's leave_channel tool.)
     if (what.type === 'leave') {

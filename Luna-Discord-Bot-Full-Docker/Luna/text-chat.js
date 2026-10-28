@@ -101,6 +101,11 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
       await reply(message, nowPlaying.describe(await nowPlaying.get(message.guild?.id || ''))).catch(() => {});
       return;
     }
+    // "What are our top songs?": the same, from smakbot's most played list.
+    if (what.type === 'top-songs' && nowPlaying?.enabled) {
+      await reply(message, nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count)).catch(() => {});
+      return;
+    }
 
     // "Luna is typing…" lasts ~10 s; renewed until the answer is posted.
     const typing = () => channel.sendTyping?.().catch(() => {});
