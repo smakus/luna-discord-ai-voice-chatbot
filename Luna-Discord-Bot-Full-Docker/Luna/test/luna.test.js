@@ -761,7 +761,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
   { const H = await setup({ LLM_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, stop_music, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, stop_music, list_top_songs, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -933,6 +933,51 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await textRig(); H.S.llmScript = sse('x'.repeat(1500) + '.', 'y'.repeat(1500) + '.');
     await H.say('Luna, write a lot'); await H.until(() => H.S.sends.length > 0);
     assert.ok(H.S.replies[0].content.length <= 2000 && H.S.sends[0].content.length <= 2000); ok('a long answer → split into messages under 2,000 characters'); }
+  console.log('top songs, read out (smakbot)');
+  const TOP = [{ title: 'One Chain to Rule Them All | Gandalf x Frodo (Lord of the Rings Rap Parody) - WeGoTunes Studio', plays: 13 }, { title: "Shock My Dog I Can't Stop", plays: 9 },
+    { title: 'Dire Straits - Money For Nothing (Official Music Video)', plays: 4 }, { title: 'Rush - Tom Sawyer', plays: 2 },
+    { title: 'Sweet Pea', plays: 1 }, { title: 'Sixth', plays: 1 }];
+  { const H = await setup({}); const r = q => JSON.stringify(H.T.route(q, { voice: true }));
+    for (const [q, want] of [['What are our top songs?', '{"type":"top-songs","count":5}'], ['what are the top 3 hits?', '{"type":"top-songs","count":3}'],
+      ['list our top ten', '{"type":"top-songs","count":10}'], ['tell me the 2 most played songs', '{"type":"top-songs","count":2}'],
+      ["what's our top song?", '{"type":"top-songs","count":1}'], ['which are our most played jams lately', '{"type":"top-songs","count":5}']])
+      assert.strictEqual(r(q), want, q);
+    for (const q of ["what's the top song by Queen?", "what's at the top of the charts?"]) assert.strictEqual(r(q), '{"type":"ask"}', q);
+    assert.match(r('play our top five songs'), /"!playtop 5"/);
+    ok('"what are our top songs?" (and "top 3 hits", "list our top ten", "our top song") → read out; "play our top five" still plays; "top song by Queen" → the LLM'); }
+  { const H = await setup({}); H.S.topSongs = TOP; H.S.llmRequests.length = 0;
+    await H.T.handleQuery('what are our top 3 songs?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, "Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog I Can't Stop, 9. Dire Straits - Money For Nothing, 4.");
+    assert.ok(H.S.topSongsAsked[0].endsWith('/top-songs?count=3'), H.S.topSongsAsked[0]);
+    assert.strictEqual(H.S.llmRequests.length, 0); assert.ok(!H.S.sends.some(m => m.startsWith('!')), 'nothing played'); assert.ok(!H.S.tts[0].cache);
+    ok('"what are our top 3 songs?" → "Your top 3: One Chain to Rule Them All, 13 plays. …" from smakbot (no LLM, nothing played, not cached)'); }
+  { const H = await setup({}); H.S.topSongs = TOP;
+    await H.T.handleQuery("what's our top song?", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Your most played song is One Chain to Rule Them All, 13 plays.'); ok('"what\'s our top song?" → just the one'); }
+  { const H = await setup({}); H.S.topSongs = [];
+    await H.T.handleQuery('what are our top songs', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Nothing has been played enough to count yet.'); ok('no play counts yet → says so'); }
+  { const H = await setup({}); H.S.musicDown = true;
+    await H.T.handleQuery('what are our top songs', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.match(H.S.tts[0].text, /can't reach the music bot/); ok("smakbot unreachable → says it can't check"); }
+  { const H = await textRig(); H.S.topSongs = TOP;
+    await H.say('Luna, what are our top 2 hits?'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0].content, "Your top 2: One Chain to Rule Them All, 13 plays. Shock My Dog I Can't Stop, 9."); assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('"Luna, what are our top 2 hits?" in text → answered from smakbot, no LLM'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.topSongs = TOP;
+    const { Readable } = require('stream');
+    const call = async body => { const res = { status: 0, body: '', writeHead(s) { this.status = s; return this; }, end(b = '') { this.body = b; return this; } };
+      const req = Readable.from([JSON.stringify(body)]); req.url = '/mcp'; req.method = 'POST'; await H.S.mcpHandler(req, res); return JSON.parse(res.body); };
+    const list = await call({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    assert.ok(list.result.tools.some(t => t.name === 'list_top_songs'));
+    const got = await call({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_top_songs', arguments: { count: 3 } } });
+    assert.strictEqual(got.result.content[0].text, 'Most played songs in this server, most first:\n1. One Chain to Rule Them All (13 plays)\n' +
+      "2. Shock My Dog I Can't Stop (9 plays)\n3. Dire Straits - Money For Nothing (4 plays)");
+    assert.ok(!H.S.sends.some(m => m.startsWith('!')), 'nothing played');
+    H.S.llmRequests.length = 0; H.S.llmScript = sse('Yes, Tom Sawyer is fourth.');
+    await H.T.handleQuery('is Tom Sawyer in our top ten?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
+    assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('list_top_songs')));
+    ok('LLM tool list_top_songs: offered, answers the model with the list from smakbot, plays nothing ("is Tom Sawyer in our top ten?")'); }
   { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
     assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0); ok('"Luna, play …" in text → smakbot command, no LLM'); }
   { const H = await textRig(); H.S.nowPlaying = { playing: true, paused: true, title: 'Crazy', requested_by: 'smakus' };

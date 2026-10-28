@@ -247,9 +247,15 @@ const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
 
 function startLlmTools() {
   // say_in_voice tells the model the truth about whether anything was said.
-  const tools = LLM_TOOLS.map(t => t.name !== 'say_in_voice' ? t : { ...t, run: () => session.connection
-    ? `Said in ${session.channel?.name || 'the voice channel'}.`
-    : 'You are not in a voice channel, so nothing was said. Tell them that.' });
+  // list_top_songs asks smakbot.
+  const runs = {
+    say_in_voice: () => session.connection
+      ? `Said in ${session.channel?.name || 'the voice channel'}.`
+      : 'You are not in a voice channel, so nothing was said. Tell them that.',
+    list_top_songs: async ({ count }) => nowPlaying.listForModel(
+      await nowPlaying.topSongs(Math.min(50, Math.max(1, Math.round(Number(count)) || 10)))),
+  };
+  const tools = LLM_TOOLS.map(t => runs[t.name] ? { ...t, run: runs[t.name] } : t);
   const server = createMcpServer({ tools });
   http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
     .on('error', err => console.error(`[tools] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — LLM tools off`))

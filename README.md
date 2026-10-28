@@ -61,7 +61,7 @@ With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that sta
 - She shows "Luna is typing…" while she works and reacts with 🔍 when she searches the web.
 - Everyone in a channel shares one conversation, each message labelled with its writer's name, so *"Luna, and in Newport?"* follows on from someone else's question. It's separate from voice, and forgotten after an hour of quiet (`LM_MEMORY_TTL_MS`).
 - Answers can use Discord formatting (bold, a short list, links) and are split if longer than Discord's 2,000-character limit. They can't ping anyone.
-- Music works the same way: *"Luna, play …"*, *"skip"*, *"stop"*, *"play the top 10"*, *"what song is this?"*
+- Music works the same way: *"Luna, play …"*, *"skip"*, *"stop"*, *"play the top 10"*, *"what song is this?"*, *"what are our top songs?"*
 - **She can say things out loud for you:** *"Luna, say hello in Chinese in the voice channel"*, *"Luna, tell everyone in vc that dinner is ready"*. Requests like these ("say / tell / announce … in the voice channel / vc / voice") have the LLM write just the line. Luna speaks it in her voice channel and posts *"🔊 Said in Talk Soup: 你好！"*. Other phrasings ("give Joel a warm welcome out loud") go through the LLM's `say_in_voice` tool. Lines are capped at 400 characters and wait their turn behind whatever she's saying. With Chatterbox (English only) as the voice, other languages won't sound right.
 
 ### Text commands
@@ -87,6 +87,8 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
 | "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
 | "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
+| "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
+| "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
 
 - **`--for=@you`** credits the song to you instead of Luna, in smakbot's "Now playing", its status and Luna's own "what song is this?". It's sent without pinging you.
 - **"Play top of the world"** is still a song search. Only "the top N" / "most played" / "my favorites" mean the top-songs list.
@@ -301,7 +303,7 @@ How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music
    AllowPlaylists = yes
    ```
 
-3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `stop_music`, and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `stop_music`, `list_top_songs` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
    ```json
    "luna": { "url": "http://127.0.0.1:8895/mcp" }
@@ -309,7 +311,7 @@ How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music
 
    When the model calls a tool, Luna posts the smakbot command and the model confirms out loud; a `[music] the LLM called …` line in the log shows each call. If LM Studio can't reach the tools, Luna answers without them and logs a warning. `LLM_TOOLS=false` turns them off.
 
-4. **"What song is this?"** needs smakbot's now playing API (`StatusApiPort = 8896` in smakbot, on by default there) and `MUSIC_STATUS_URL` in Luna (set in `docker-compose.metal.yml`).
+4. **"What song is this?" and "what are our top songs?"** need smakbot's status API (`StatusApiPort = 8896` in smakbot, on by default there) and `MUSIC_STATUS_URL` in Luna (set in `docker-compose.metal.yml`).
 
 Fixed commands ("play …", "skip", "stop", "play the top 10") need none of steps 3–4. Songs Luna queues end in `--for=@name` so smakbot credits whoever asked; upstream MusicBot doesn't know `--for` and would include it in the search, so it's smakbot-only. If `!play` fails with `HTTP Error 403`, that's YouTube's anti-download changes, not Luna; smakbot already includes the usual fix ([bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)).
 
@@ -424,7 +426,7 @@ The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
 | `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |
 | `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the LLM's tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
-| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Unset: off |
+| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Its `/top-songs`, next to it, answers "what are our top songs?". Unset: off |
 | `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
 | `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |

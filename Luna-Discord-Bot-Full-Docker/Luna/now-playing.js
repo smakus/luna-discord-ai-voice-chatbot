@@ -7,7 +7,12 @@
 //   - while a song plays, one line in the system prompt names it, so "what's
 //     this song about?" or "when did it come out?" need no tool call.
 //
-// createNowPlaying({ config, fetch, console }) → { enabled, get(guildId), describe(np), promptLine(np) }.
+// It also reads smakbot's most played list (/top-songs, next to /now-playing):
+// "what are our top songs?" (topSongs, describeTop) and the LLM's
+// list_top_songs tool (listForModel).
+//
+// createNowPlaying({ config, fetch, console }) → { enabled, get(guildId), describe(np), promptLine(np),
+//   topSongs(count), describeTop(songs, count), listForModel(songs) }.
 // get() resolves to smakbot's answer ({ playing, paused, title, artist, … })
 // or null when there is no URL, smakbot is down or slow — never throws. It is
 // asked on every question, so a short timeout and a moment's cache keep it
@@ -17,9 +22,10 @@ const TIMEOUT_MS = 800;
 const CACHE_MS   = 2000;
 
 // "Seal - Crazy (Official Music Video) [HD]" → "Seal - Crazy": the decorations
-// YouTube titles carry, which read badly aloud.
+// YouTube titles carry, which read badly aloud. Everything after a " | " goes
+// too: "One Chain to Rule Them All | Gandalf x Frodo (…) - WeGoTunes Studio".
 const DECORATION = /\s*[([](?:[^)\]]*\b(?:official|video|audio|lyrics?|visuali[sz]er|hd|hq|4k|remaster(?:ed)?|explicit|clean)\b[^)\]]*)[)\]]/gi;
-const cleanTitle = title => String(title || '').replace(DECORATION, '').replace(/\s+/g, ' ').trim();
+const cleanTitle = title => String(title || '').split(/\s+\|\s+/)[0].replace(DECORATION, '').replace(/\s+/g, ' ').trim();
 
 // "Crazy by Seal" when smakbot knows the track and artist, else the title.
 function songName(np) {
@@ -78,7 +84,42 @@ function createNowPlaying({ config, fetch, console }) {
     return line + '. When someone asks about "this song" or "the song", they mean this one.';
   }
 
-  return { enabled: !!STATUS_URL, get, describe, promptLine };
+  // smakbot's most played songs ([{ title, plays }], most first), or null
+  // when there is no URL or smakbot can't be reached. Not cached: asked rarely.
+  async function topSongs(count) {
+    if (!STATUS_URL) return null;
+    try {
+      const url = new URL('top-songs', STATUS_URL);
+      url.searchParams.set('count', String(count));
+      const res = await fetch(url.href, { signal: AbortSignal.timeout(TIMEOUT_MS * 2) });
+      if (!res.ok) return null;
+      const { songs } = await res.json();
+      return Array.isArray(songs) ? songs : null;
+    } catch (err) {
+      console.warn(`[music] can't reach smakbot's top songs (${err.message})`);
+      return null;
+    }
+  }
+
+  // The spoken/typed answer to "what are our top songs?".
+  function describeTop(songs, count) {
+    if (!songs) return "I can't check the top songs right now — I can't reach the music bot.";
+    if (!songs.length) return "Nothing has been played enough to count yet.";
+    const list = songs.slice(0, count).map((s, i) =>
+      `${cleanTitle(s.title) || 'an unnamed song'}, ${s.plays}${i === 0 ? ` play${s.plays === 1 ? '' : 's'}` : ''}`);
+    const head = list.length === 1 ? 'Your most played song is' : `Your top ${list.length}:`;
+    return `${head} ${list.join('. ')}.`;
+  }
+
+  // What the LLM's list_top_songs tool answers it.
+  function listForModel(songs) {
+    if (!songs) return 'The music bot could not be reached, so the most played songs are unknown. Say so.';
+    if (!songs.length) return 'No songs have been played enough to count yet.';
+    return 'Most played songs in this server, most first:\n' +
+      songs.map((s, i) => `${i + 1}. ${cleanTitle(s.title)} (${s.plays} plays)`).join('\n');
+  }
+
+  return { enabled: !!STATUS_URL, get, describe, promptLine, topSongs, describeTop, listForModel };
 }
 
 module.exports = { createNowPlaying };
