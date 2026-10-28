@@ -81,7 +81,7 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | You say (or type "Luna, …") | Luna sends to smakbot |
 | --------------------------- | -------------------- |
 | "play Crazy by Seal" | `!summon` if smakbot isn't in the channel, then `!play Crazy by Seal --for=@you` |
-| "play the top 10" / "play the top twenty songs" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
+| "play the top 10" / "play the top twenty songs" / "play our top three hits" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
 | "skip" / "skip this song" | `!skip` |
 | "stop" / "stop the music" | `!stop` (smakbot stops and leaves) |
 | "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
