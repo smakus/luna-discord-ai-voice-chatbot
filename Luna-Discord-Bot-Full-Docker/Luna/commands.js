@@ -45,14 +45,14 @@ function topCount(said) {
 const SMAKBOT_COMMANDS = [
   {
     // smakbot's most played songs, from its cache (!playtop): "play the top
-    // 10", "play the top songs", "play our most played", "play the 20 most
+    // 10", "play the top songs", "play our top three hits", "play our top jams", "play our most played", "play the 20 most
     // played songs", "play my favorites". Before 'play', which would search
     // for the words instead. Anchored at the end, so "play top of the world"
     // is still a song.
     name:    'playtop',
     pattern: new RegExp(
       `^play\\s+(?:(?:the|our|my)\\s+)?(?:(?:top|most[\\s-]played)(?:\\s+(${NUMBER}))?|(${NUMBER})\\s+most[\\s-]played|(?<=(?:our|my)\\s+)favou?rites?)` +
-      `(?:\\s+(?:songs?|tracks?))?[\\s,.!?]*$`, 'i'),
+      `(?:\\s+(?:songs?|tracks?|hits?|jams?))?[\\s,.!?]*$`, 'i'),
     build:   n => `!playtop ${topCount(n)}`,
     ack:     n => `Okay, playing the top ${topCount(n)}.`,
     summon:  true,

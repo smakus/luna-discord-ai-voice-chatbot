@@ -809,6 +809,10 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.strictEqual(cmd('play the 15 most played tracks'), '!playtop 15');
     assert.strictEqual(cmd('play my favorites'), '!playtop 10');
     assert.strictEqual(cmd('play the top 100'), '!playtop 50');
+    assert.strictEqual(cmd('can you play our top three hits?'), '!playtop 3');
+    assert.strictEqual(cmd('play our top jams'), '!playtop 10');
+    assert.strictEqual(cmd('play my 5 most played jams'), '!playtop 5');
+    assert.strictEqual(cmd('play greatest hits'), '!play greatest hits');
     for (const q of ['play top of the world', 'play favorites', 'play the top 10 songs of 1985']) assert.strictEqual(cmd(q), '!play ' + q.slice(5), q);
     for (const q of ['do you play guitar?', "let's play a game", 'can you play?', 'can you stop talking']) assert.strictEqual(cmd(q), null, q);
     for (const q of ['can you leave?', 'could you please head out', 'you can go now, thanks']) assert.ok(H.T.LEAVE_RE.test(H.T.stripPoliteness(q)), q);
