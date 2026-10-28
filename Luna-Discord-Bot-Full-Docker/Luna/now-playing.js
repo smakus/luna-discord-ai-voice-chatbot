@@ -22,9 +22,10 @@ const TIMEOUT_MS = 800;
 const CACHE_MS   = 2000;
 
 // "Seal - Crazy (Official Music Video) [HD]" → "Seal - Crazy": the decorations
-// YouTube titles carry, which read badly aloud.
+// YouTube titles carry, which read badly aloud. Everything after a " | " goes
+// too: "One Chain to Rule Them All | Gandalf x Frodo (…) - WeGoTunes Studio".
 const DECORATION = /\s*[([](?:[^)\]]*\b(?:official|video|audio|lyrics?|visuali[sz]er|hd|hq|4k|remaster(?:ed)?|explicit|clean)\b[^)\]]*)[)\]]/gi;
-const cleanTitle = title => String(title || '').replace(DECORATION, '').replace(/\s+/g, ' ').trim();
+const cleanTitle = title => String(title || '').split(/\s+\|\s+/)[0].replace(DECORATION, '').replace(/\s+/g, ' ').trim();
 
 // "Crazy by Seal" when smakbot knows the track and artist, else the title.
 function songName(np) {

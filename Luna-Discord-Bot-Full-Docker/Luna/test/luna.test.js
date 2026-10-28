@@ -934,7 +934,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.say('Luna, write a lot'); await H.until(() => H.S.sends.length > 0);
     assert.ok(H.S.replies[0].content.length <= 2000 && H.S.sends[0].content.length <= 2000); ok('a long answer → split into messages under 2,000 characters'); }
   console.log('top songs, read out (smakbot)');
-  const TOP = [{ title: 'One Chain to Rule Them All (Official Video)', plays: 13 }, { title: "Shock My Dog I Can't Stop", plays: 9 },
+  const TOP = [{ title: 'One Chain to Rule Them All | Gandalf x Frodo (Lord of the Rings Rap Parody) - WeGoTunes Studio', plays: 13 }, { title: "Shock My Dog I Can't Stop", plays: 9 },
     { title: 'Dire Straits - Money For Nothing (Official Music Video)', plays: 4 }, { title: 'Rush - Tom Sawyer', plays: 2 },
     { title: 'Sweet Pea', plays: 1 }, { title: 'Sixth', plays: 1 }];
   { const H = await setup({}); const r = q => JSON.stringify(H.T.route(q, { voice: true }));
