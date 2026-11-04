@@ -17,7 +17,7 @@ If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11
 - 🌐 **Web search when it's needed** (optional, Tavily). The model decides when it needs fresh information, and Luna tells you when she's looking something up.
 - 👥 **Built for groups.** Each person gets their own wake-word detector and memory. Answers queue instead of cutting each other off, and saying "hey Luna" again interrupts only your own answer.
 - 💬 **Text chat.** Type "Luna, …" in a chat channel for a written answer. She can also say something out loud in the voice channel for you.
-- 🎵 **Voice-controlled music** with smakbot: play, skip, stop, "play the top 10", "what song is this?", and questions about the song that's playing.
+- 🎵 **Voice-controlled music** with smakbot: play, skip, pause, stop, "play the top 10", "what song is this?", and questions about the song that's playing.
 - 👋 **Greets people.** She introduces herself, greets people who join by name (with custom greetings in their own voice if you like), and says goodbye when they leave.
 - 🍎 **Apple Silicon acceleration** for Whisper and the voices; on Linux everything runs in Docker.
 
@@ -83,6 +83,8 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | "play Crazy by Seal" | `!summon` if smakbot isn't in the channel, then `!play Crazy by Seal --for=@you` |
 | "play the top 10" / "play the top twenty songs" / "play our top three hits" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
 | "skip" / "skip this song" | `!skip` |
+| "pause" / "pause the music" | `!pause` |
+| "resume" / "unpause" / "keep playing" | `!resume` |
 | "stop" / "stop the music" | `!stop` (smakbot stops and leaves) |
 | "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
 | "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
@@ -303,7 +305,7 @@ How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music
    AllowPlaylists = yes
    ```
 
-3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `stop_music`, `list_top_songs` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `pause_music`, `resume_music`, `stop_music`, `list_top_songs` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
    ```json
    "luna": { "url": "http://127.0.0.1:8895/mcp" }

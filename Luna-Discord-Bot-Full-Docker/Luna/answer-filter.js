@@ -50,10 +50,16 @@
 // The normal order — search, reasoning, answer — never holds anything, so
 // ordinary answers are not delayed.
 
+const { LLM_TOOL_NAMES } = require('./llm-tools');
+
 const THINK_TAG     = /<\/?think>/i;
 const THINK_TAG_ALL = /<\/?think>/gi;
-// A tool call written out as text (Qwen's <tool_call> / <function=...> format).
-const FAKE_TOOL_CALL = /<\/?tool_call>|<function[=\s>]|<\/function>/i;
+// A tool call written out as text: Qwen's <tool_call> / <function=...> format,
+// or one of Luna's tool names in brackets or called like a function
+// ('[play_music] "lo-fi chill beats"', 'skip_song()'). Bracketed, it would
+// otherwise pass as an ElevenLabs audio tag and the rest be spoken.
+const TOOL_NAME = [...LLM_TOOL_NAMES].join('|');
+const FAKE_TOOL_CALL = new RegExp(`<\\/?tool_call>|<function[=\\s>]|<\\/function>|\\[\\s*(?:${TOOL_NAME})\\b|\\b(?:${TOOL_NAME})\\s*\\(`, 'i');
 
 const hasWords = text => /[\p{L}\p{N}]/u.test(text);
 
