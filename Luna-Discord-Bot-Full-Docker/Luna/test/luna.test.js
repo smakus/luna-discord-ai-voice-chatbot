@@ -761,7 +761,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
   { const H = await setup({ LLM_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, stop_music, list_top_songs, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, pause_music, resume_music, stop_music, list_top_songs, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -813,6 +813,9 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.strictEqual(cmd('play our top jams'), '!playtop 10');
     assert.strictEqual(cmd('play my 5 most played jams'), '!playtop 5');
     assert.strictEqual(cmd('play greatest hits'), '!play greatest hits');
+    for (const q of ['pause.', 'pause the music', 'can you pause the song for a sec?']) assert.strictEqual(cmd(q), '!pause', q);
+    for (const q of ['resume', 'unpause', 'un-pause the music', 'keep playing']) assert.strictEqual(cmd(q), '!resume', q);
+    for (const q of ['pause for effect when you tell the joke', 'resume where we left off in the story']) assert.strictEqual(cmd(q), null, q);
     for (const q of ['play top of the world', 'play favorites', 'play the top 10 songs of 1985']) assert.strictEqual(cmd(q), '!play ' + q.slice(5), q);
     for (const q of ['do you play guitar?', "let's play a game", 'can you play?', 'can you stop talking']) assert.strictEqual(cmd(q), null, q);
     for (const q of ['can you leave?', 'could you please head out', 'you can go now, thanks']) assert.ok(H.T.LEAVE_RE.test(H.T.stripPoliteness(q)), q);

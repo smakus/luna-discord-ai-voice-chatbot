@@ -104,6 +104,13 @@ describe('answer filter rules', () => {
     assert.strictEqual(filter.text('<tool_call>\n<function=web_search>(x)</function>\n</tool_call>'), 'tool-call-as-text');
     assert.deepStrictEqual(spoken, []);
   });
+  it('one of Luna\'s tools in brackets or called like a function (seen live: \'[play_music] "lo-fi chill beats"\') is too', () => {
+    const { filter, spoken } = rig();
+    for (const s of ['[play_music] "lo-fi chill beats"', 'skip_song()', '[ pause_music ]'])
+      assert.strictEqual(filter.text(s), 'tool-call-as-text', s);
+    assert.deepStrictEqual(spoken, []);
+    assert.strictEqual(filter.text('[laughs] Play music is my favorite thing.'), 'ok');
+  });
 });
 
 describe('emoji are not spoken', () => {

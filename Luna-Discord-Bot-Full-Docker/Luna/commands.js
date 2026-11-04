@@ -83,6 +83,20 @@ const SMAKBOT_COMMANDS = [
     // speech reads as ignoring them.
     ack:     () => 'Okay, stopping.',
   },
+  {
+    // "pause", "pause the music"; smakbot keeps its place.
+    name:    'pause',
+    pattern: /^pause(?:\s+(?:the|this|that|it))?(?:\s+(?:song|music|track))?(?:\s+(?:for\s+)?a\s+(?:sec(?:ond)?|minute|moment))?[\s,.!?]*$/i,
+    build:   () => '!pause',
+    ack:     () => 'Pausing.',
+  },
+  {
+    // "resume", "unpause", "keep playing", "resume the music".
+    name:    'resume',
+    pattern: /^(?:resume|un-?pause|keep playing)(?:\s+(?:the|this|that|it))?(?:\s+(?:song|music|track))?[\s,.!?]*$/i,
+    build:   () => '!resume',
+    ack:     () => 'Resuming.',
+  },
 ];
 
 // Polite wrapping around a command: "can you play …", "Luna, could you please

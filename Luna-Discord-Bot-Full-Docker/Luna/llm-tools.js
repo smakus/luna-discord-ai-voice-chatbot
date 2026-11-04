@@ -1,6 +1,6 @@
 // ─── Tools for the LLM ────────────────────────────────────────────────────────
 //
-// Things the LLM can make Luna do: play, skip and stop music through smakbot,
+// Things the LLM can make Luna do: play, skip, pause, resume and stop music through smakbot,
 // look up the most played songs, leave the voice channel, and (from text chat) say something in it. The
 // fixed commands in commands.js ("play …", "skip", "stop", "leave") handle the
 // plain requests instantly, before the LLM; these tools cover everything else ("put on something chill", "we're
@@ -48,6 +48,18 @@ const MUSIC_TOOLS = [
     description: 'Skip the song the music bot is playing now and go to the next one in its queue.',
     inputSchema: { type: 'object', properties: {} },
     run: () => 'Skipped to the next song.',
+  },
+  {
+    name: 'pause_music',
+    description: 'Pause the music bot, keeping its place in the song and queue (resume_music carries on).',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => 'Paused the music.',
+  },
+  {
+    name: 'resume_music',
+    description: 'Carry on playing music the music bot has paused.',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => 'Resumed the music.',
   },
   {
     name: 'stop_music',
@@ -122,6 +134,8 @@ function smakbotCommandFor(tool, args = {}) {
   }
   if (tool === 'skip_song') return { text: '!skip', summon: false };
   if (tool === 'stop_music') return { text: '!stop', summon: false };
+  if (tool === 'pause_music') return { text: '!pause', summon: false };
+  if (tool === 'resume_music') return { text: '!resume', summon: false };
   return null;
 }
 
