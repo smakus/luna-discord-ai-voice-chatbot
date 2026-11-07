@@ -651,6 +651,8 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
     describeSearch,
     // Forget every conversation (Luna left the voice channel).
     forgetConversations: () => conversations.clear(),
+    // One speaker's (or text channel's) conversation, after it went wrong.
+    forgetConversation: key => conversations.delete(key),
   };
 }
 

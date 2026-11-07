@@ -492,10 +492,42 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   { const H = await setup(); H.S.llmScripts = [sse('.'), sse('…')];
     await H.T.handleQuery('q', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Sorry, I lost my train of thought.']); ok('empty twice → "Sorry, I lost my train of thought."'); }
-  { const H = await setup({ LLM_REASONING: 'off' }); H.S.llmRequests.length = 0; H.S.llmScripts = [sse('.')];
+  { const H = await setup({ LLM_REASONING: 'off' }); H.S.llmRequests.length = 0; H.S.llmScripts = [sse('.'), sse('.')];
     await H.T.handleQuery('q', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
-    assert.deepStrictEqual(H.S.llmRequests.map(r => r.reasoning), ['off']); assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Sorry, I lost my train of thought.']);
-    ok('LLM_REASONING=off is sent; an empty answer then is not retried (already off)'); }
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.reasoning), ['off', 'off']); assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Sorry, I lost my train of thought.']);
+    ok('LLM_REASONING=off is sent; an empty answer is asked once more in a fresh conversation (not with reasoning off: already off), then "Sorry…"'); }
+
+  console.log('a broken-down answer → once more in a fresh conversation');
+  { // The live case: twelve messages deep, the model searched, then wrote '[play_music] "…"' instead of answering.
+    const H = await setup({ LLM_REASONING: 'off' }); H.S.llmScript = sse('Hello there.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(80);
+    H.S.llmRequests.length = 0; H.S.tts.length = 0;
+    H.S.llmScripts = [[...msg('Let me look up their hits.'), ...found('Yaz hits', { url: 'u', title: 'Yazoo', content: "Only You and Don't Go were their biggest hits." }),
+                       ...msg('[play_music] "smooth jazz for late night coding"')],
+                      msg("Yaz's biggest hits were Only You and Don't Go.")];
+    await H.T.handleQuery("what was Yaz's hits?", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    const [first, retry] = H.S.llmRequests;
+    assert.ok(first.prev, 'the first pass continued the conversation'); assert.ok(!retry.prev, 'the retry starts a fresh one');
+    assert.ok(retry.input.startsWith("what was Yaz's hits?\n\nWeb search results already found") && /Yazoo: Only You/.test(retry.input), retry.input.slice(0, 120));
+    assert.strictEqual(retry.tools, false, 'no second search');
+    const said = H.S.tts.map(t => t.text);
+    assert.ok(said.includes("Yaz's biggest hits were Only You and Don't Go.") && !said.some(t => /play_music|lost my train/.test(t)), said.join(' | '));
+    assert.ok(H.S.logs.some(l => /answer broke down \(a tool call written as text\) — asking again in a fresh conversation, with the 1 search result set\(s\) already found/.test(l)));
+    H.S.llmRequests.length = 0; H.S.llmScript = sse('Yes.');
+    await H.T.handleQuery('and were they British?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(80);
+    assert.ok(H.S.llmRequests[0].prev, 'the next question continues the fresh conversation');
+    ok('searched, then a tool call written as text → once more in a fresh conversation with the results found → answered; the next question continues from there'); }
+  { const H = await setup({ LLM_REASONING: 'off' });
+    H.S.llmScripts = [[...msg('Let me check.'), ...found('q', { url: 'u', title: 'T', content: 'C' })], msg('[skip_song]')];
+    await H.T.handleQuery('who won?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.strictEqual(H.S.llmRequests.length, 2);
+    assert.deepStrictEqual(H.S.tts.map(t => t.text).filter(t => !BUILTIN.includes(t)), ['Let me check.', 'Sorry, I lost my train of thought.']);
+    ok('nothing said after the search, and the fresh try breaks down too → "Sorry, I lost my train of thought." (not silence), no third try'); }
+  { const H = await setup({ LLM_REASONING: 'off' }); H.S.llmRequests.length = 0;
+    H.S.llmScript = [...msg('Let me check.'), ...found('q', { url: 'u', title: 'T', content: 'C' }), ...msg('It was the Lakers.')];
+    await H.T.handleQuery('who won?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(150);
+    assert.strictEqual(H.S.llmRequests.length, 1); assert.ok(!H.S.logs.some(l => /broke down/.test(l)));
+    ok('a normal searched answer → no retry'); }
   { const H = await setup({ LLM_REASONING: 'low' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
     await H.T.handleQuery('q', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(50);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.reasoning), ['low']); ok('LLM_REASONING=low → sent as reasoning: "low"'); }
