@@ -429,11 +429,24 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     //     search tool -> ask again with search on (same reasoning);
     //   - it thought past LLM_THINK_LIMIT_MS without starting an answer, or
     //     finished with no words at all (it has answered "." after 50 s of
-    //     reasoning) -> ask again with reasoning off, which answers in seconds.
+    //     reasoning) -> ask again with reasoning off, which answers in seconds;
+    //   - otherwise, the answer broke down (a tool call written as text, or
+    //     nothing said after its search) -> forget this person's conversation
+    //     and ask once more in a fresh one, with the search results already
+    //     found. Seen live: twelve messages deep, after searches, Qwen wrote
+    //     '[play_music] "smooth jazz…"' instead of answering, and every later
+    //     question in that conversation built on the mess; the same question
+    //     in a fresh conversation was answered correctly.
+    // If the last pass still broke down: "Sorry, I lost my train of thought.
     const superseded = () => !playback.isCurrent(userId, myGeneration);
     let reasoning     = llm.reasoning;
     let firstSentence = true;
     let reasoningRetried = false;
+    let freshRetried  = false;
+    let brokeDown     = false;      // the last pass's answer broke down
+    // This pass: whether it searched, and how much was said after the search.
+    let searchedThisPass = false;
+    let saidAfterSearch  = 0;
     // Search results seen so far (tool_call.success), so a quick-answer retry
     // can answer from them instead of searching all over again.
     const searchCalls = [];
@@ -442,6 +455,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
     const speak = sentence => {
       console.log('Luna sentence:', sentence);
+      saidAfterSearch++;
       if (firstSentence) {
         firstSentence = false;
         console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
@@ -456,6 +470,8 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     try {
       for (;;) {
         let fakeToolCall = false;
+        searchedThisPass = false;
+        saidAfterSearch  = 0;
         // Search may have been paused by an earlier pass of this question.
         if (useSearch && llm.searchPaused()) useSearch = false;
         const cancel = new AbortController();
@@ -502,6 +518,8 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         // announced and handled as a search; music and leaving are acted on.
         const onTool = t => {
           if (t.type === 'search') {
+            searchedThisPass = true;
+            saidAfterSearch  = 0;
             announceSearchNow();
             filter.event({ type: 'tool_call.start' });
           } else if (t.type === 'search-result') {
@@ -545,12 +563,27 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         }
 
         if (superseded()) break;
-        if (fakeToolCall && !useSearch && llm.canSearch()) {
+        // (Not after the fresh retry: it turned search off on purpose, with the results.)
+        if (fakeToolCall && !useSearch && !freshRetried && llm.canSearch()) {
           console.warn(`[${nameOf(userId)}] [LLM] model tried to search without the search tool — asking again with web search`);
           useSearch = true;
           continue;
         }
-        if (!firstSentence || reasoning === 'off' || reasoningRetried) break;
+        brokeDown = !thinkLimitHit && (fakeToolCall || firstSentence || (searchedThisPass && saidAfterSearch === 0));
+        if (!firstSentence || reasoning === 'off' || reasoningRetried) {
+          // The reasoning retry can't help: a fresh conversation, once.
+          if (!brokeDown || freshRetried || reasoningRetried) break;
+          freshRetried = true;
+          llm.forgetConversation(userId);
+          if (searchCalls.length) {
+            context = 'Web search results already found for this question (answer from these; do not search again):\n' +
+              condenseSearchResults(searchCalls);
+            useSearch = false;
+          }
+          console.warn(`[${nameOf(userId)}] [LLM] answer broke down (${fakeToolCall ? 'a tool call written as text' : 'no words'}) — ` +
+            `asking again in a fresh conversation${searchCalls.length ? `, with the ${searchCalls.length} search result set(s) already found` : ''}`);
+          continue;
+        }
         if (thinkLimitHit) {
           console.warn(`[${nameOf(userId)}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
           sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
@@ -569,7 +602,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         }
       }
 
-      if (firstSentence && !superseded()) {
+      if ((firstSentence || brokeDown) && !superseded()) {
         stopFillers();
         ensureQueued();
         response.add('Sorry, I lost my train of thought.');
