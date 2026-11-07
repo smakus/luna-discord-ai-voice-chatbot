@@ -14,7 +14,7 @@ WORKDIR /whisper
 #
 # v1.9.2 also enables flash attention by default, which the v1.7.x builds did
 # not — a free encoder speedup on any backend that implements it.
-ARG WHISPER_REF=v1.9.2
+ARG WHISPER_REF=v1.9.5
 RUN git clone --depth 1 --branch ${WHISPER_REF} \
       https://github.com/ggerganov/whisper.cpp . && \
     cmake -B build -DCMAKE_BUILD_TYPE=Release && \
