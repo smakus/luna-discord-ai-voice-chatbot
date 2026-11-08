@@ -25,8 +25,10 @@ Environment:
                            which sounds cleaner than -8bit (less rough), at
                            ~4.2 GB of GPU memory instead of 2.5 and 2.7x real
                            time instead of 4.5x
-  CHATTERBOX_TEMPERATURE   sampling temperature (1.1). Higher is livelier;
-                           chosen by ear over 0.8 (the model's default) and 1.0
+  CHATTERBOX_TEMPERATURE   sampling temperature (0.6). Higher is livelier but
+                           warbles and drifts, cloned voices most: 0.6 won a
+                           blind run-off against 1.1 on a clone (3 of 3 lines)
+                           and was as good as 0.8 on another
   CHATTERBOX_PORT          port (8891)
 """
 import os
@@ -58,7 +60,7 @@ class ChatterboxEngine:
     default_voice = os.getenv('CHATTERBOX_VOICE', BUILTIN)
     sample_rate = 24000
     tags = TAGS
-    temperature = float(os.getenv('CHATTERBOX_TEMPERATURE', '1.1'))
+    temperature = float(os.getenv('CHATTERBOX_TEMPERATURE', '0.6'))
     settings = {'temperature': temperature}
 
     def __init__(self):
