@@ -559,7 +559,7 @@ With the backup on, Whisper also spots near misses: a greeting followed by a wor
 
 #### The wake-word log
 
-Docker's log is wiped every time Luna is rebuilt. The wake-word log (`WAKE_LOG_FILE`, `Luna/logs/wake.jsonl` on the host with the Docker Compose setup) is kept, so detection can be looked at per person over days. It has one JSON line per event: `detected` (score), `candidate` and then `confirmed` or `rejected`, `discarded` (ordinary speech: peak score and length), `missed` (caught by the backup; `answered` is `yes`, `late` or `no`) and `near-miss` (`heard`). Every line has the time, the person's display name and their Discord ID. What people said is never written, except a near miss's two words. Writes are small and asynchronous, so they don't slow listening.
+Docker's log is wiped every time Luna is rebuilt. The wake-word log (`WAKE_LOG_FILE`, `Luna/logs/wake.jsonl` on the host with the Docker Compose setup) is kept, so detection can be looked at per person over days. It has one JSON line per event: `detected` (score), `candidate` and then `confirmed` or `rejected` (with what Whisper heard where "hey Luna" should be: a near miss like "hey Lina", else the first three words), `discarded` (ordinary speech: peak score and length), `missed` (caught by the backup; `answered` is `yes`, `late` or `no`) and `near-miss` (`heard`). Every line has the time, the person's display name and their Discord ID. What people said is never written, except a near miss's two words and the first three words of a rejected near-threshold clip. Writes are small and asynchronous, so they don't slow listening.
 
 ```
 {"t":"2026-10-26T21:04:11.902Z","event":"discarded","who":"appa","id":"225160648877801472","peak":0.004,"ms":2140}
