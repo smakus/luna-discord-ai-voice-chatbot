@@ -1,13 +1,14 @@
 // ─── Custom join greetings ────────────────────────────────────────────────────
 //
-// Per-person greetings, optionally in their own ElevenLabs voice, read from a
-// JSON file (GREETINGS_FILE, default local/greetings.json — server-specific,
-// so kept out of git and mounted into the container):
+// Per-person greetings, optionally in their own voice (ElevenLabs, or a
+// Chatterbox clone), read from a JSON file (GREETINGS_FILE, default
+// local/greetings.json — server-specific, so kept out of git and mounted into
+// the container):
 //
 //   {
 //     "371034505349169152": {
 //       "name": "User X",                         // for you; not used
-//       "voice": "OUBnvvuqEKdDWtapoJFn",          // ElevenLabs voice ID (optional)
+//       "voice": "OUBnvvuqEKdDWtapoJFn",          // ElevenLabs voice ID, or "chatterbox:<name>" (optional)
 //       "phrases": ["Oh my, look who is here, {user}. …"]   // one picked at random
 //     }
 //   }
