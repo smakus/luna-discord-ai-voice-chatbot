@@ -7,7 +7,7 @@
 //
 // createAnnouncer(deps) → announcer.
 //   session, playback   voice-session.js, voice-playback.js
-//   fetchTTS, fetchTTSInVoice, checkElevenLabsVoice   tts.js (custom greetings use their own voices)
+//   fetchTTS, fetchTTSInVoice, checkVoice   tts.js (custom greetings use their own voices)
 //   isIgnored(id)       IGNORED_USER_IDS
 //   wakeLabel           the wake phrase as said in the intro ("hey Luna")
 
@@ -23,7 +23,7 @@ const INTRO_MAX_NAMES = 6;
 
 const INTRO_QUEUE_ID = 'luna:intro';
 
-function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, isIgnored, wakeLabel }) {
+function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTTSInVoice, checkVoice, isIgnored, wakeLabel }) {
   // ─── Settings ───────────────────────────────────────────────────────────────
   //
   // When someone joins the voice channel Luna is in, she announces them by
@@ -76,8 +76,9 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
   const lastFarewellAt = new Map(); // userId -> ms timestamp of their last farewell
 
   // Per-person greetings (greetings.js): their own phrases, in their own
-  // ElevenLabs voice if they have one. Same cooldown and switches as the normal
-  // greeting; on any problem with the custom voice, the normal greeting plays.
+  // voice if they have one (an ElevenLabs voice ID, or "chatterbox:<name>" for
+  // a Chatterbox clone). Same cooldown and switches as the normal greeting; on
+  // any problem with the custom voice, the normal greeting plays.
   // GREET_ON_JOIN=regular: everyone gets the regular greeting; the file stays.
   const CUSTOM_GREETINGS = config.GREET_ON_JOIN === 'custom'
     ? loadCustomGreetings(path.resolve(__dirname, config.GREETINGS_FILE), { warn: message => console.warn(message) })
@@ -89,8 +90,8 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     console.log(`[greet] custom greetings for ${[...CUSTOM_GREETINGS].map(([id, g]) => g.name || id).join(', ')}`);
     for (const [id, g] of CUSTOM_GREETINGS) {
       if (!g.voice) continue;
-      checkElevenLabsVoice(g.voice).then(({ name, reason }) => {
-        if (!name) console.warn(`[greet] ${g.name || id}: ElevenLabs voice ${g.voice} unavailable (${reason}) — they'll get the normal greeting`);
+      checkVoice(g.voice).then(({ name, reason }) => {
+        if (!name) console.warn(`[greet] ${g.name || id}: voice ${g.voice} unavailable (${reason}) — they'll get the normal greeting`);
       });
     }
   }

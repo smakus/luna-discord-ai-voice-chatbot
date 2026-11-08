@@ -36,7 +36,7 @@ const nameOf = userId => session.channel?.members?.get(userId)?.displayName || u
 const wakeLog = createWakeLog({ config, fs: require('fs').promises, path: require('path'), console, nameOf });
 
 // Text to speech: ElevenLabs, local voices and the fallback between them (tts.js).
-const { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt } =
+const { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt } =
   createTTS({ config, fetch, console, fs: require('fs') });
 
 // What smakbot is playing (now-playing.js): answers "what song is this?", and
@@ -132,7 +132,7 @@ const answerer = createVoiceAnswerer({
 
 // Her intro, join greetings and farewells (announce.js).
 const announcer = createAnnouncer({
-  config, console, session, playback, fetchTTS, fetchTTSInVoice, checkElevenLabsVoice,
+  config, console, session, playback, fetchTTS, fetchTTSInVoice, checkVoice,
   isIgnored: id => IGNORED_USERS.has(id), wakeLabel: WAKE_LABEL,
 });
 

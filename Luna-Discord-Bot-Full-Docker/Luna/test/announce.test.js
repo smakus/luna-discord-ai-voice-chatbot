@@ -78,7 +78,7 @@ async function inChannel(env = {}) {
     assert.ok(!H.S.voiceTts && /User X/.test(H.said()[0]) && !/look who is here/.test(H.said()[0]) && !H.S.logs.some(l => /custom greetings for/.test(l)));
     ok('GREET_ON_JOIN=regular → the regular greeting for everyone, custom file ignored'); }
   { const H = boot({ ...FAST, GREETINGS_FILE: greetFile(X) }); H.S.badVoices = ['VOICE1']; await H.start(); await H.wait(20);
-    assert.ok(H.S.logs.some(l => /User X: ElevenLabs voice VOICE1 unavailable \(ElevenLabs says 404\)/.test(l))); ok('a voice ID ElevenLabs doesn\'t know → warned at startup'); }
+    assert.ok(H.S.logs.some(l => /User X: voice VOICE1 unavailable \(ElevenLabs says 404\)/.test(l))); ok('a voice ID ElevenLabs doesn\'t know → warned at startup'); }
 
   console.log('join greetings');
   { const H = await inChannel();

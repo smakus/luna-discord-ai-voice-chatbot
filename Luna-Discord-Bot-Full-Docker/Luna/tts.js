@@ -35,7 +35,7 @@
 // while its provider is benched — out of credits, say — since it costs nothing.
 //
 // createTTS({ config, fetch, console, fs }) → { fetchTTS, fetchTTSInVoice,
-// checkElevenLabsVoice, describeTTS, expressivePrompt, pronounce }. fetch,
+// checkVoice, describeTTS, expressivePrompt, pronounce }. fetch,
 // console and fs are passed in so the tests can fake them; without fs there
 // is no phrase cache.
 
@@ -304,12 +304,14 @@ function createTTS({ config, fetch, console, fs = null }) {
       tagPrompt,
       speakable: text => keepTags(text, tags, aliases),
       configured: () => Boolean(url),
-      voiceKey: () => `${name}/${voice || 'default'}/${url}`,
-      async synthesize(text, signal) {
+      url,
+      voiceKey: (as = voice) => `${name}/${as || 'default'}/${url}`,
+      // `as`: another of the server's voices than the configured one (custom greetings).
+      async synthesize(text, signal, as = voice) {
         const res = await request(name, url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ input: text, voice, stream }),
+          body: JSON.stringify({ input: text, voice: as, stream }),
         }, timeoutMs, signal);
         if (!res.ok) {
           const body = await res.text();
@@ -475,31 +477,53 @@ function createTTS({ config, fetch, console, fs = null }) {
     return null;
   }
 
-  // A line in a specific ElevenLabs voice (custom greetings). ElevenLabs only:
-  // resolves null on any problem — not configured, benched (out of credits, bad
-  // key), the request failing — so the caller can fall back to its normal line
-  // in the normal voice instead of this one in the wrong voice.
+  // A voice of its own, for custom greetings: an ElevenLabs voice ID, or
+  // "chatterbox:<name>" for a Chatterbox clone (<name>.wav in its voices
+  // folder). Only that voice: resolves null on any problem — not configured,
+  // benched (out of credits, bad key), the request failing — so the caller can
+  // fall back to its normal line in the normal voice instead of this one in
+  // the wrong voice.
+  const CHATTERBOX_PREFIX = 'chatterbox:';
+  function voiceFor(voiceId) {
+    if (voiceId.startsWith(CHATTERBOX_PREFIX)) return { provider: chatterbox, as: voiceId.slice(CHATTERBOX_PREFIX.length).trim() };
+    return { provider: elevenlabs, as: voiceId };
+  }
+
   async function fetchTTSInVoice(text, voiceId, { signal, cache = false } = {}) {
-    if (!voiceId || !elevenlabs.configured()) return null;
-    const spoken = pronounce(TTS_EXPRESSIVE ? elevenlabs.speakable(text) : stripAudioTags(text));
+    if (!voiceId) return null;
+    const { provider, as } = voiceFor(voiceId);
+    if (!as || !provider.configured()) return null;
+    const spoken = pronounce(TTS_EXPRESSIVE ? provider.speakable(text) : stripAudioTags(text));
     if (!spoken) return null;
     if (cache) {
-      const cached = await phraseCache.get(elevenlabs.voiceKey(voiceId), spoken);
+      const cached = await phraseCache.get(provider.voiceKey(as), spoken);
       if (cached) return cached;
     }
-    if (isBenched(elevenlabs)) return null;
+    if (isBenched(provider)) return null;
     try {
-      const stream = await elevenlabs.synthesize(spoken, signal, voiceId);
-      return cache ? phraseCache.store(elevenlabs.voiceKey(voiceId), spoken, stream) : stream;
+      const stream = await provider.synthesize(spoken, signal, as);
+      return cache ? phraseCache.store(provider.voiceKey(as), spoken, stream) : stream;
     } catch (err) {
       if (!(err instanceof TTSError && err.kind === 'cancelled')) console.error(`[tts] voice ${voiceId}: ${err.message}`);
       return null;
     }
   }
 
-  // Whether an ElevenLabs voice ID exists (no credits used): its name, or null
-  // with the reason. Unknown (e.g. no network) resolves { name: null, reason }.
-  async function checkElevenLabsVoice(voiceId) {
+  // Whether a custom greeting's voice exists (no credits used): its name, or
+  // null with the reason. Unknown (e.g. no network) resolves { name: null, reason }.
+  async function checkVoice(voiceId) {
+    const { provider, as } = voiceFor(voiceId);
+    if (provider === chatterbox) {
+      if (!as) return { name: null, reason: 'no voice name after "chatterbox:"' };
+      if (!chatterbox.configured()) return { name: null, reason: 'Chatterbox is not configured (CHATTERBOX_URL)' };
+      try {
+        const res = await request('Chatterbox', new URL('/health', chatterbox.url).href, {}, CHATTERBOX_TIMEOUT_MS);
+        const voices = res.ok ? (await res.json()).voices || [] : [];
+        return voices.includes(as) ? { name: as } : { name: null, reason: res.ok ? `Chatterbox has no voice "${as}"` : `Chatterbox says ${res.status}` };
+      } catch (err) {
+        return { name: null, reason: err.message };
+      }
+    }
     if (!elevenlabs.configured()) return { name: null, reason: 'ElevenLabs is not configured' };
     try {
       const res = await request('ElevenLabs', `${ELEVENLABS_BASE_URL}/v1/voices/${encodeURIComponent(voiceId)}`,
@@ -511,7 +535,7 @@ function createTTS({ config, fetch, console, fs = null }) {
     }
   }
 
-  return { fetchTTS, fetchTTSInVoice, checkElevenLabsVoice, describeTTS, expressivePrompt, pronounce };
+  return { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt, pronounce };
 }
 
 module.exports = { createTTS, stripAudioTags, createLimiter };

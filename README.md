@@ -100,7 +100,7 @@ Setting the two bots up to talk to each other is covered in [MusicBot integratio
 
 ### Custom greetings
 
-A few people can get their own join greeting, optionally in their own ElevenLabs voice. Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
+A few people can get their own join greeting, optionally in their own voice (ElevenLabs, or a Chatterbox clone). Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
 
 ```json
 {
@@ -115,9 +115,10 @@ A few people can get their own join greeting, optionally in their own ElevenLabs
 - Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
 - `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
 - `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). The voice must be in your own ElevenLabs voices: add Voice Library voices to "My Voices" first. Leave it out to use Luna's normal voice.
+- Or `"voice": "chatterbox:<name>"` for a [Chatterbox](#chatterbox-turbo-apple-silicon) clone: put 10–20 seconds of clear speech as `<name>.wav` in Chatterbox's voices folder (no restart needed). It works with or without ElevenLabs, as long as Chatterbox is running.
 - `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
-- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down, out of credits, unknown voice), they get the normal greeting in the normal voice.
-- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voice IDs ElevenLabs doesn't know (checking costs no credits).
+- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down or out of credits, Chatterbox not running, unknown voice), they get the normal greeting in the normal voice.
+- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voices ElevenLabs or Chatterbox doesn't know (checking costs no credits).
 
 ### Announcements
 

@@ -9,7 +9,8 @@ let calls, logs, script;
 const body = s => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(s)); c.close(); } });
 const res = (status, payload, audio) => () => ({ ok: status < 300, status,
   text: async () => typeof payload === 'string' ? payload : JSON.stringify(payload), body: body(audio || '') });
-const fakeFetch = async (url, init) => {
+const fakeFetch = async (url, init = {}) => {
+  if (url.endsWith('/health')) { calls.push({ who: 'cb-health', url }); return { ok: true, status: 200, json: async () => ({ voices: ['default', 'tupac'] }) }; }
   const who = url.includes('kokoro') ? 'kokoro' : url.includes('qwen') ? 'qw' : url.includes('chatterbox') ? 'cb' : 'el';
   const sent = JSON.parse(init.body); calls.push({ who, url, voice: sent.voice, stream: sent.stream, text: sent.text ?? sent.input, model: sent.model_id, key: init.headers['xi-api-key'] });
   const r = script[who].length > 1 ? script[who].shift() : script[who][0];
@@ -242,6 +243,24 @@ const keepAlive = setInterval(() => {}, 1000);
   t = load(BASE); assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'V'), null); assert.strictEqual(calls.length, 0); say('ElevenLabs not configured → null');
   t = load(EL, { el: [res(402, { detail: { code: 'insufficient_credits' } }), res(200, '', 'EL-AUDIO')] }); await t.fetchTTS('One.');
   calls = []; assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'V'), null); assert.strictEqual(calls.length, 0); say('ElevenLabs benched (out of credits) → null, no request');
+  real('a Chatterbox clone (custom greetings: "chatterbox:<name>")');
+  t = load({ ...EL, ...CB }); calls = [];
+  assert.strictEqual(await read(await t.fetchTTSInVoice('[laugh] Ay yo, it\'s slawn!', 'chatterbox:tupac')), 'CB-AUDIO');
+  assert.deepStrictEqual(calls.map(c => [c.who, c.voice, c.text]), [['cb', 'tupac', "[laugh] Ay yo, it's slawn!"]]);
+  say('"chatterbox:tupac" → Chatterbox with voice tupac (its tags kept), no ElevenLabs request');
+  t = load({ ...EL, ...CB }, { el: [res(402, { detail: { code: 'insufficient_credits' } })] }); await t.fetchTTS('Fill the bench.'); calls = [];
+  assert.strictEqual(await read(await t.fetchTTSInVoice('Hi.', 'chatterbox:tupac')), 'CB-AUDIO'); assert.ok(!calls.some(c => c.who === 'el'));
+  say('ElevenLabs out of credits → a Chatterbox greeting voice still works');
+  t = load(EL); calls = []; assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'chatterbox:tupac'), null); assert.strictEqual(calls.length, 0);
+  say('Chatterbox not configured → null (the normal greeting plays)');
+  t = load({ ...EL, ...CB }, { cb: [res(500, 'boom')] }); assert.strictEqual(await t.fetchTTSInVoice('Hi.', 'chatterbox:tupac'), null);
+  assert.ok(!calls.some(c => c.who === 'kokoro'), 'no other voice tried'); say('Chatterbox fails → null, no fallback voice');
+  t = load({ ...EL, ...CB });
+  assert.deepStrictEqual(await t.checkVoice('chatterbox:tupac'), { name: 'tupac' });
+  assert.deepStrictEqual(await t.checkVoice('chatterbox:nobody'), { name: null, reason: 'Chatterbox has no voice "nobody"' });
+  assert.match((await t.checkVoice('chatterbox:')).reason, /no voice name/);
+  say('checkVoice: a Chatterbox clone is looked up in its /health voices');
+
   real('NAME_PRONUNCIATIONS');
   t = load({ ...BASE, NAME_PRONUNCIATIONS: 'smakus=smack-us|Jo.el=Jo-ell' });
   for (const [i, o] of [['Hey smakus!', 'Hey smack-us!'], ['SMAKUS, welcome back.', 'smack-us, welcome back.'], ["That's Smakus's song.", "That's smack-us's song."],
