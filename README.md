@@ -513,7 +513,7 @@ The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER
 | `CHATTERBOX_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8891/v1/audio/speech` |
 | `CHATTERBOX_VOICE` | server default (`default`) | `default` is the built-in voice; any other name is a clone in the voices folder |
 | `CHATTERBOX_STREAM` | `false` | `true` plays each sentence while it renders. Too slow for Chatterbox while the LLM writes: sentences get cut off |
-| `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-fp16` / `1.1` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too). A higher temperature sounds livelier; 1.1 was preferred by ear over 0.8 and 1.0 |
+| `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-fp16` / `0.6` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too). A higher temperature sounds livelier but warbles and drifts, cloned voices most; 0.6 won a blind comparison with 1.1 |
 | `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.3` | Set when starting `qwen3-tts-metal.sh`. Each sentence is rendered on its own; a lower temperature keeps the delivery steadier from one sentence to the next, a higher one varies it more |
 | `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
 | `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
