@@ -581,8 +581,14 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('mid-sentence "so anyway, hey Luna, what\'s…" → question after the wake phrase'); }
   { const H = await wakeRig(); await H.utter(0.15, 'I was looking at the lunar eclipse last night');
     assert.strictEqual(H.S.llmRequests.length, 0);
-    const rej = H.S.logs.find(l => /wake candidate rejected/.test(l)); assert.ok(rej && /\(9 words\)/.test(rej) && !/eclipse/.test(rej), rej);
-    ok('candidate whose transcript has no "Luna" ("lunar" doesn\'t count) → rejected; log gives a word count, not what was said'); }
+    const rej = H.S.logs.find(l => /wake candidate rejected/.test(l)); assert.ok(rej && /\(9 words; began "I was looking"\)/.test(rej) && !/eclipse/.test(rej), rej);
+    assert.deepStrictEqual(H.S.wakeLog.filter(e => e.event === 'rejected').map(e => e.heard), ['I was looking']);
+    ok('candidate whose transcript has no "Luna" ("lunar" doesn\'t count) → rejected; the log has a word count and the first three words, not the rest'); }
+  { const H = await wakeRig(); await H.utter(0.33, 'Hey Lina, play Brick in the Wall by Pink Floyd.');
+    assert.strictEqual(H.S.llmRequests.length, 0, 'still not answered (logging only)');
+    assert.ok(H.S.logs.some(l => /wake candidate rejected — no "Luna" in the transcript \(10 words; near miss "Hey Lina"\)/.test(l)), H.S.logs.filter(l => /rejected/.test(l)).join(' | '));
+    assert.deepStrictEqual(H.S.wakeLog.filter(e => e.event !== 'discarded').map(e => [e.event, e.heard]), [['candidate', undefined], ['rejected', 'Hey Lina'], ['near-miss', 'Hey Lina']]);
+    ok('a near-threshold "Hey Lina, play…" → still rejected, but logged as a near miss "Hey Lina" (and counted in wakestats)'); }
   { const H = await wakeRig(); await H.utter(0.05, "Hey Luna what's the weather");
     assert.strictEqual(H.S.llmRequests.length, 0); assert.ok(!H.S.logs.some(l => /Processing \d+ms utterance/.test(l)));
     assert.ok(H.S.logs.some(l => /utterance discarded — no wake word \(\d+ms, peak score 0\.050/.test(l)));

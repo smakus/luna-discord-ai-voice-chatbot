@@ -24,7 +24,7 @@ const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
 const { QUICK_PROMPT } = require('./prompt');
 const { parseWaits } = require('./config');
-const { isBareWake, confirmWake, isJunkTranscript } = require('./voice-input');
+const { isBareWake, confirmWake, isJunkTranscript, nearWakePhrase } = require('./voice-input');
 const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
 function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying,
@@ -171,9 +171,16 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     const confirmed = confirmWake(transcript, { detected: wakeDetected, candidate: wakeCandidate });
     if (!confirmed.accepted) {
       if (wakeCandidate) {
+        // What Whisper heard where "hey Luna" should be, so a mishearing
+        // ("hey Lina") shows up: the near-miss words if there are any, else
+        // the first three words — never the rest of what they said.
+        const near = nearWakePhrase(transcript);
+        const words = transcript.trim().split(/\s+/);
+        const heard = near || words.slice(0, 3).join(' ');
         console.log(`[${nameOf(userId)}] [oww] wake candidate rejected — ${confirmed.reason} ` +
-          `(${transcript.split(/\s+/).length} words)`);
-        wakeLog.record('rejected', userId, { reason: confirmed.reason });
+          `(${words.length} words; ${near ? 'near miss' : 'began'} "${heard}")`);
+        wakeLog.record('rejected', userId, { reason: confirmed.reason, heard, ...(near && { near: true }) });
+        if (near) wakeLog.record('near-miss', userId, { heard: near });
       }
       return;
     }
