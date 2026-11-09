@@ -92,6 +92,7 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
 | "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
 
+- **When music is already playing,** she says *"Adding … to the queue"* instead of *"Okay, playing …"*, since smakbot plays it after what's on now.
 - **`--for=@you`** credits the song to you instead of Luna, in smakbot's "Now playing", its status and Luna's own "what song is this?". It's sent without pinging you.
 - **"Play top of the world"** is still a song search. Only "the top N" / "most played" / "my favorites" mean the top-songs list.
 - **When smakbot joins or leaves,** Luna says so briefly: *"smakbot has joined."*

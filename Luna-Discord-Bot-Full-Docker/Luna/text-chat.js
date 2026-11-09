@@ -8,7 +8,7 @@
 // a channel go one at a time so they don't tangle that memory. The voice
 // channel isn't needed.
 
-const { route, isSayRequest } = require('./commands');
+const { route, musicAck, isSayRequest } = require('./commands');
 const { TEXT_TOOL_NAMES } = require('./llm-tools');
 
 // "Luna, …", "hey Luna …", "Luna: …" at the start ("lunar" does not count).
@@ -89,8 +89,10 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     const what = route(question, { voice: false });
     // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
     if (what.type === 'music') {
+      const np = what.command.queuedAck && nowPlaying?.enabled ? await nowPlaying.get(message.guild?.id || '') : null;
       await sendCommand(channel, what.command, userId);
-      if (what.command.ack) await reply(message, what.command.ack).catch(() => {});
+      const ack = musicAck(what.command, np);
+      if (ack) await reply(message, ack).catch(() => {});
       return;
     }
     // "Say … in the voice channel": the model only writes the line; Luna speaks

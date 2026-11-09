@@ -56,6 +56,7 @@ const SMAKBOT_COMMANDS = [
       `(?:\\s+(?:songs?|tracks?|hits?|jams?))?[\\s,.!?]*$`, 'i'),
     build:   n => `!playtop ${topCount(n)}`,
     ack:     n => `Okay, playing the top ${topCount(n)}.`,
+    queued:  n => `Adding the top ${topCount(n)} to the queue.`,
     summon:  true,
   },
   {
@@ -64,6 +65,8 @@ const SMAKBOT_COMMANDS = [
     requiresArg: true,
     build:       arg => `!play ${arg}`,
     ack:         arg => `Okay, playing ${arg}.`,
+    // When something is already playing, smakbot queues it after that.
+    queued:      arg => `Adding ${arg} to the queue.`,
     // Only play summons. !skip and !stop with no music bot in the channel are
     // no-ops, and dragging smakbot in to receive them would be surprising.
     summon:      true,
@@ -197,13 +200,23 @@ function route(question, { voice }) {
   const cmd = extractSmakbotCommand(question);
   // fixedAck: the ack doesn't name what was asked for ("Skipping."), so it's
   // worth keeping rendered; "Okay, playing <song>." isn't.
-  if (cmd) return { type: 'music', command: { text: cmd.build(cmd.arg), summon: !!cmd.summon, ack: cmd.ack(cmd.arg), fixedAck: cmd.ack.length === 0 } };
+  // queuedAck: what she says instead when music is already playing
+  // (musicAck), for the commands that add to smakbot's queue.
+  if (cmd) return { type: 'music', command: { text: cmd.build(cmd.arg), summon: !!cmd.summon, ack: cmd.ack(cmd.arg),
+                                              queuedAck: cmd.queued ? cmd.queued(cmd.arg) : null, fixedAck: cmd.ack.length === 0 } };
   if (voice && LEAVE_RE.test(bare(question))) return { type: 'leave' };
   if (!voice && isSayRequest(question)) return { type: 'say' };
   if (isNowPlayingQuestion(question)) return { type: 'now-playing' };
   const top = topSongsQuestion(question);
   if (top) return { type: 'top-songs', count: top.count };
   return { type: 'ask' };
+}
+
+// What Luna says about a music command: "Adding … to the queue" instead of
+// "Okay, playing …" when smakbot is already playing (or paused on) something,
+// going by its now-playing answer `np` from just before the command.
+function musicAck(command, np) {
+  return command.queuedAck && np?.playing ? command.queuedAck : command.ack;
 }
 
 // The smakbot command for one of the LLM's music tool calls, in the same
@@ -237,6 +250,6 @@ async function sendSmakbotCommand(channel, command, { musicBotPresent = false, c
 }
 
 module.exports = {
-  route, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest,
+  route, musicAck, toolCommand, sendSmakbotCommand, extractSmakbotCommand, stripPoliteness, isSayRequest,
   LEAVE_RE, LEAVE_PHRASES,
 };
