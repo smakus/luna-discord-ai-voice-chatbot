@@ -864,6 +864,27 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.sends.includes('!summon') && H.S.sends.includes('!playtop 5') && H.S.llmRequests.length === 0, H.S.sends.join(' | '));
     assert.strictEqual(H.S.tts[0].text, 'Okay, playing the top 5.');
     ok('"play the top 5" → !summon, !playtop 5, "Okay, playing the top 5." (no LLM)'); }
+  console.log('"adding … to the queue" when music is already playing');
+  { const H = await setup({}); H.S.nowPlaying = { playing: true, paused: false, title: 'Seal - Crazy' };
+    await H.T.handleQuery('play Kiss From a Rose', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Adding Kiss From a Rose to the queue.'); assert.ok(H.S.sends.some(m => m.startsWith('!play Kiss From a Rose')));
+    H.S.tts.length = 0; await H.wait(2100);
+    await H.T.handleQuery('play the top 5', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Adding the top 5 to the queue.');
+    ok('smakbot already playing → "Adding Kiss From a Rose to the queue." / "Adding the top 5 to the queue."'); }
+  { const H = await setup({}); H.S.nowPlaying = { playing: true, paused: true, title: 'Seal - Crazy' };
+    await H.T.handleQuery('play Kiss From a Rose', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Adding Kiss From a Rose to the queue.'); ok('paused on a song counts as playing → "adding … to the queue"'); }
+  { const H = await setup({}); H.S.nowPlaying = { playing: false };
+    await H.T.handleQuery('play Kiss From a Rose', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Okay, playing Kiss From a Rose.'); ok('nothing playing → "Okay, playing …", as before'); }
+  { const H = await setup({}); H.S.musicDown = true;
+    await H.T.handleQuery('play Kiss From a Rose', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Okay, playing Kiss From a Rose.'); ok('smakbot\'s status unreachable → "playing", as before'); }
+  { const H = await setup({}); H.S.nowPlaying = { playing: true, title: 'Seal - Crazy' };
+    await H.T.handleQuery('skip', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Skipping.'); assert.ok(!H.S.nowPlayingAsked, 'not asked for other commands');
+    ok('"skip" etc. → unchanged, smakbot not asked'); }
   { const H = await setup({}); const id = '189231634736873473'; H.put(id, 'A'); await H.wait(10);
     await H.T.handleQuery('play some jazz', H.S.lastConnection, H.text, Date.now(), id); await H.until(() => H.S.sends.some(m => /^!play /.test(m?.content ?? m)));
     const credited = H.S.sends.find(m => m?.content === `!play some jazz --for=<@${id}>`);
@@ -1019,6 +1040,8 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('is Tom Sawyer in our top ten?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('list_top_songs')));
     ok('LLM tool list_top_songs: offered, answers the model with the list from smakbot, plays nothing ("is Tom Sawyer in our top ten?")'); }
+  { const H = await textRig(); H.S.nowPlaying = { playing: true, title: 'Seal - Crazy' }; await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0].content ?? H.S.replies[0], 'Adding some jazz to the queue.'); ok('typed "Luna, play some jazz" while music plays → "Adding some jazz to the queue."'); }
   { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
     assert.ok(H.S.sends.includes('!play some jazz') && H.S.llmRequests.length === 0); ok('"Luna, play …" in text → smakbot command, no LLM'); }
   { const H = await textRig(); H.S.nowPlaying = { playing: true, paused: true, title: 'Crazy', requested_by: 'smakus' };

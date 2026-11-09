@@ -19,7 +19,7 @@
 //   nowPlaying                        now-playing.js: "what song is this?"
 
 const path = require('path');
-const { route, LEAVE_PHRASES } = require('./commands');
+const { route, musicAck, LEAVE_PHRASES } = require('./commands');
 const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
 const { QUICK_PROMPT } = require('./prompt');
@@ -229,9 +229,14 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         playback.playSound(CHIME_PATH, connection).catch(() => {});
       }
 
+      // Whether something is already playing, asked before the command
+      // changes it: "Adding … to the queue" rather than "playing" then.
+      const np = what.command.queuedAck && nowPlaying?.enabled
+        ? await nowPlaying.get(session.channel?.guild?.id || '') : null;
       await sendCommand(channel, what.command, userId);
 
-      if (what.command.ack) playback.say(what.command.ack, { connection, userId, generation: musicGeneration, cache: !!what.command.fixedAck });
+      const ack = musicAck(what.command, np);
+      if (ack) playback.say(ack, { connection, userId, generation: musicGeneration, cache: !!what.command.fixedAck });
       return;
     }
 
