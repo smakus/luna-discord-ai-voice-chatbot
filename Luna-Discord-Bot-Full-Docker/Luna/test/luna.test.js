@@ -598,6 +598,11 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     const rej = H.S.logs.find(l => /wake candidate rejected/.test(l)); assert.ok(rej && /\(9 words; began "I was looking"\)/.test(rej) && !/eclipse/.test(rej), rej);
     assert.deepStrictEqual(H.S.wakeLog.filter(e => e.event === 'rejected').map(e => e.heard), ['I was looking']);
     ok('candidate whose transcript has no "Luna" ("lunar" doesn\'t count) → rejected; the log has a word count and the first three words, not the rest'); }
+  { const H = await wakeRig(); H.S.llmScript = sse('They are on.'); await H.utter(0.417, 'Eluna, are the lights on in the kitchen?');
+    await H.until(() => H.S.llmRequests.length > 0);
+    assert.deepStrictEqual(H.S.llmRequests.map(r => r.input), ['are the lights on in the kitchen?']);
+    assert.ok(H.S.logs.some(l => /wake candidate confirmed by Whisper/.test(l)));
+    ok('the live miss: a 0.417 candidate Whisper wrote as "Eluna, are the…" → confirmed and answered'); }
   { const H = await wakeRig(); await H.utter(0.33, 'Hey Lina, play Brick in the Wall by Pink Floyd.');
     assert.strictEqual(H.S.llmRequests.length, 0, 'still not answered (logging only)');
     assert.ok(H.S.logs.some(l => /wake candidate rejected — no "Luna" in the transcript \(10 words; near miss "Hey Lina"\)/.test(l)), H.S.logs.filter(l => /rejected/.test(l)).join(' | '));
