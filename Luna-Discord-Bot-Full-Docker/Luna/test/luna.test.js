@@ -496,6 +496,20 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('q', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.deepStrictEqual(H.S.llmRequests.map(r => r.reasoning), ['off', 'off']); assert.deepStrictEqual(H.S.tts.map(t => t.text), ['Sorry, I lost my train of thought.']);
     ok('LLM_REASONING=off is sent; an empty answer is asked once more in a fresh conversation (not with reasoning off: already off), then "Sorry…"'); }
+  console.log('sampling settings sent with every request');
+  { const H = await setup({ LM_TEMPERATURE: '0.7', LM_TOP_P: '0.8', LM_TOP_K: '20', LM_MIN_P: '0', LM_REPEAT_PENALTY: '1.05' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(80);
+    assert.deepStrictEqual(H.S.llmRequests[0].sampling, { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05 });
+    assert.ok(H.S.logs.some(l => /\[LLM\] sampling sent with every request: temperature 0\.7, top_p 0\.8, top_k 20, min_p 0, repeat_penalty 1\.05/.test(l)));
+    ok('LM_TEMPERATURE, LM_TOP_P, LM_TOP_K, LM_MIN_P, LM_REPEAT_PENALTY → sent with the request (min_p 0 included), listed at startup'); }
+  { const H = await setup({ LM_TEMPERATURE: '0.6' }); H.S.llmRequests.length = 0; H.S.llmScripts = [sse('.'), sse('Hello.')];
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(120);
+    assert.ok(H.S.llmRequests.length === 2 && H.S.llmRequests.every(r => JSON.stringify(r.sampling) === '{"temperature":0.6}'), JSON.stringify(H.S.llmRequests.map(r => r.sampling)));
+    ok('only the ones set are sent, on retries too'); }
+  { const H = await setup({}); H.S.llmRequests.length = 0; H.S.llmScript = sse('Hi.');
+    await H.T.handleQuery('hi', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(80);
+    assert.deepStrictEqual(H.S.llmRequests[0].sampling, {}); assert.ok(!H.S.logs.some(l => /sampling sent/.test(l)));
+    ok('none set → none sent (LM Studio\'s own settings), as before'); }
 
   console.log('a broken-down answer → once more in a fresh conversation');
   { // The live case: twelve messages deep, the model searched, then wrote '[play_music] "…"' instead of answering.
