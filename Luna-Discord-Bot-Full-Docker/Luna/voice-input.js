@@ -33,12 +33,16 @@
 // The trailing \b is load-bearing: without it "lunar eclipse" matches and gets
 // mangled into "eclipse". So is the (?!['’]) after it: "Luna's favorite food?"
 // is a question about her, not the wake word followed by "'s favorite food?".
-const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona)\b(?!['’])[\s,.]*/i;
+// "Eluna"/"Aluna" is "hey Luna" run together into one word, as Whisper has
+// written it ("Eluna, are the…"); not a word of its own, so it counts as the
+// whole phrase.
+const WAKE_RE = /^\s*(?:hey|hay|hi)?[\s,.]*(?:luna|loona|runa|roona|eluna|aluna)\b(?!['’])[\s,.]*/i;
 // The same phrase anywhere in a transcript ("so anyway, hey Luna, what's…").
-const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona)\b(?!['’])[\s,.!?]*/i;
-// Mid-sentence, only the full "hey Luna" (or "okay Luna"): "Luna" alone there
-// is more likely part of the question ("what does luna mean in Spanish").
-const WAKE_PHRASE_RE = /\b(?:hey|hay|hi|okay|ok)[\s,.]*(?:luna|loona|runa|roona)\b(?!['’])[\s,.!?]*/i;
+const WAKE_ANYWHERE_RE = /(?:\b(?:hey|hay|hi)[\s,.]*)?\b(?:luna|loona|runa|roona|eluna|aluna)\b(?!['’])[\s,.!?]*/i;
+// Mid-sentence, only the full "hey Luna" (or "okay Luna", or "Eluna"): "Luna"
+// alone there is more likely part of the question ("what does luna mean in
+// Spanish").
+const WAKE_PHRASE_RE = /\b(?:(?:hey|hay|hi|okay|ok)[\s,.]*(?:luna|loona|runa|roona)|eluna|aluna)\b(?!['’])[\s,.!?]*/i;
 
 // Close to the wake phrase but not it: "hey Lena", "hi Luma" — a greeting and
 // then a word within two letters of "luna". What Whisper writes when it

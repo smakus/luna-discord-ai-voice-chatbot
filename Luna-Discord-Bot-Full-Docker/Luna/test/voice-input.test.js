@@ -170,6 +170,14 @@ describe('confirmWake', () => {
     assert.deepStrictEqual(v.confirmWake("Hey Luna, what's Luna's favorite food?", { detected: true }), { accepted: true, query: "what's Luna's favorite food?" });
     assert.strictEqual(v.WAKE_PHRASE_RE.test("hey Luna's here"), false);
   });
+  it('"Eluna" / "Aluna" (Whisper running "hey Luna" together) count as "hey Luna"', () => {
+    assert.deepStrictEqual(v.confirmWake('Eluna, are the lights on?', { candidate: true }), { accepted: true, query: 'are the lights on?' });
+    assert.deepStrictEqual(v.confirmWake('Aluna, play some jazz.', {}), { accepted: true, query: 'play some jazz.' });
+    assert.deepStrictEqual(v.confirmWake('So anyway, Eluna, what time is it?', { detected: true }), { accepted: true, query: 'what time is it?' });
+    assert.strictEqual(v.stripWakeWord('Eluna, skip.'), 'skip.');
+    assert.strictEqual(v.isBareWake('Eluna.'), true);
+    for (const t of ['Valuna is a town', 'the Selunas went home', 'Eluna\'s idea']) assert.strictEqual(v.WAKE_PHRASE_RE.test(t), false, t);
+  });
 });
 
 describe('decideSilentSpeaker', () => {
