@@ -521,6 +521,7 @@ The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER
 | `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
 | `LUNA_TIMEZONE` | `TZ`, else `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
 | `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
+| `LM_TEMPERATURE` / `LM_TOP_P` / `LM_TOP_K` / `LM_MIN_P` / `LM_REPEAT_PENALTY` | unset | Sampling settings sent with every request, overriding what LM Studio has saved for the model (each one only if set). Use the model card's values for its non-thinking mode, e.g. Qwen 0.7 / 0.8 / 20 / 0, and a repeat penalty around 1.05 against endless repetition. Sent with the request they can't be lost to an LM Studio update, and LM Studio's request history shows them |
 | `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
 | `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
 | `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |

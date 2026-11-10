@@ -130,6 +130,19 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
   // empty = the model's own default, which for some models is the maximum).
   const LLM_REASONING = config.LLM_REASONING.toLowerCase();
 
+  // Sampling settings that are set (LM_TEMPERATURE, LM_TOP_P, …), sent with
+  // every request. LM Studio's saved settings for a model can be lost — an
+  // update on Nov 1 dropped them, and with no repetition penalty Qwen looped —
+  // and nothing shows which ones a request really ran with. Sent with the
+  // request, they always apply, and LM Studio's request history records them.
+  const SAMPLING = Object.fromEntries([
+    ['temperature', 'LM_TEMPERATURE'], ['top_p', 'LM_TOP_P'], ['top_k', 'LM_TOP_K'],
+    ['min_p', 'LM_MIN_P'], ['repeat_penalty', 'LM_REPEAT_PENALTY'],
+  ].filter(([, name]) => config[name] !== null && config[name] !== undefined).map(([key, name]) => [key, config[name]]));
+  if (Object.keys(SAMPLING).length) {
+    console.log(`[LLM] sampling sent with every request: ${Object.entries(SAMPLING).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  }
+
   // The time zone of "today" in the system prompt (see prompt.js). An IANA name;
   // containers run in UTC, which turns evenings in the Americas into tomorrow.
   const LUNA_TIMEZONE = (() => {
@@ -436,6 +449,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
     };
     const requestSignal = AbortSignal.any([idle.signal, AbortSignal.timeout(LM_TIMEOUT_MS), ...(signal ? [signal] : [])]);
     if (reasoning) body.reasoning = reasoning;
+    Object.assign(body, SAMPLING);
 
     try {
       let res;

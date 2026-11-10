@@ -98,6 +98,12 @@ const SETTINGS = [
   { name: 'LM_USE_NAMES', type: 'bool', default: true },
   { name: 'LLM_REASONING', type: 'string' },
   { name: 'LLM_THINK_LIMIT_MS', type: 'int', default: 60000, min: 0 },
+  // Sampling sent with every request (unset: LM Studio's own settings for the model).
+  { name: 'LM_TEMPERATURE', type: 'float', min: 0, max: 2 },
+  { name: 'LM_TOP_P', type: 'float', min: 0, max: 1 },
+  { name: 'LM_TOP_K', type: 'int', min: 0 },
+  { name: 'LM_MIN_P', type: 'float', min: 0, max: 1 },
+  { name: 'LM_REPEAT_PENALTY', type: 'float', min: 0 },
   { name: 'LM_FLAVOR_PROMPT', type: 'string' },
   { name: 'LM_FLAVOR_CHANCE', type: 'float', default: 0.15, min: 0, max: 1 },
   { name: 'LM_MEMORY_TTL_MS', type: 'int', default: 3600000, min: 0 },
