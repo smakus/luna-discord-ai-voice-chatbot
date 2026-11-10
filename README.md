@@ -685,7 +685,7 @@ The tests are excluded from the Docker image.
 
 ### LLM benchmark
 
-`Luna/bench/` compares the models in LM Studio on what matters to Luna: how soon she starts speaking, whether she is right, whether the answer can be read aloud as is, and whether she sounds like herself. It asks the model that is loaded in LM Studio 21 questions (`bench/questions.json`): small talk, facts, mental math, searches, opinions, a "hey Luna" left in the question, and today's weekday. The model gets the exact system prompt Luna sends (`prompt.js`), built from the personality and time zone in `Luna/.env`, and the same search plugin. Each question is a fresh conversation, asked 3 times with reasoning off and 3 times with it on.
+`Luna/bench/` compares the models in LM Studio on what matters to Luna: how soon she starts speaking, whether she is right, whether the answer can be read aloud as is, and whether she sounds like herself. It asks the model that is loaded in LM Studio 21 questions (`bench/questions.json`): small talk, facts, mental math, searches, opinions, a "hey Luna" left in the question, and today's weekday. The model gets the exact system prompt Luna sends (`prompt.js`), built from the personality and time zone in `Luna/.env`, the same search plugin, and the sampling settings she sends (`LM_TEMPERATURE` …, when set). Each question is a fresh conversation, asked 3 times with reasoning off and 3 times with it on.
 
 Load a model in LM Studio, then from `Luna/`:
 

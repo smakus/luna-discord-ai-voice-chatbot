@@ -62,7 +62,14 @@ async function main() {
         server_url: `https://mcp.tavily.com/mcp/?tavilyApiKey=${config.TAVILY_API_KEY}`, ...allowed } : null;
 
   const prompt = systemPrompt({ config, timeZone, search: offerSearch && !!integration && config.ANNOUNCE_SEARCH });
-  const ask = (input, reasoning) => askOnce({ url, headers, model, input, prompt, reasoning,
+  // The sampling settings Luna sends (LM_TEMPERATURE, …; answer-llm.js), so
+  // the model is measured as she runs it. None set: LM Studio's own.
+  const sampling = Object.fromEntries([
+    ['temperature', 'LM_TEMPERATURE'], ['top_p', 'LM_TOP_P'], ['top_k', 'LM_TOP_K'],
+    ['min_p', 'LM_MIN_P'], ['repeat_penalty', 'LM_REPEAT_PENALTY'],
+  ].filter(([, name]) => config[name] !== null && config[name] !== undefined).map(([key, name]) => [key, config[name]]));
+  if (Object.keys(sampling).length) console.log(`sampling: ${Object.entries(sampling).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  const ask = (input, reasoning) => askOnce({ url, headers, model, input, prompt, reasoning, sampling,
     integrations: offerSearch && integration ? [integration] : null });
 
   // A first request per mode loads the weights, primes the search plugin, and
@@ -89,7 +96,7 @@ async function main() {
   const started = new Date();
   const file = path.join(RESULTS, `${model.replace(/[^\w.-]+/g, '_')}-${started.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}.json`);
   const result = {
-    model, startedAt: started.toISOString(), timeZone, takes: args.takes,
+    model, startedAt: started.toISOString(), timeZone, takes: args.takes, sampling,
     personality: config.LM_PERSONALITY, concise: config.LM_CONCISE, search: !!(offerSearch && integration),
     systemPrompt: prompt, modes, runs: [],
   };
@@ -128,8 +135,8 @@ async function loadedModel(url, headers) {
 }
 
 // One question, streamed, timed. Never throws: failures come back as `error`.
-async function askOnce({ url, headers, model, input, prompt, reasoning, integrations }) {
-  const body = { model, input, stream: true, system_prompt: prompt, ...(integrations && { integrations }), ...(reasoning && { reasoning }) };
+async function askOnce({ url, headers, model, input, prompt, reasoning, integrations, sampling = {} }) {
+  const body = { model, input, stream: true, system_prompt: prompt, ...(integrations && { integrations }), ...(reasoning && { reasoning }), ...sampling };
   const t0 = performance.now();
   const secs = () => Math.round((performance.now() - t0) / 100) / 10;
   const out = { first_word_s: null, total_s: null, reasoning_s: 0, searches: [], tok_per_s: null,
