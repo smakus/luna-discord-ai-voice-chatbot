@@ -247,7 +247,8 @@ const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
 
 function startLlmTools() {
   // say_in_voice tells the model the truth about whether anything was said.
-  // list_top_songs asks smakbot (one person's requests, with a user).
+  // list_top_songs asks smakbot (one person's requests, with a user), and
+  // list_top_requesters asks it who requests the most.
   const runs = {
     say_in_voice: () => session.connection
       ? `Said in ${session.channel?.name || 'the voice channel'}.`
@@ -259,6 +260,8 @@ function startLlmTools() {
       }
       return nowPlaying.listForModel(await nowPlaying.topSongs(n));
     },
+    list_top_requesters: async ({ count }) => nowPlaying.listRequestersForModel(
+      await nowPlaying.topRequesters(Math.min(50, Math.max(1, Math.round(Number(count)) || 5)))),
   };
   const tools = LLM_TOOLS.map(t => runs[t.name] ? { ...t, run: runs[t.name] } : t);
   const server = createMcpServer({ tools });

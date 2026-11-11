@@ -91,6 +91,7 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
 | "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
 | "what are my top songs?" / "what's my top song?" | Nothing is played: she reads the songs **you** asked smakbot for most (its request history): *"Your top 2 requests: Heart of Gold, 4 requests. Sledgehammer, 2."* Someone else's (*"what are kenbeans' top songs?"*, online or not) goes to the LLM, which looks them up with `list_top_songs` |
+| "who requests the most songs?" / "give me the top 4 requesters and their counts" | The LLM ranks people by songs requested with `list_top_requesters` (smakbot's `/top-requesters`) |
 | "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
 
 - **When music is already playing,** she says *"Adding … to the queue"* instead of *"Okay, playing …"*, since smakbot plays it after what's on now.
@@ -308,7 +309,7 @@ How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music
    AllowPlaylists = yes
    ```
 
-3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `pause_music`, `resume_music`, `stop_music`, `list_top_songs` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `pause_music`, `resume_music`, `stop_music`, `list_top_songs`, `list_top_requesters` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
 
    ```json
    "luna": { "url": "http://127.0.0.1:8895/mcp" }

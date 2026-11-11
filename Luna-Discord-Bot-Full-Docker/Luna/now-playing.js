@@ -12,11 +12,13 @@
 // list_top_songs tool (listForModel). And, from the same endpoint with
 // ?user=, the songs one person asked for most, online or not: "what are my
 // top songs?" (topRequests, describeRequests) and list_top_songs with a
-// user (listRequestsForModel).
+// user (listRequestsForModel); and /top-requesters, who asks for the most
+// songs (the LLM's list_top_requesters tool).
 //
 // createNowPlaying({ config, fetch, console }) → { enabled, get(guildId), describe(np), promptLine(np),
 //   topSongs(count), describeTop(songs, count), listForModel(songs),
-//   topRequests(user, count), describeRequests(result, count), listRequestsForModel(result, said) }.
+//   topRequests(user, count), describeRequests(result, count), listRequestsForModel(result, said),
+//   topRequesters(count), listRequestersForModel(requesters) }.
 // get() resolves to smakbot's answer ({ playing, paused, title, artist, … })
 // or null when there is no URL, smakbot is down or slow — never throws. It is
 // asked on every question, so a short timeout and a moment's cache keep it
@@ -174,8 +176,34 @@ function createNowPlaying({ config, fetch, console }) {
       result.songs.map((s, i) => `${i + 1}. ${cleanTitle(s.title)} (${s.requests} request${s.requests === 1 ? '' : 's'})`).join('\n');
   }
 
+  // Who asks for the most songs: smakbot's [{ user, requests, songs, top_song }]
+  // (most first), or null when smakbot can't be reached.
+  async function topRequesters(count) {
+    if (!STATUS_URL) return null;
+    try {
+      const url = new URL('top-requesters', STATUS_URL);
+      url.searchParams.set('count', String(count));
+      const res = await fetch(url.href, { signal: AbortSignal.timeout(TIMEOUT_MS * 2) });
+      if (!res.ok) return null;
+      const { requesters } = await res.json();
+      return Array.isArray(requesters) ? requesters : null;
+    } catch (err) {
+      console.warn(`[music] can't reach smakbot's top requesters (${err.message})`);
+      return null;
+    }
+  }
+
+  // What the LLM's list_top_requesters tool answers it.
+  function listRequestersForModel(requesters) {
+    if (!requesters) return 'The music bot could not be reached, so who requests the most songs is unknown. Say so.';
+    if (!requesters.length) return 'Nobody has requested any songs since the music bot started counting requests.';
+    return 'People who requested the most songs, most first:\n' + requesters.map((r, i) =>
+      `${i + 1}. ${r.user}: ${r.requests} request${r.requests === 1 ? '' : 's'} (${r.songs} different song${r.songs === 1 ? '' : 's'})` +
+      (r.top_song ? `, most requested: ${cleanTitle(r.top_song)}` : '')).join('\n');
+  }
+
   return { enabled: !!STATUS_URL, get, describe, promptLine, topSongs, describeTop, listForModel,
-           topRequests, describeRequests, listRequestsForModel };
+           topRequests, describeRequests, listRequestsForModel, topRequesters, listRequestersForModel };
 }
 
 module.exports = { createNowPlaying };

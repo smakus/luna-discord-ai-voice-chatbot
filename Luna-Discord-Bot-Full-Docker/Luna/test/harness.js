@@ -89,6 +89,8 @@ module.exports = function boot(env = {}) {
   S.model = 'model-a';
   const fakeFetch = async (url, init = {}) => {
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
+    if (url.includes('top-requesters')) { (S.topSongsAsked ??= []).push(url); if (S.musicDown) throw new Error('connect ECONNREFUSED');
+      const n = Number(new URL(url).searchParams.get('count')); return { ok: true, json: async () => ({ requesters: (S.requesters ?? []).slice(0, n) }) }; }
     if (url.includes('top-songs')) { (S.topSongsAsked ??= []).push(url); if (S.musicDown) throw new Error('connect ECONNREFUSED');
       const q = new URL(url).searchParams, n = Number(q.get('count'));
       if (q.get('user')) { const who = (S.userTop ?? {})[q.get('user')];
