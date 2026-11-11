@@ -9,10 +9,14 @@
 //
 // It also reads smakbot's most played list (/top-songs, next to /now-playing):
 // "what are our top songs?" (topSongs, describeTop) and the LLM's
-// list_top_songs tool (listForModel).
+// list_top_songs tool (listForModel). And, from the same endpoint with
+// ?user=, the songs one person asked for most, online or not: "what are my
+// top songs?" (topRequests, describeRequests) and list_top_songs with a
+// user (listRequestsForModel).
 //
 // createNowPlaying({ config, fetch, console }) → { enabled, get(guildId), describe(np), promptLine(np),
-//   topSongs(count), describeTop(songs, count), listForModel(songs) }.
+//   topSongs(count), describeTop(songs, count), listForModel(songs),
+//   topRequests(user, count), describeRequests(result, count), listRequestsForModel(result, said) }.
 // get() resolves to smakbot's answer ({ playing, paused, title, artist, … })
 // or null when there is no URL, smakbot is down or slow — never throws. It is
 // asked on every question, so a short timeout and a moment's cache keep it
@@ -38,6 +42,14 @@ const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 
 function createNowPlaying({ config, fetch, console }) {
   const STATUS_URL = config.MUSIC_STATUS_URL;
+  // The LLM knows people by their speakable names (NAME_PRONUNCIATIONS:
+  // smakus=smackus), so a name it passes is turned back into the real one.
+  const squash = name => String(name || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const REAL_NAMES = new Map((config.NAME_PRONUNCIATIONS || []).flatMap(entry => {
+    const eq = entry.indexOf('=');
+    return eq > 0 ? [[squash(entry.slice(eq + 1)), entry.slice(0, eq).trim()]] : [];
+  }));
+  const realName = said => REAL_NAMES.get(squash(said)) || String(said).trim();
   let cached = null;   // { at, guildId, value }
   let warnedAt = 0;
 
@@ -119,7 +131,51 @@ function createNowPlaying({ config, fetch, console }) {
       songs.map((s, i) => `${i + 1}. ${cleanTitle(s.title)} (${s.plays} plays)`).join('\n');
   }
 
-  return { enabled: !!STATUS_URL, get, describe, promptLine, topSongs, describeTop, listForModel };
+  // The songs one person asked for most — user: a Discord user ID or a name,
+  // loosely ("smak", "smackus"): smakbot's { user, songs: [{ title, requests }] },
+  // { user: null, matches: [names] } when the name doesn't pick out one
+  // person, or null when smakbot can't be reached.
+  async function topRequests(user, count) {
+    if (!STATUS_URL) return null;
+    try {
+      const url = new URL('top-songs', STATUS_URL);
+      url.searchParams.set('user', /^\d{5,25}$/.test(String(user)) ? String(user) : realName(user));
+      url.searchParams.set('count', String(count));
+      const res = await fetch(url.href, { signal: AbortSignal.timeout(TIMEOUT_MS * 2) });
+      if (!res.ok) return null;
+      const result = await res.json();
+      return result && (Array.isArray(result.songs) || Array.isArray(result.matches)) ? result : null;
+    } catch (err) {
+      console.warn(`[music] can't reach smakbot's top songs (${err.message})`);
+      return null;
+    }
+  }
+
+  // The spoken/typed answer to "what are my top songs?" (the asker's own).
+  function describeRequests(result, count) {
+    if (!result) return "I can't check your top songs right now — I can't reach the music bot.";
+    if (!result.songs?.length) return "I don't have any song requests from you yet.";
+    const list = result.songs.slice(0, count).map((s, i) =>
+      `${cleanTitle(s.title) || 'an unnamed song'}, ${s.requests}${i === 0 ? ` request${s.requests === 1 ? '' : 's'}` : ''}`);
+    const head = list.length === 1 ? 'Your most requested song is' : `Your top ${list.length} requests:`;
+    return `${head} ${list.join('. ')}.`;
+  }
+
+  // What the LLM's list_top_songs tool answers it when asked about one person.
+  function listRequestsForModel(result, said) {
+    if (!result) return 'The music bot could not be reached, so that person\'s top songs are unknown. Say so.';
+    if (!result.user) {
+      return result.matches?.length
+        ? `"${said}" could be any of: ${result.matches.join(', ')}. Ask which one they mean.`
+        : `Nobody called "${said}" is known to the music bot. Say so.`;
+    }
+    if (!result.songs.length) return `${result.user} hasn't requested any songs since the music bot started counting requests.`;
+    return `Songs ${result.user} requested most, most first:\n` +
+      result.songs.map((s, i) => `${i + 1}. ${cleanTitle(s.title)} (${s.requests} request${s.requests === 1 ? '' : 's'})`).join('\n');
+  }
+
+  return { enabled: !!STATUS_URL, get, describe, promptLine, topSongs, describeTop, listForModel,
+           topRequests, describeRequests, listRequestsForModel };
 }
 
 module.exports = { createNowPlaying };

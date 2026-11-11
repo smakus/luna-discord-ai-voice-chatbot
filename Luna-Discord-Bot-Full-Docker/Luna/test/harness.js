@@ -90,7 +90,10 @@ module.exports = function boot(env = {}) {
   const fakeFetch = async (url, init = {}) => {
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
     if (url.includes('top-songs')) { (S.topSongsAsked ??= []).push(url); if (S.musicDown) throw new Error('connect ECONNREFUSED');
-      const n = Number(new URL(url).searchParams.get('count')); return { ok: true, json: async () => ({ songs: (S.topSongs ?? []).slice(0, n) }) }; }
+      const q = new URL(url).searchParams, n = Number(q.get('count'));
+      if (q.get('user')) { const who = (S.userTop ?? {})[q.get('user')];
+        return { ok: true, json: async () => who ? { user: who.user, songs: who.songs.slice(0, n) } : { user: null, matches: S.userMatches ?? [] } }; }
+      return { ok: true, json: async () => ({ songs: (S.topSongs ?? []).slice(0, n) }) }; }
     if (url.includes('now-playing')) { S.nowPlayingAsked = (S.nowPlayingAsked || 0) + 1; if (S.musicDown) throw new Error('connect ECONNREFUSED'); return { ok: true, json: async () => S.nowPlaying ?? { playing: false } }; }
     if (url.endsWith('/api/v1/models')) return { ok: true, json: async () => ({ models: [{ type: 'llm', loaded_instances: [{ id: S.model }] }] }) };
     const body = JSON.parse(init.body); S.llmRequests.push({ at: Date.now(), model: body.model, prev: body.previous_response_id, reasoning: body.reasoning, sampling: Object.fromEntries(['temperature', 'top_p', 'top_k', 'min_p', 'repeat_penalty'].filter(k => k in body).map(k => [k, body[k]])), input: body.input, system: body.system_prompt, tools: !!(body.integrations && body.integrations.length), integrations: body.integrations });

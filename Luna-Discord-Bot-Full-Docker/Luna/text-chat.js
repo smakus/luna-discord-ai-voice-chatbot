@@ -105,7 +105,10 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     }
     // "What are our top songs?": the same, from smakbot's most played list.
     if (what.type === 'top-songs' && nowPlaying?.enabled) {
-      await reply(message, nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count)).catch(() => {});
+      const text = what.mine
+        ? nowPlaying.describeRequests(await nowPlaying.topRequests(message.author.id, what.count), what.count)
+        : nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
+      await reply(message, text).catch(() => {});
       return;
     }
 

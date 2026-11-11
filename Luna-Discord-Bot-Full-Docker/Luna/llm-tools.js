@@ -77,11 +77,15 @@ const TOP_TOOL = {
   name: 'list_top_songs',
   description: "Look up the most played songs in this server and their play counts, without playing " +
     'anything. Use it when someone asks which songs are played most, what their favourites are, or ' +
-    'whether a song is among them.',
+    'whether a song is among them. With a user, it looks up the songs that one person requested most ' +
+    'instead, whether or not they are here right now ("what are kenbeans\' top songs?", "what do I ' +
+    'request most?").',
   inputSchema: {
     type: 'object',
     properties: {
       count: { type: 'integer', description: 'How many (default 10, at most 50)', minimum: 1, maximum: 50 },
+      user: { type: 'string', description: "Only for one person's requests: their name as said, or the " +
+        "asker's own name for \"my\" or \"I\". Leave it out for the whole server's most played." },
     },
   },
   run: () => 'The most played songs are not available right now.',

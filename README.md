@@ -90,6 +90,7 @@ Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/
 | "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
 | "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
 | "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
+| "what are my top songs?" / "what's my top song?" | Nothing is played: she reads the songs **you** asked smakbot for most (its request history): *"Your top 2 requests: Heart of Gold, 4 requests. Sledgehammer, 2."* Someone else's (*"what are kenbeans' top songs?"*, online or not) goes to the LLM, which looks them up with `list_top_songs` |
 | "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
 
 - **When music is already playing,** she says *"Adding … to the queue"* instead of *"Okay, playing …"*, since smakbot plays it after what's on now.
@@ -430,7 +431,7 @@ The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER
 | `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
 | `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |
 | `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the LLM's tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
-| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Its `/top-songs`, next to it, answers "what are our top songs?". Unset: off |
+| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Its `/top-songs`, next to it, answers "what are our top songs?" and, with `?user=`, one person's most requested songs. Unset: off |
 | `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
 | `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
 | `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |

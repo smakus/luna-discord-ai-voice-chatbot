@@ -1059,6 +1059,40 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     await H.T.handleQuery('is Tom Sawyer in our top ten?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
     assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('list_top_songs')));
     ok('LLM tool list_top_songs: offered, answers the model with the list from smakbot, plays nothing ("is Tom Sawyer in our top ten?")'); }
+  console.log("one person's top songs (smakbot request history)");
+  const MINE = { user: 'smakus', songs: [{ title: 'Neil Young - Heart of Gold (Official Audio)', requests: 4 }, { title: 'Sledgehammer', requests: 2 }, { title: 'Biko', requests: 1 }] };
+  { const H = await setup({}); const r = q => JSON.stringify(H.T.route(q, { voice: true }));
+    assert.strictEqual(r('what are my top songs?'), '{"type":"top-songs","count":5,"mine":true}');
+    assert.strictEqual(r("what's my top song"), '{"type":"top-songs","count":1,"mine":true}');
+    assert.strictEqual(r('list my top 3 tracks'), '{"type":"top-songs","count":3,"mine":true}');
+    assert.strictEqual(r("what are kenbeans' top songs?"), '{"type":"ask"}');
+    ok('"what are my top songs?" → the asker\'s own requests; "kenbeans\' top songs" → the LLM (and its tool)'); }
+  { const H = await setup({}); H.S.userTop = { u1: MINE };
+    await H.T.handleQuery('what are my top 2 songs?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, 'Your top 2 requests: Neil Young - Heart of Gold, 4 requests. Sledgehammer, 2.');
+    assert.match(H.S.topSongsAsked[0], /\/top-songs\?user=u1&count=2$/); assert.strictEqual(H.S.llmRequests.length, 0);
+    ok('"what are my top 2 songs?" → smakbot asked by the speaker\'s ID → "Your top 2 requests: …" (no LLM)'); }
+  { const H = await setup({}); H.S.userTop = {};
+    await H.T.handleQuery("what's my top song", H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0);
+    assert.strictEqual(H.S.tts[0].text, "I don't have any song requests from you yet."); ok('no requests from the asker yet → says so'); }
+  { const H = await textRig(); H.S.userTop = new Proxy({}, { get: () => MINE });  // whoever the author is
+    await H.say('Luna, what are my top songs?'); await H.until(() => H.S.replies.length > 0);
+    assert.strictEqual(H.S.replies[0].content, 'Your top 3 requests: Neil Young - Heart of Gold, 4 requests. Sledgehammer, 2. Biko, 1.');
+    assert.strictEqual(H.S.llmRequests.length, 0); ok('"Luna, what are my top songs?" in text → the author\'s requests, no LLM'); }
+  { const H = await setup({ LLM_TOOLS: 'true', NAME_PRONUNCIATIONS: 'smakus=smackus' }); H.S.userTop = { smakus: MINE }; H.S.userMatches = [];
+    const { Readable } = require('stream');
+    const call = async args => { const res = { status: 0, body: '', writeHead(s) { this.status = s; return this; }, end(b = '') { this.body = b; return this; } };
+      const req = Readable.from([JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_top_songs', arguments: args } })]);
+      req.url = '/mcp'; req.method = 'POST'; await H.S.mcpHandler(req, res); return JSON.parse(res.body).result.content[0].text; };
+    assert.strictEqual(await call({ count: 2, user: 'Smackus' }), 'Songs smakus requested most, most first:\n1. Neil Young - Heart of Gold (4 requests)\n2. Sledgehammer (2 requests)');
+    assert.match(H.S.topSongsAsked.at(-1), /user=smakus&count=2$/);
+    assert.strictEqual(await call({ user: 'zork' }), 'Nobody called "zork" is known to the music bot. Say so.');
+    H.S.userMatches = ['kenbeans', 'kendra']; assert.strictEqual(await call({ user: 'ken' }), '"ken" could be any of: kenbeans, kendra. Ask which one they mean.');
+    H.S.userTop.appa = { user: 'appa', songs: [] }; assert.match(await call({ user: 'appa' }), /^appa hasn't requested any songs/);
+    H.S.topSongs = TOP; assert.match(await call({ count: 1 }), /^Most played songs in this server/);
+    H.S.musicDown = true; assert.match(await call({ user: 'smakus' }), /could not be reached/);
+    assert.ok(!H.S.sends.some(m => m.startsWith('!')), 'nothing played');
+    ok('list_top_songs with a user → that person\'s requests (speakable "Smackus" → smakus), unknown / ambiguous / none yet / unreachable said plainly'); }
   { const H = await textRig(); H.S.nowPlaying = { playing: true, title: 'Seal - Crazy' }; await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
     assert.strictEqual(H.S.replies[0].content ?? H.S.replies[0], 'Adding some jazz to the queue.'); ok('typed "Luna, play some jazz" while music plays → "Adding some jazz to the queue."'); }
   { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
