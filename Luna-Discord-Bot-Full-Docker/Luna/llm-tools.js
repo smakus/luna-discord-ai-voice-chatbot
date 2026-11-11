@@ -77,14 +77,34 @@ const TOP_TOOL = {
   name: 'list_top_songs',
   description: "Look up the most played songs in this server and their play counts, without playing " +
     'anything. Use it when someone asks which songs are played most, what their favourites are, or ' +
-    'whether a song is among them.',
+    'whether a song is among them. With a user, it looks up the songs that one person requested most ' +
+    'instead, whether or not they are here right now ("what are kenbeans\' top songs?", "what do I ' +
+    'request most?").',
   inputSchema: {
     type: 'object',
     properties: {
       count: { type: 'integer', description: 'How many (default 10, at most 50)', minimum: 1, maximum: 50 },
+      user: { type: 'string', description: "Only for one person's requests: their name as said, or the " +
+        "asker's own name for \"my\" or \"I\". Leave it out for the whole server's most played." },
     },
   },
   run: () => 'The most played songs are not available right now.',
+};
+
+// Who asks smakbot for the most songs ("who requests the most songs?", "top 4
+// requesters"). index.js replaces run() with one that asks smakbot.
+const REQUESTERS_TOOL = {
+  name: 'list_top_requesters',
+  description: 'Rank the people in this server by how many songs they have requested from the music ' +
+    'bot, most first, with each person\'s count and their most requested song. Use it when someone ' +
+    'asks who requests the most songs, who the top requesters are, or how someone ranks.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      count: { type: 'integer', description: 'How many people (default 5, at most 50)', minimum: 1, maximum: 50 },
+    },
+  },
+  run: () => 'The song requesters are not available right now.',
 };
 
 const LEAVE_TOOL = {
@@ -114,12 +134,12 @@ const SAY_TOOL = {
   run: () => 'Said in the voice channel.',
 };
 
-const LLM_TOOLS = [...MUSIC_TOOLS, TOP_TOOL, LEAVE_TOOL, SAY_TOOL];
+const LLM_TOOLS = [...MUSIC_TOOLS, TOP_TOOL, REQUESTERS_TOOL, LEAVE_TOOL, SAY_TOOL];
 const LLM_TOOL_NAMES = new Set(LLM_TOOLS.map(t => t.name));
 // Which are offered where: leaving makes sense only by voice, saying
 // something in voice only from text.
-const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, LEAVE_TOOL.name]);
-const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, SAY_TOOL.name]);
+const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, LEAVE_TOOL.name]);
+const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, SAY_TOOL.name]);
 const MUSIC_TOOL_NAMES = new Set(MUSIC_TOOLS.map(t => t.name));
 
 // The smakbot command for a tool call: { text, summon }, or null.

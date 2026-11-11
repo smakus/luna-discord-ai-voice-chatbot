@@ -176,7 +176,8 @@ const isNowPlayingQuestion = question => NOW_PLAYING_RE.test(bare(question));
 //
 // "What are our top songs?", "what are the top 5 hits?", "which are our most
 // played tracks?", "list our top ten", "tell me the 3 most played songs",
-// "what's our top song?" (just the one):
+// "what's our top song?" (just the one). "What are MY top songs?" is the
+// asker's own most requested songs instead (mine):
 // smakbot's most played list, said or typed but not played ("play the top 5"
 // is the music command above). The whole question, like NOW_PLAYING_RE, so
 // "what's the top song by Queen?" still reaches the LLM. How many: as said;
@@ -184,14 +185,14 @@ const isNowPlayingQuestion = question => NOW_PLAYING_RE.test(bare(question));
 const TOP_LISTED = 5;
 const TOP_SONGS_RE = new RegExp(
   `^(?:(?:what|which)(?:'s|\\s+is|\\s+are|\\s+were)?|list|name|tell\\s+me|read(?:\\s+(?:me|out))?|give\\s+me)\\s+` +
-  `(?:the\\s+|our\\s+|my\\s+)?(?:(?:top|most[\\s-]played)(?:\\s+(${NUMBER}))?|(${NUMBER})\\s+most[\\s-]played)` +
+  `(?:the\\s+|our\\s+|(my)\\s+)?(?:(?:top|most[\\s-]played)(?:\\s+(${NUMBER}))?|(${NUMBER})\\s+most[\\s-]played)` +
   `(?:\\s+(?:(songs|tracks|hits|jams)|song|track|hit|jam))?(?:\\s+(?:so\\s+far|lately|right\\s+now|on\\s+here))?[\\s,.!?]*$`, 'i');
 function topSongsQuestion(question) {
   const m = TOP_SONGS_RE.exec(bare(question));
   if (!m) return null;
-  const said = m[1] || m[2];
-  const plural = m[3] || !/\b(?:song|track|hit|jam)\b/i.test(m[0]);
-  return { count: said ? topCount(said) : plural ? TOP_LISTED : 1 };
+  const said = m[2] || m[3];
+  const plural = m[4] || !/\b(?:song|track|hit|jam)\b/i.test(m[0]);
+  return { count: said ? topCount(said) : plural ? TOP_LISTED : 1, mine: !!m[1] };
 }
 
 // ─── Routing ──────────────────────────────────────────────────────────────────
@@ -208,7 +209,8 @@ function route(question, { voice }) {
   if (!voice && isSayRequest(question)) return { type: 'say' };
   if (isNowPlayingQuestion(question)) return { type: 'now-playing' };
   const top = topSongsQuestion(question);
-  if (top) return { type: 'top-songs', count: top.count };
+  // "my top songs": the asker's own most requested, not the server's.
+  if (top) return top.mine ? { type: 'top-songs', count: top.count, mine: true } : { type: 'top-songs', count: top.count };
   return { type: 'ask' };
 }
 

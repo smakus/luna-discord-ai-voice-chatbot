@@ -255,7 +255,9 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     if (what.type === 'top-songs' && nowPlaying?.enabled) {
       const generation = playback.interrupt(userId);
       if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
-      const text = nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
+      const text = what.mine
+        ? nowPlaying.describeRequests(await nowPlaying.topRequests(userId, what.count), what.count)
+        : nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
       console.log(`[${nameOf(userId)}] [music] top songs → "${text}"`);
       playback.say(text, { connection, userId, generation, cache: false });
       return;
