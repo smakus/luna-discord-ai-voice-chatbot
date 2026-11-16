@@ -4,7 +4,11 @@
     "voice": "ElevenLabs voice ID (optional; without it, Luna's normal voice)",
     "phrases": [
       "Ladies and gentlemen, {user} has entered the building!",
-      "[excited] The legend returns: {user}!"
+      "[excited] The legend returns: {user}!",
+      {
+        "text": "Make it so, {user}. Engage!",
+        "voice": "chatterbox:<a clone's name> (optional: this phrase in a voice of its own)"
+      }
     ]
   }
 }

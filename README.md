@@ -119,8 +119,9 @@ A few people can get their own join greeting, optionally in their own voice (Ele
 - `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
 - `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). The voice must be in your own ElevenLabs voices: add Voice Library voices to "My Voices" first. Leave it out to use Luna's normal voice.
 - Or `"voice": "chatterbox:<name>"` for a [Chatterbox](#chatterbox-turbo-apple-silicon) clone: put 10–20 seconds of clear speech as `<name>.wav` in Chatterbox's voices folder (no restart needed). It works with or without ElevenLabs, as long as Chatterbox is running.
+- A phrase can also have a voice of its own: `{ "text": "Make it so, {user}. Engage!", "voice": "chatterbox:stewart" }` among the other phrases. Phrases without one use the person's `voice`.
 - `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
-- Same cooldown and switches as the normal greeting. If their voice can't be used (ElevenLabs down or out of credits, Chatterbox not running, unknown voice), they get the normal greeting in the normal voice.
+- Same cooldown and switches as the normal greeting. If the picked phrase's voice can't be used (ElevenLabs down or out of credits, Chatterbox not running, unknown voice), they get the normal greeting in the normal voice.
 - `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voices ElevenLabs or Chatterbox doesn't know (checking costs no credits).
 
 ### Announcements

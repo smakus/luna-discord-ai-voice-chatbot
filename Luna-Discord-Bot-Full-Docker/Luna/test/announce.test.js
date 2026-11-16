@@ -69,6 +69,14 @@ async function inChannel(env = {}) {
   { const H = await inChannel({ GREETINGS_FILE: greetFile({ '371034505349169152': { phrases: ['Hi {user}, no special voice.'] } }) }); H.S.names = { '371034505349169152': 'User X' };
     H.move('371034505349169152', null, 'A'); await H.wait(80);
     assert.deepStrictEqual(H.said(), ['Hi User X, no special voice.']); ok('no voice in the entry → their line in Luna\'s voice'); }
+  { const G = { '371034505349169152': { voice: 'VOICE1', phrases: [{ text: 'Make it so, {user}.', voice: 'chatterbox:stewart' }] },
+      '222222222222222222': { voice: 'VOICE1', phrases: [{ text: 'Hi {user}, my usual voice.' }, 42] }, '333333333333333333': { phrases: [{ text: 'Engage, {user}!', voice: 'chatterbox:stewart' }] } };
+    const H = await inChannel({ GREETINGS_FILE: greetFile(G) }); H.S.names = { '371034505349169152': 'User X', '222222222222222222': 'Sam', '333333333333333333': 'Ken' };
+    assert.ok(H.S.logs.some(l => /222222222222222222: a phrase should be text or \{ "text", "voice" \} — skipped/.test(l)));
+    H.move('371034505349169152', null, 'A'); await H.wait(80); H.move('222222222222222222', null, 'A'); await H.wait(80); H.move('333333333333333333', null, 'A'); await H.wait(80);
+    assert.deepStrictEqual(H.S.voiceTts.map(v => [v.text, v.voice]), [['Make it so, User X.', 'chatterbox:stewart'], ['Hi Sam, my usual voice.', 'VOICE1'], ['Engage, Ken!', 'chatterbox:stewart']]);
+    assert.ok(H.S.logs.some(l => /custom greeting in voice chatterbox:stewart: "Make it so, User X\."/.test(l)));
+    ok('a phrase with its own voice → said in that voice; { text } alone → the person\'s voice; a person without a voice can still have a voiced line; a bad phrase is reported'); }
   { const H = await inChannel({ GREETINGS_FILE: greetFile({ 'User X': { phrases: ['x'] }, '371034505349169152': { voice: 'V' } }) });
     assert.ok(H.S.logs.some(l => /"User X" is not a Discord user ID — skipped/.test(l)) && H.S.logs.some(l => /371034505349169152: no phrases — skipped/.test(l)));
     const H2 = await inChannel({ GREETINGS_FILE: greetFile('{ not json') }); assert.ok(H2.S.logs.some(l => /is not valid JSON .* no custom greetings/.test(l)));

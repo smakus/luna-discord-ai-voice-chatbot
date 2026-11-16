@@ -77,7 +77,7 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
 
   // Per-person greetings (greetings.js): their own phrases, in their own
   // voice if they have one (an ElevenLabs voice ID, or "chatterbox:<name>" for
-  // a Chatterbox clone). Same cooldown and switches as the normal greeting; on
+  // a Chatterbox clone) — or a voice of the phrase's own. Same cooldown and switches as the normal greeting; on
   // any problem with the custom voice, the normal greeting plays.
   // GREET_ON_JOIN=regular: everyone gets the regular greeting; the file stays.
   const CUSTOM_GREETINGS = config.GREET_ON_JOIN === 'custom'
@@ -89,10 +89,11 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
     if (!CUSTOM_GREETINGS.size) return;
     console.log(`[greet] custom greetings for ${[...CUSTOM_GREETINGS].map(([id, g]) => g.name || id).join(', ')}`);
     for (const [id, g] of CUSTOM_GREETINGS) {
-      if (!g.voice) continue;
-      checkVoice(g.voice).then(({ name, reason }) => {
-        if (!name) console.warn(`[greet] ${g.name || id}: voice ${g.voice} unavailable (${reason}) — they'll get the normal greeting`);
-      });
+      for (const voice of new Set(g.phrases.map(p => p.voice).filter(Boolean))) {
+        checkVoice(voice).then(({ name, reason }) => {
+          if (!name) console.warn(`[greet] ${g.name || id}: voice ${voice} unavailable (${reason}) — they'll get the normal greeting when it's picked`);
+        });
+      }
     }
   }
 
@@ -158,13 +159,14 @@ function createAnnouncer({ config, console, session, playback, fetchTTS, fetchTT
       : 'Someone just joined. Hey there, welcome in!';
     const custom = CUSTOM_GREETINGS.get(member.id);
     if (custom) {
-      const own = fillPhrase(custom.phrases, { name: name || 'friend', user: name || 'friend' });
-      console.log(`[greet] ${member.user.tag} joined — custom greeting${custom.voice ? ` in voice ${custom.voice}` : ''}: "${own}"`);
-      if (!custom.voice) return announce(member, connection, own);
-      // Their own line in their own voice; if that voice can't be had, the
-      // normal greeting in the normal voice.
+      // One of their lines, in that line's voice (its own, else theirs).
+      const pick = custom.phrases[Math.floor(Math.random() * custom.phrases.length)];
+      const own = fillPhrase([pick.text], { name: name || 'friend', user: name || 'friend' });
+      console.log(`[greet] ${member.user.tag} joined — custom greeting${pick.voice ? ` in voice ${pick.voice}` : ''}: "${own}"`);
+      if (!pick.voice) return announce(member, connection, own);
+      // If that voice can't be had, the normal greeting in the normal voice.
       return announce(member, connection, own, async line => {
-        const pt = await fetchTTSInVoice(line, custom.voice, { cache: true });
+        const pt = await fetchTTSInVoice(line, pick.voice, { cache: true });
         if (pt) return pt;
         console.warn(`[greet] custom voice unavailable for ${member.user.tag} — normal greeting instead`);
         return fetchTTS(text, { cache: true });
