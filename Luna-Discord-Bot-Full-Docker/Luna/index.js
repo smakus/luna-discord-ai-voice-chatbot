@@ -23,6 +23,7 @@ const { createWakeBackup } = require('./wake-backup');
 const { createWakeLog } = require('./wake-log');
 const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
 const { createNowPlaying } = require('./now-playing');
+const { createImageSearch } = require('./image-search');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ const { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt } =
 // What smakbot is playing (now-playing.js): answers "what song is this?", and
 // names the song in the LLM's prompt while one plays.
 const nowPlaying = createNowPlaying({ config, fetch, console });
+const imageSearch = createImageSearch({ config, fetch, console });
 
 // Talking to LM Studio: model, prompt, memory, search and tool offers (answer-llm.js).
 const llm = createLlm({ config, fetch, console, expressivePrompt, nameOf,
@@ -127,7 +129,7 @@ const answerer = createVoiceAnswerer({
   sendCommand: (channel, command, requesterId) => sendSmakbotCommand(channel, command, requesterId),
   leave: userId => leaveOnRequest(userId),
   expectQuestion: (userId, ms, why) => listener.expectQuestion(userId, ms, why),
-  nowPlaying, nameOf, wakeLog,
+  nowPlaying, imageSearch, nameOf, wakeLog,
 });
 
 // Her intro, join greetings and farewells (announce.js).
@@ -260,6 +262,15 @@ function startLlmTools() {
       }
       return nowPlaying.listForModel(await nowPlaying.topSongs(n));
     },
+    // Finds the picture now, so the model is told whether there is one; the
+    // answer's onTool handler posts it (the same search, cached).
+    post_image: async ({ query }) => {
+      const words = String(query || '').trim();
+      if (!imageSearch.enabled) return 'Pictures are not set up (no TAVILY_API_KEY), so nothing was posted. Say so.';
+      return (await imageSearch.find(words))
+        ? `A picture for "${words}" is being posted in the text chat. Mention it briefly; you can't see it, so don't describe it.`
+        : `No picture could be found for "${words}", so nothing was posted. Say so.`;
+    },
     list_top_requesters: async ({ count }) => nowPlaying.listRequestersForModel(
       await nowPlaying.topRequesters(Math.min(50, Math.max(1, Math.round(Number(count)) || 5)))),
   };
@@ -341,7 +352,7 @@ const textChat = createTextChat({
   sendCommand: sendSmakbotCommand,
   sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
   voiceChannelName: () => (session.connection ? session.channel?.name || 'the voice channel' : null),
-  nowPlaying,
+  nowPlaying, imageSearch,
 });
 
 // "!luna wakestats": the wake-word log (wake-log.js) summed up per person.

@@ -62,10 +62,11 @@ function toolsLine(names) {
   if (names.has('play_music')) can.push('play, skip or stop music');
   if (names.has('leave_channel')) can.push('leave the voice channel');
   if (names.has('say_in_voice')) can.push('say something out loud in the voice channel');
+  if (names.has('post_image')) can.push('post a picture in the text chat');
   if (!can.length) return '';
   return `You have tools to ${can.join(', ').replace(/, ([^,]*)$/, ' and $1')}. Saying you did something ` +
     'does not do it: whenever someone asks for one of these, call the tool, then reply. Never say that ' +
-    'you are playing, skipping, stopping, leaving or saying something unless you called its tool.';
+    'you are playing, skipping, stopping, leaving, saying or posting something unless you called its tool.';
 }
 
 // Added to a quick-answer (reasoning off) retry. Without reasoning, the

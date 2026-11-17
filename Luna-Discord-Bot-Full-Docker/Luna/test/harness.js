@@ -82,12 +82,20 @@ module.exports = function boot(env = {}) {
     http: { createServer: handler => { S.mcpHandler = handler; const srv = { on: () => srv, listen: (port, host, cb) => { S.mcpPort = port; cb && cb(); return srv; } }; return srv; } },
     './mcp-server': require(path.join(LUNA_DIR, 'mcp-server.js')), './llm-tools': require(path.join(LUNA_DIR, 'llm-tools.js')), './text-chat': require(path.join(LUNA_DIR, 'text-chat.js')), './greetings': require(path.join(LUNA_DIR, 'greetings.js')),
     './tts': tts, './answer-filter': require(path.join(LUNA_DIR, 'answer-filter.js')), './voice-input': require(path.join(LUNA_DIR, 'voice-input.js')), './sentences': require(path.join(LUNA_DIR, 'sentences.js')), './config': require(path.join(LUNA_DIR, 'config.js')), './prompt': require(path.join(LUNA_DIR, 'prompt.js')), path: require('path'),
-    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')), './now-playing': require(path.join(LUNA_DIR, 'now-playing.js')), './wake-backup': require(path.join(LUNA_DIR, 'wake-backup.js')),
+    './answer-llm': require(path.join(LUNA_DIR, 'answer-llm.js')), './commands': require(path.join(LUNA_DIR, 'commands.js')), './voice-playback': require(path.join(LUNA_DIR, 'voice-playback.js')), './voice-session': require(path.join(LUNA_DIR, 'voice-session.js')), './voice-listen': require(path.join(LUNA_DIR, 'voice-listen.js')), './phrases': require(path.join(LUNA_DIR, 'phrases.js')), './announce': require(path.join(LUNA_DIR, 'announce.js')), './voice-answer': require(path.join(LUNA_DIR, 'voice-answer.js')), './whisper': require(path.join(LUNA_DIR, 'whisper.js')), './now-playing': require(path.join(LUNA_DIR, 'now-playing.js')), './image-search': require(path.join(LUNA_DIR, 'image-search.js')), './wake-backup': require(path.join(LUNA_DIR, 'wake-backup.js')),
   };
 
   // ── fetch: LM Studio ──
   S.model = 'model-a';
   const fakeFetch = async (url, init = {}) => {
+    // Tavily image search (S.images: URLs) and the images themselves (S.imageFiles: url → { type, bytes }).
+    if (url === 'https://api.tavily.com/search') { (S.imageSearches ??= []).push(JSON.parse(init.body).query);
+      if (S.imagesDown) return { ok: false, status: 432, json: async () => ({}) };
+      return { ok: true, json: async () => ({ images: S.images ?? [] }) }; }
+    if (url.startsWith('https://img.test/')) { const f = (S.imageFiles ?? {})[url];
+      if (!f) return { ok: false, status: 404, headers: { get: () => null } };
+      return { ok: true, headers: { get: h => h === 'content-type' ? f.type : h === 'content-length' ? String(f.bytes) : null },
+        arrayBuffer: async () => new Uint8Array(f.bytes).buffer }; }
     if (url.includes('whisper')) return { ok: true, json: async () => ({ text: (S.transcripts || []).shift() || '' }) };
     if (url.includes('top-requesters')) { (S.topSongsAsked ??= []).push(url); if (S.musicDown) throw new Error('connect ECONNREFUSED');
       const n = Number(new URL(url).searchParams.get('count')); return { ok: true, json: async () => ({ requesters: (S.requesters ?? []).slice(0, n) }) }; }
