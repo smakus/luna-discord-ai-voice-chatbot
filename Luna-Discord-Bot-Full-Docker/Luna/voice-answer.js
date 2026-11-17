@@ -28,7 +28,7 @@ const { isBareWake, confirmWake, isJunkTranscript, nearWakePhrase } = require('.
 const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
 function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying,
-                               nameOf = id => id, wakeLog = { record() {} } }) {
+                               imageSearch = null, nameOf = id => id, wakeLog = { record() {} } }) {
   // ─── Settings ───────────────────────────────────────────────────────────────
 
   // A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
@@ -540,6 +540,14 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
             searchCalls.push({ query: t.query, output: t.output });
           } else if (t.type === 'music') {
             if (t.command) sendCommand(channel, t.command, userId);
+          } else if (t.type === 'image') {
+            // Asked by voice: the picture goes in the text channel.
+            if (imageSearch && t.query && channel?.send) {
+              imageSearch.find(t.query).then(p => p && channel.send({
+                content: `📷 ${t.query} (for ${askerName || nameOf(userId)})`,
+                files: [{ attachment: p.buffer, name: p.name }], allowedMentions: { parse: [] },
+              })).catch(err => console.warn(`[image] posting failed: ${err.message}`));
+            }
           } else if (t.type === 'leave') {
             console.log(`[${nameOf(userId)}] [voice] the LLM called leave_channel — leaving after the reply`);
             leaveAfterAnswer = true;

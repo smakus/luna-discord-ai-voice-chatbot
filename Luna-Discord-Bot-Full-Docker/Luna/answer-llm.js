@@ -347,6 +347,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
   //   { type: 'music', tool, args, command }      play/skip/stop (command: see commands.js, or null)
   //   { type: 'leave' }                           leave the voice channel
   //   { type: 'say', text }                       say this in the voice channel
+  //   { type: 'image', query }                    post a picture of this in the text chat
   // Events that are none of these, and search results, go on to onEvent.
   function toolReader({ tag, onTool, onEvent }) {
     let pending = false;   // which tool is only known from the event after .start
@@ -360,6 +361,7 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
       if (e.type === 'tool_call.success') {
         if (e.tool === 'leave_channel') { onTool({ type: 'leave' }); return; }
         if (e.tool === 'say_in_voice') { onTool({ type: 'say', text: e.arguments?.text }); return; }
+        if (e.tool === 'post_image') { onTool({ type: 'image', query: String(e.arguments?.query || '').trim() }); return; }
         if (MUSIC_TOOL_NAMES.has(e.tool)) {
           console.log(`[${nameOf(tag)}] [music] the LLM called ${e.tool} ${JSON.stringify(e.arguments || {})}`);
           onTool({ type: 'music', tool: e.tool, args: e.arguments || {}, command: toolCommand(e.tool, e.arguments) });

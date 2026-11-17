@@ -818,7 +818,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
   const MUSIC_CALL = (tool, args) => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: tool, provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool, arguments: args }], [5, { type: 'tool_call.success', tool, arguments: args, output: '[{"type":"text","text":"ok"}]' }]];
   { const H = await setup({ LLM_TOOLS: 'true' });
-    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, pause_music, resume_music, stop_music, list_top_songs, list_top_requesters, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
+    assert.ok(H.S.logs.some(l => /\[tools\] play_music, play_top_songs, skip_song, pause_music, resume_music, stop_music, list_top_songs, list_top_requesters, post_image, leave_channel, say_in_voice offered to the LLM as mcp\/luna/.test(l)) && H.S.mcpPort === 8895);
     H.S.llmRequests.length = 0; H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Coming right up.')];
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(200);
     assert.deepStrictEqual(H.S.llmRequests[0].integrations.map(i => i.id || i.server_label), ['tavily', 'mcp/luna'], 'search and the music tools');
@@ -925,7 +925,7 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('"can you play some jazz?" → smakbot, no LLM'); }
   { const H = await setup({ LLM_TOOLS: 'true' }); H.S.llmRequests.length = 0; H.S.llmScript = sse('Sure.');
     await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(100);
-    assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music and leave the voice channel\./);
+    assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music, leave the voice channel and post a picture in the text chat\./);
     ok('the system prompt names the tools offered'); }
 
   console.log('audio tags after the last sentence');
@@ -1112,6 +1112,49 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('list_top_requesters')));
     assert.ok(!H.S.sends.some(m => m.startsWith('!')), 'nothing played');
     ok('LLM tool list_top_requesters: offered, ranks people by songs requested with counts and top song (default 5); none yet / unreachable said plainly'); }
+  console.log('pictures in the text chat (post_image)');
+  const IMG_CALL = query => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'post_image', provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
+    [5, { type: 'tool_call.arguments', tool: 'post_image', arguments: { query } }], [5, { type: 'tool_call.success', tool: 'post_image', arguments: { query }, output: '[{"type":"text","text":"ok"}]' }]];
+  const PICS = H => { H.S.images = ['https://img.test/page.html', 'https://img.test/huge.jpg', 'https://img.test/missing.png', 'https://img.test/capy.png'];
+    H.S.imageFiles = { 'https://img.test/page.html': { type: 'text/html', bytes: 10 }, 'https://img.test/huge.jpg': { type: 'image/jpeg', bytes: 9 * 1024 * 1024 },
+                       'https://img.test/capy.png': { type: 'image/png; charset=binary', bytes: 2048 } }; };
+  { const H = await textRig({ LLM_TOOLS: 'true' }); PICS(H);
+    H.S.llmScript = [...IMG_CALL('Baby Capybara'), ...sse('Here is a baby capybara!')];
+    await H.say('Luna, show me a picture of a baby capybara'); await H.until(() => H.S.replies.length > 0);
+    const r = H.S.replies[0];
+    assert.strictEqual(r.content, 'Here is a baby capybara!');
+    assert.deepStrictEqual(r.files.map(f => [f.name, f.attachment.length]), [['baby-capybara.png', 2048]]);
+    assert.deepStrictEqual(H.S.imageSearches, ['Baby Capybara'], 'one search');
+    assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('post_image')));
+    assert.ok(/post a picture in the text chat/.test(H.S.llmRequests[0].system));
+    ok('text: post_image → the first real image under 8 MB (not a web page, not too big, not missing) attached to the reply, so Discord shows it inline'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); PICS(H); H.S.names = { u1: 'Sam' }; H.put('u1', 'A');
+    H.S.llmRequests.length = 0; H.S.llmScript = [...IMG_CALL('capybara'), ...sse('I put a capybara in the text chat.')];
+    await H.T.handleQuery('show me a capybara', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.sends.some(m => m?.files));
+    const post = H.S.sends.find(m => m?.files);
+    assert.strictEqual(post.content, '📷 capybara (for Sam)'); assert.deepStrictEqual(post.files.map(f => f.name), ['capybara.png']);
+    assert.ok(H.S.tts.some(t => /capybara in the text chat/.test(t.text)));
+    ok('voice: post_image → the picture posted in the text channel ("📷 capybara (for Sam)") while she says so'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); PICS(H);
+    const { Readable } = require('stream');
+    const call = async args => { const res = { status: 0, body: '', writeHead(s) { this.status = s; return this; }, end(b = '') { this.body = b; return this; } };
+      const req = Readable.from([JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'post_image', arguments: args } })]);
+      req.url = '/mcp'; req.method = 'POST'; await H.S.mcpHandler(req, res); return JSON.parse(res.body).result.content[0].text; };
+    assert.match(await call({ query: 'capybara' }), /^A picture for "capybara" is being posted in the text chat/);
+    H.S.images = ['https://img.test/page.html']; assert.match(await call({ query: 'zebra' }), /^No picture could be found for "zebra"/);
+    H.S.imagesDown = true; assert.match(await call({ query: 'okapi' }), /^No picture could be found/);
+    assert.ok(H.S.logs.some(l => /\[image\] "okapi": search failed \(Tavily answered 432\)/.test(l)));
+    const H2 = await setup({ LLM_TOOLS: 'true', TAVILY_API_KEY: '' }); H2.S.images = ['https://img.test/capy.png'];
+    const call2 = async args => { const res = { status: 0, body: '', writeHead(s) { this.status = s; return this; }, end(b = '') { this.body = b; return this; } };
+      const req = Readable.from([JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'post_image', arguments: args } })]);
+      req.url = '/mcp'; req.method = 'POST'; await H2.S.mcpHandler(req, res); return JSON.parse(res.body).result.content[0].text; };
+    assert.match(await call2({ query: 'capybara' }), /no TAVILY_API_KEY/);
+    ok('post_image tells the model the truth: posted / nothing found (no image, search failed) / not set up'); }
+  { const H = await textRig({ LLM_TOOLS: 'true' }); H.S.images = [];
+    H.S.llmScript = [...IMG_CALL('nothing'), ...sse('I could not find one.')];
+    await H.say('Luna, show me nothing'); await H.until(() => H.S.replies.length > 0);
+    assert.deepStrictEqual(H.S.replies[0].files, []); assert.strictEqual(H.S.replies[0].content, 'I could not find one.');
+    ok('no picture found → the reply alone'); }
   { const H = await textRig(); H.S.nowPlaying = { playing: true, title: 'Seal - Crazy' }; await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);
     assert.strictEqual(H.S.replies[0].content ?? H.S.replies[0], 'Adding some jazz to the queue.'); ok('typed "Luna, play some jazz" while music plays → "Adding some jazz to the queue."'); }
   { const H = await textRig(); await H.say('Luna, play some jazz'); await H.until(() => H.S.replies.length > 0);

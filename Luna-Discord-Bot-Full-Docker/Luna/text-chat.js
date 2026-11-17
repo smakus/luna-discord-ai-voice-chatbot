@@ -61,7 +61,7 @@ const SAY_MAX_CHARS = 400;
 //   sayInVoice(text, userId, who) → bool   speak in the voice channel (false: not in one)
 //   voiceChannelName() → name, or null when not in a voice channel
 //   nowPlaying     now-playing.js: "what song is this?"
-function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, nowPlaying, command = '!luna' }) {
+function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, nowPlaying, imageSearch = null, command = '!luna' }) {
   const queues = new Map();   // channel id -> the answer in progress
 
   function onMessage(message) {
@@ -117,12 +117,15 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     typing();
     const typingTimer = setInterval(typing, 8000);
     let text = '', failed = false, searched = false;
+    const pictures = [];   // post_image calls: found while answering, attached to the reply
     try {
       const onTool = t => {
         if (t.type === 'say') {
           sayInVoice(t.text, userId, name);
         } else if (t.type === 'music') {
           if (t.command) sendCommand(channel, t.command, userId);
+        } else if (t.type === 'image') {
+          if (imageSearch && t.query) pictures.push(imageSearch.find(t.query));
         } else if (t.type === 'search' && !searched) {
           searched = true;
           message.react('🔍').catch(() => {});
@@ -142,7 +145,10 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     const answer = text.replace(/<\/?think>/gi, '').trim() ||
       (failed ? 'Sorry, I had trouble with that.' : 'Sorry, I lost my train of thought.');
     const [first, ...rest] = splitMessage(answer);
-    await reply(message, first).catch(err => console.error(`[text] reply failed: ${err.message}`));
+    // Pictures go with the reply as attachments: Discord shows them inline.
+    const files = (await Promise.all(pictures)).filter(Boolean).map(p => ({ attachment: p.buffer, name: p.name }));
+    await message.reply({ content: first, files, allowedMentions: NO_PINGS })
+      .catch(err => console.error(`[text] reply failed: ${err.message}`));
     for (const part of rest) await channel.send({ content: part, allowedMentions: NO_PINGS }).catch(() => {});
   }
 

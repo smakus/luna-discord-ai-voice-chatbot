@@ -107,6 +107,24 @@ const REQUESTERS_TOOL = {
   run: () => 'The song requesters are not available right now.',
 };
 
+// A picture from the web, posted in the text chat ("show me a capybara").
+// index.js replaces run() with one that finds it (image-search.js); the
+// answer's onTool handler posts it where the question came from.
+const IMAGE_TOOL = {
+  name: 'post_image',
+  description: 'Find a picture on the web and post it in the text chat, where everyone can see it. ' +
+    'Use it whenever someone asks you to show, send or post a picture, photo or image of something, ' +
+    'or asks what something looks like. You cannot see the picture, so do not describe it in detail.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What to search for, in a few words ("baby capybara", "Eiffel Tower at night")' },
+    },
+    required: ['query'],
+  },
+  run: () => 'Pictures are not available right now.',
+};
+
 const LEAVE_TOOL = {
   name: 'leave_channel',
   description: 'Actually leave the voice channel. Saying goodbye does not make you leave: you must ' +
@@ -134,12 +152,12 @@ const SAY_TOOL = {
   run: () => 'Said in the voice channel.',
 };
 
-const LLM_TOOLS = [...MUSIC_TOOLS, TOP_TOOL, REQUESTERS_TOOL, LEAVE_TOOL, SAY_TOOL];
+const LLM_TOOLS = [...MUSIC_TOOLS, TOP_TOOL, REQUESTERS_TOOL, IMAGE_TOOL, LEAVE_TOOL, SAY_TOOL];
 const LLM_TOOL_NAMES = new Set(LLM_TOOLS.map(t => t.name));
 // Which are offered where: leaving makes sense only by voice, saying
 // something in voice only from text.
-const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, LEAVE_TOOL.name]);
-const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, SAY_TOOL.name]);
+const VOICE_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, IMAGE_TOOL.name, LEAVE_TOOL.name]);
+const TEXT_TOOL_NAMES = new Set([...MUSIC_TOOLS.map(t => t.name), TOP_TOOL.name, REQUESTERS_TOOL.name, IMAGE_TOOL.name, SAY_TOOL.name]);
 const MUSIC_TOOL_NAMES = new Set(MUSIC_TOOLS.map(t => t.name));
 
 // The smakbot command for a tool call: { text, summon }, or null.
