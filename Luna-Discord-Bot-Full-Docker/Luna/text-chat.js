@@ -9,7 +9,7 @@
 // channel isn't needed.
 
 const { route, musicAck, isSayRequest } = require('./commands');
-const { TEXT_TOOL_NAMES } = require('./llm-tools');
+const { TEXT_TOOL_NAMES, claimsMusic, MUSIC_FOLLOWUP } = require('./llm-tools');
 
 // "Luna, …", "hey Luna …", "Luna: …" at the start ("lunar" does not count).
 const NAME_RE = /^\s*(?:(?:hey|hi|hello|ok(?:ay)?|yo)[\s,]+)?luna\b[\s,:;.!?-]*/i;
@@ -116,13 +116,14 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     const typing = () => channel.sendTyping?.().catch(() => {});
     typing();
     const typingTimer = setInterval(typing, 8000);
-    let text = '', failed = false, searched = false;
+    let text = '', failed = false, searched = false, musicCalled = false;
     const pictures = [];   // post_image calls: found while answering, attached to the reply
     try {
       const onTool = t => {
         if (t.type === 'say') {
           sayInVoice(t.text, userId, name);
         } else if (t.type === 'music') {
+          musicCalled = true;
           if (t.command) sendCommand(channel, t.command, userId);
         } else if (t.type === 'image') {
           if (imageSearch && t.query) pictures.push(imageSearch.find(t.query));
@@ -134,6 +135,20 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
       for await (const piece of llm.stream(`${name}: ${question}`, { userId, tag: 'text',
         useSearch: llm.offerSearch(question), textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool })) {
         text += piece;
+      }
+      // Said music was queued but called no music tool (llm-tools.js): one
+      // quiet follow-up in the same conversation; its words aren't posted.
+      if (!musicCalled && text.trim() && llm.canUseTools?.() && claimsMusic(text)) {
+        console.warn(`[text] said music was queued but called no music tool — asking it to make the calls`);
+        let calls = 0;
+        const followTool = t => { if (t.type === 'music') { calls++; if (t.command) sendCommand(channel, t.command, userId); } };
+        try {
+          for await (const _ of llm.stream(MUSIC_FOLLOWUP, { userId, tag: 'text', useSearch: false, textMode: true,
+            memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool: followTool })) { /* not posted */ }
+        } catch (err) {
+          console.warn(`[text] music follow-up failed: ${err.message}`);
+        }
+        console.log(`[text] music follow-up: ${calls ? `${calls} music call(s) made` : 'no calls (no music meant)'}`);
       }
     } catch (err) {
       failed = true;

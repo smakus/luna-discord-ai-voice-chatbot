@@ -156,6 +156,8 @@ describe('system prompt (prompt.js)', () => {
     const voice = new Set(['play_music', 'skip_song', 'stop_music', 'leave_channel']);
     assert.match(toolsLine(voice), /^You have tools to play, skip or stop music and leave the voice channel\. .*call the tool/);
     assert.match(toolsLine(new Set(['play_music', 'say_in_voice'])), /play, skip or stop music and say something out loud in the voice channel\./);
+    assert.match(toolsLine(voice), /call play_music once for each song.*a question about songs or artists is answered, not played/);
+    assert.ok(!/play_music once/.test(toolsLine(new Set(['leave_channel']))), 'only when play_music is offered');
     assert.strictEqual(toolsLine(new Set(['tavily_search'])), '');
     const p = systemPrompt({ config, timeZone: 'UTC', now, search: true, tools: voice, speaker: 'Sam' });
     const at = s => p.indexOf(s);

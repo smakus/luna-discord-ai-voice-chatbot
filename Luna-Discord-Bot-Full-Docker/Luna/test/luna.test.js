@@ -928,6 +928,42 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.match(H.S.llmRequests[0].system, /You have tools to play, skip or stop music, leave the voice channel and post a picture in the text chat\./);
     ok('the system prompt names the tools offered'); }
 
+  console.log('said music was queued without calling a tool → one follow-up');
+  { const { claimsMusic } = require(require('path').join(__dirname, '..', 'llm-tools.js'));
+    for (const t of ["Let's get \"Hit the Road Jack\" and \"What'd I Say\" queued up for you, smakus.", "I'll keep them spinning.",
+      "Alright, I'll play some Ray Charles for you.", "Coming right up!", "I've cued up three classics.", "Let me queue up a few of his hits."])
+      assert.ok(claimsMusic(t), t);
+    for (const t of ['Toto\'s top three songs are "Africa", "Rosanna" and "Hold the Line".', 'It is sunny and 72 degrees.',
+      'Let me know if you want me to play one.', 'Ray Charles played piano from the age of three.'])
+      assert.ok(!claimsMusic(t), t);
+    ok('claimsMusic: "queued up", "keep them spinning", "I\'ll play…", "coming right up" are claims; a song list, "let me know if…", "played piano" are not'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.names = { u1: 'Sam' }; H.put('u1', 'A'); H.S.llmRequests.length = 0;
+    H.S.llmScripts = [sse('Let\'s get "Hit the Road Jack" and "What\'d I Say" queued up for you.'),
+      [...MUSIC_CALL('play_music', { query: 'Hit the Road Jack Ray Charles' }), ...MUSIC_CALL('play_music', { query: "What'd I Say Ray Charles" }), ...sse('Done.')]];
+    await H.T.handleQuery('cue up two Ray Charles songs', H.S.lastConnection, H.text, Date.now(), 'u1');
+    await H.until(() => H.S.sends.includes("!play What'd I Say Ray Charles"));
+    assert.strictEqual(H.S.llmRequests.length, 2);
+    assert.match(H.S.llmRequests[1].input, /your reply above said music was queued or playing, but you called no music tool/);
+    assert.ok(H.S.llmRequests[1].prev, 'same conversation');
+    assert.ok(H.S.sends.includes('!play Hit the Road Jack Ray Charles'));
+    await H.wait(100); assert.ok(!H.S.tts.some(t => t.text === 'Done.'), 'the follow-up is not spoken');
+    assert.ok(H.S.logs.some(l => /said music was queued but called no music tool/.test(l)) && H.S.logs.some(l => /music follow-up: 2 music call\(s\) made/.test(l)));
+    ok('voice: "…queued up for you" with no tool call → one follow-up in the same conversation; its play_music calls reach smakbot, its words are not spoken'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.names = { u1: 'Sam' }; H.put('u1', 'A'); H.S.llmRequests.length = 0;
+    H.S.llmScripts = [sse("I'm going to play devil's advocate here."), sse('no')];
+    await H.T.handleQuery('is pineapple on pizza good?', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(300);
+    assert.strictEqual(H.S.llmRequests.length, 2); assert.ok(!H.S.sends.some(m => typeof m === 'string' && m.startsWith('!play')));
+    assert.ok(!H.S.tts.some(t => t.text === 'no')); assert.ok(H.S.logs.some(l => /music follow-up: no calls \(no music meant\)/.test(l)));
+    ok('a false alarm ("play devil\'s advocate") → the follow-up says no: nothing queued, nothing said'); }
+  { const H = await setup({ LLM_TOOLS: 'true' }); H.S.names = { u1: 'Sam' }; H.put('u1', 'A'); H.S.llmRequests.length = 0;
+    H.S.llmScript = [...sse('Sure thing!'), ...MUSIC_CALL('play_music', { query: 'chill lo-fi' }), ...sse('Queued up some lo-fi.')];
+    await H.T.handleQuery('put on something chill', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.wait(300);
+    assert.strictEqual(H.S.llmRequests.length, 1, 'a real call → no follow-up');
+    const H2 = await setup({ LLM_TOOLS: 'false' }); H2.S.names = { u1: 'Sam' }; H2.put('u1', 'A'); H2.S.llmRequests.length = 0; H2.S.llmScript = sse("I've queued it up.");
+    await H2.T.handleQuery('what should we listen to?', H2.S.lastConnection, H2.text, Date.now(), 'u1'); await H2.wait(300);
+    assert.strictEqual(H2.S.llmRequests.length, 1, 'tools off → no follow-up');
+    ok('no follow-up when a music tool was called, or when the tools are off'); }
+
   console.log('audio tags after the last sentence');
   { const H = await setup({}); H.S.llmScript = sse('Expect rain today, so bring an umbrella.', '[chuckles]');
     await H.T.handleQuery('what is the weather', H.S.lastConnection, H.text, Date.now(), 'u1'); await H.until(() => H.S.tts.length > 0); await H.wait(100);
@@ -1112,6 +1148,11 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     assert.ok(H.S.llmRequests[0].integrations.some(i => i.id === 'mcp/luna' && i.allowed_tools.includes('list_top_requesters')));
     assert.ok(!H.S.sends.some(m => m.startsWith('!')), 'nothing played');
     ok('LLM tool list_top_requesters: offered, ranks people by songs requested with counts and top song (default 5); none yet / unreachable said plainly'); }
+  { const H = await textRig({ LLM_TOOLS: 'true' });
+    H.S.llmScripts = [sse('Queued up "Africa" by Toto for you!'), [...MUSIC_CALL('play_music', { query: 'Africa Toto' }), ...sse('Done.')]];
+    await H.say('Luna, queue up Africa by Toto'); await H.until(() => H.S.sends.includes('!play Africa Toto'));
+    assert.strictEqual(H.S.replies.length, 1); assert.strictEqual(H.S.replies[0].content, 'Queued up "Africa" by Toto for you!');
+    ok('text: the same follow-up; its calls reach smakbot, only the first answer is posted'); }
   console.log('pictures in the text chat (post_image)');
   const IMG_CALL = query => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'post_image', provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
     [5, { type: 'tool_call.arguments', tool: 'post_image', arguments: { query } }], [5, { type: 'tool_call.success', tool: 'post_image', arguments: { query }, output: '[{"type":"text","text":"ok"}]' }]];

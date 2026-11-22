@@ -20,11 +20,16 @@ const MUSIC_TOOLS = [
     name: 'play_music',
     description: 'Play music in the voice channel through the music bot: a song, artist, album, ' +
       'soundtrack or style. If music is already playing, it is queued after the current song. ' +
-      'Use it whenever someone asks for music to be played or queued.',
+      'Use it whenever someone asks for music to be played, queued or cued up. One call queues ONE ' +
+      'song: for several songs (an artist\'s top three hits, five chill songs) call it once for each ' +
+      'song, choosing the songs yourself, with the title and artist in each query. The music is only ' +
+      'queued if you call this tool. Only when someone asks for music to be played: a question about ' +
+      'songs ("what are Toto\'s top three songs?", "what are Ray Charles\'s biggest hits?", "who sang this?") is ' +
+      'answered in words, nothing played.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'What to search for and play, e.g. "Bohemian Rhapsody Queen" or "lo-fi study beats"' },
+        query: { type: 'string', description: 'What to search for and play: one song, e.g. "Hit the Road Jack Ray Charles", or a style, e.g. "lo-fi study beats"' },
       },
       required: ['query'],
     },
@@ -32,9 +37,10 @@ const MUSIC_TOOLS = [
   },
   {
     name: 'play_top_songs',
-    description: "Play the most played songs: the music bot's own favourites, the ones played most " +
-      'in this server. Use it when someone asks you to play the top songs, the most played, the usual, or ' +
-      'their favourites rather than a particular song. To only say which songs those are, use list_top_songs.',
+    description: "Play THIS SERVER's most played songs: the ones people here have played most with the " +
+      'music bot. Only for "our" top songs, the most played here, the usual, our favourites. Never for an ' +
+      'artist\'s or band\'s hits ("Ray Charles\'s top three", "Toto\'s best songs"): for those, call ' +
+      'play_music once for each song. To only say which songs are played most here, use list_top_songs.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -76,8 +82,9 @@ const MUSIC_TOOLS = [
 const TOP_TOOL = {
   name: 'list_top_songs',
   description: "Look up the most played songs in this server and their play counts, without playing " +
-    'anything. Use it when someone asks which songs are played most, what their favourites are, or ' +
-    'whether a song is among them. With a user, it looks up the songs that one person requested most ' +
+    'anything. Use it when someone asks which songs are played most here, what our favourites are, or ' +
+    'whether a song is among them. Not for an artist\'s or band\'s popular songs ("Toto\'s top three ' +
+    'songs") — answer those from what you know or search the web. With a user, it looks up the songs that one person requested most ' +
     'instead, whether or not they are here right now ("what are kenbeans\' top songs?", "what do I ' +
     'request most?").',
   inputSchema: {
@@ -177,4 +184,28 @@ function smakbotCommandFor(tool, args = {}) {
   return null;
 }
 
-module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor };
+// ─── Saying it without doing it ───────────────────────────────────────────────
+//
+// The model sometimes says music is queued without calling a music tool
+// ("Let's get Hit the Road Jack … queued up for you", nothing queued — three
+// times one evening in November 2026). claimsMusic() spots such a claim in a
+// finished answer that made no music call; Luna then sends MUSIC_FOLLOWUP in
+// the same conversation, so the model can make the calls it meant to (or say
+// "no"). Loose on purpose: a false alarm costs one quick, silent request, and
+// the model decides.
+const MUSIC_CLAIMS = [
+  /\b(queued|queueing|queuing|cued|lined up)\b/i,
+  /\bqueue (it|them|those|these|that|this|up)\b/i,
+  /\b(spinning|coming right up|now playing)\b/i,
+  /\b(i'?ll|i will|i'?m|i am|let'?s|gonna|going to|getting)\b(?![^.!?]*\blet me know\b)[^.!?]{0,50}\b(play|queue|cue|spin|put (it|them|those|that|some\w*) on|put on|line up|add)/i,
+];
+function claimsMusic(text) {
+  return MUSIC_CLAIMS.some(re => re.test(String(text || '')));
+}
+const MUSIC_FOLLOWUP = '(A note from the system, not from the person: your reply above said music was queued ' +
+  'or playing, but you called no music tool, so nothing was queued and nothing will play. If the person asked ' +
+  'for music to be played or queued, call play_music now, once for each song you named, and write nothing ' +
+  'else. Only if they did not ask for any music, reply with just: no.)';
+
+module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor,
+                   claimsMusic, MUSIC_FOLLOWUP };
