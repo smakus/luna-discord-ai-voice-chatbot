@@ -64,9 +64,14 @@ function toolsLine(names) {
   if (names.has('say_in_voice')) can.push('say something out loud in the voice channel');
   if (names.has('post_image')) can.push('post a picture in the text chat');
   if (!can.length) return '';
+  const several = names.has('play_music')
+    ? ' To queue several songs, call play_music once for each song, then reply. Play music only when ' +
+      'someone asks you to play, queue or put something on; a question about songs or artists is answered, ' +
+      'not played.' : '';
   return `You have tools to ${can.join(', ').replace(/, ([^,]*)$/, ' and $1')}. Saying you did something ` +
-    'does not do it: whenever someone asks for one of these, call the tool, then reply. Never say that ' +
-    'you are playing, skipping, stopping, leaving, saying or posting something unless you called its tool.';
+    'does not do it: whenever someone asks for one of these, call the tool, then reply.' + several + ' Never say that ' +
+    'you are playing, queueing, skipping, stopping, leaving, saying or posting something unless you called its tool ' +
+    'in this reply.';
 }
 
 // Added to a quick-answer (reasoning off) retry. Without reasoning, the
