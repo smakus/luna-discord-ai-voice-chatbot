@@ -664,6 +664,8 @@ function createLlm({ config, fetch, console, expressivePrompt = () => '', musicL
     searchPaused,
     // A search may be offered at all: configured and not paused.
     canSearch: () => WEB_SEARCH !== 'off' && !searchPaused(),
+    // Luna's own tools are offered: configured and not paused.
+    canUseTools: () => offerTools(),
     describeSearch,
     // Forget every conversation (Luna left the voice channel).
     forgetConversations: () => conversations.clear(),

@@ -22,6 +22,7 @@ const path = require('path');
 const { route, musicAck, LEAVE_PHRASES } = require('./commands');
 const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
+const { claimsMusic, MUSIC_FOLLOWUP } = require('./llm-tools');
 const { QUICK_PROMPT } = require('./prompt');
 const { parseWaits } = require('./config');
 const { isBareWake, confirmWake, isJunkTranscript, nearWakePhrase } = require('./voice-input');
@@ -466,9 +467,37 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     const searchCalls = [];
     let context = '';
     let leaveAfterAnswer = false;   // the LLM called leave_channel
+    let musicCalled = false;        // the LLM called a music tool
+    let spoken = '';                // what was said, for claimsMusic()
+
+    // The answer said music was queued but no music tool was called (see
+    // llm-tools.js): one quiet follow-up in the same conversation, so the
+    // model can make the calls it meant to. Nothing of it is spoken.
+    const musicFollowUp = async () => {
+      console.warn(`[${nameOf(userId)}] [LLM] said music was queued but called no music tool — asking it to make the calls`);
+      let calls = 0;
+      const cancel = new AbortController();
+      playback.trackRequest(userId, cancel);
+      try {
+        const onTool = t => {
+          if (t.type !== 'music') return;
+          calls++;
+          if (t.command) sendCommand(channel, t.command, userId);
+        };
+        for await (const _ of llm.stream(MUSIC_FOLLOWUP, { userId, useSearch: false, reasoning: 'off', signal: cancel.signal, onTool })) {
+          if (superseded()) break;
+        }
+      } catch (err) {
+        if (!superseded()) console.warn(`[${nameOf(userId)}] [LLM] music follow-up failed: ${err.message}`);
+      } finally {
+        playback.untrackRequest(userId, cancel);
+      }
+      console.log(`[${nameOf(userId)}] [LLM] music follow-up: ${calls ? `${calls} music call(s) made` : 'no calls (no music meant)'}`);
+    };
 
     const speak = sentence => {
       console.log('Luna sentence:', sentence);
+      spoken += ' ' + sentence;
       saidAfterSearch++;
       if (firstSentence) {
         firstSentence = false;
@@ -539,6 +568,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           } else if (t.type === 'search-result') {
             searchCalls.push({ query: t.query, output: t.output });
           } else if (t.type === 'music') {
+            musicCalled = true;
             if (t.command) sendCommand(channel, t.command, userId);
           } else if (t.type === 'image') {
             // Asked by voice: the picture goes in the text channel.
@@ -622,6 +652,10 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
           useSearch = false;
           console.log(`[${nameOf(userId)}] [LLM] quick answer reuses ${searchCalls.length} search result set(s); search not offered again`);
         }
+      }
+
+      if (!superseded() && !firstSentence && !brokeDown && !musicCalled && llm.canUseTools?.() && claimsMusic(spoken)) {
+        await musicFollowUp();
       }
 
       if ((firstSentence || brokeDown) && !superseded()) {

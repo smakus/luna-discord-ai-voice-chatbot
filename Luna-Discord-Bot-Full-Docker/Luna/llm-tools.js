@@ -184,4 +184,28 @@ function smakbotCommandFor(tool, args = {}) {
   return null;
 }
 
-module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor };
+// ─── Saying it without doing it ───────────────────────────────────────────────
+//
+// The model sometimes says music is queued without calling a music tool
+// ("Let's get Hit the Road Jack … queued up for you", nothing queued — three
+// times one evening in November 2026). claimsMusic() spots such a claim in a
+// finished answer that made no music call; Luna then sends MUSIC_FOLLOWUP in
+// the same conversation, so the model can make the calls it meant to (or say
+// "no"). Loose on purpose: a false alarm costs one quick, silent request, and
+// the model decides.
+const MUSIC_CLAIMS = [
+  /\b(queued|queueing|queuing|cued|lined up)\b/i,
+  /\bqueue (it|them|those|these|that|this|up)\b/i,
+  /\b(spinning|coming right up|now playing)\b/i,
+  /\b(i'?ll|i will|i'?m|i am|let'?s|gonna|going to|getting)\b(?![^.!?]*\blet me know\b)[^.!?]{0,50}\b(play|queue|cue|spin|put (it|them|those|that|some\w*) on|put on|line up|add)/i,
+];
+function claimsMusic(text) {
+  return MUSIC_CLAIMS.some(re => re.test(String(text || '')));
+}
+const MUSIC_FOLLOWUP = '(A note from the system, not from the person: your reply above said music was queued ' +
+  'or playing, but you called no music tool, so nothing was queued and nothing will play. If the person asked ' +
+  'for music to be played or queued, call play_music now, once for each song you named, and write nothing ' +
+  'else. Only if they did not ask for any music, reply with just: no.)';
+
+module.exports = { LLM_TOOLS, LLM_TOOL_NAMES, VOICE_TOOL_NAMES, TEXT_TOOL_NAMES, MUSIC_TOOL_NAMES, smakbotCommandFor,
+                   claimsMusic, MUSIC_FOLLOWUP };
