@@ -1,27 +1,270 @@
 # Luna: Local AI Voice Assistant for Discord
 
-**Luna** is a free, open-source, self-hosted AI voice assistant and chatbot for Discord. She joins your voice channel, listens for **"hey Luna"**, and answers out loud: questions, jokes, the weather, music requests, and whatever else the group throws at her. You can also type to her in a text channel.
+**Luna** is a free, self-hosted AI voice assistant for Discord. She sits in your voice channel, listens for **"hey Luna"**, and answers out loud: questions, jokes, the weather, music requests. You can also type to her in a text channel.
 
-Everything that matters runs on your own computer: a local LLM through [LM Studio](https://lmstudio.ai), [Whisper](https://github.com/ggml-org/whisper.cpp) speech-to-text, and Kokoro, Chatterbox or Qwen3-TTS text-to-speech. There are no cloud AI bills and no voices sent to a third party. Web search ([Tavily](https://tavily.com)) and the [ElevenLabs](https://elevenlabs.io) voice are optional extras. Paired with [smakbot](https://github.com/smakus/smakbot-discord-music-bot), she's also a voice-controlled music DJ.
+She runs on your own computer: the AI model, the speech recognition and her voice. There are no per-question bills, and your voices aren't sent to anyone. Web search and a premium cloud voice are optional extras.
 
 If you find this fun or useful, [buy me a coffee](https://buymeacoffee.com/qgt11lbfad)!
 
-**Contents:** [Features](#features) · [Using Luna](#using-luna) · [Music with smakbot](#music-with-smakbot) · [How it works](#how-it-works) · [Setup](#setup) · [Voices](#text-to-speech-providers) · [Configuration](#configuration) · [Hardware sizing](#hardware-sizing) · [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Development](#development)
+**Contents:** [What she can do](#what-she-can-do) · [What you need](#what-you-need) · [Quick start](#quick-start) · [Talking to Luna](#talking-to-luna) · [Optional extras](#optional-extras) · [If something isn't working](#if-something-isnt-working) · [Advanced](#advanced)
 
-## Features
+## What she can do
 
-- 🎤 **"Hey Luna" wake word.** A neural wake-word model ([openWakeWord](https://github.com/dscripka/openWakeWord)) listens to everyone in the channel, so only real requests are transcribed. Say it mid-sentence, or pause after it; both work.
-- 🧠 **Runs on your own LLM** in LM Studio (Qwen, Gemma and others), with conversation memory for each person.
-- 🔊 **Talks back fast.** She starts speaking her first sentence while the rest of the answer is still being written.
-- 🎭 **Expressive voices.** Kokoro by default. Chatterbox Turbo and ElevenLabs laugh, sigh and whisper where it fits, and Qwen3-TTS speaks in a voice you design.
-- 🌐 **Web search when it's needed** (optional, Tavily). The model decides when it needs fresh information, and Luna tells you when she's looking something up.
-- 👥 **Built for groups.** Each person gets their own wake-word detector and memory. Answers queue instead of cutting each other off, and saying "hey Luna" again interrupts only your own answer.
-- 💬 **Text chat.** Type "Luna, …" in a chat channel for a written answer. She can also say something out loud in the voice channel for you.
-- 🎵 **Voice-controlled music** with smakbot: play, skip, pause, stop, "play the top 10", "what song is this?", and questions about the song that's playing.
-- 👋 **Greets people.** She introduces herself, greets people who join by name (with custom greetings in their own voice if you like), and says goodbye when they leave.
-- 🍎 **Apple Silicon acceleration** for Whisper and the voices; on Linux everything runs in Docker.
+- 🎤 **Answers "hey Luna" from anyone in the channel**, out loud, usually within a couple of seconds.
+- 🧠 **Remembers the conversation** with each person for an hour, so follow-up questions work.
+- 🌐 **Looks things up on the web** when she needs fresh information (optional).
+- 🎵 **Plays music on request** together with [smakbot](https://github.com/smakus/smakbot-discord-music-bot), our music bot: "hey Luna, play Crazy by Seal".
+- 💬 **Chats in a text channel** too, and can post pictures there.
+- 👋 **Greets people** who join, by name, and says goodbye when they leave.
 
-## Using Luna
+## What you need
+
+- **A computer to run her on**, ideally always on while you use her:
+  - **A Mac with Apple Silicon** (M1 or newer) and at least 16 GB of memory (32 GB is better). This is the best experience.
+  - **Or a Linux PC** with 16 GB or more. It works, a bit slower.
+  - Intel Macs and Windows aren't supported.
+- **A Discord server** where you're allowed to add bots.
+- **About 30–45 minutes.** Most of it is waiting for downloads.
+
+You don't need to know how to program. You'll copy a few commands into the Terminal and paste a few values into a settings file.
+
+## Quick start
+
+These steps set up the recommended version: Chatterbox, an expressive free voice, on a Mac, or Kokoro, a simpler free voice, on Linux. Other voices and features can be added later ([Optional extras](#optional-extras)).
+
+### 1. Install the tools
+
+Install and open these two apps:
+
+- [**Docker Desktop**](https://www.docker.com/products/docker-desktop/): runs Luna herself.
+- [**LM Studio**](https://lmstudio.ai): runs the AI model that writes her answers.
+
+**On a Mac,** also install [Homebrew](https://brew.sh) (follow the one-line install on its home page), then open the **Terminal** app and run:
+
+```bash
+xcode-select --install; brew install cmake
+```
+
+✅ **You should see:** Docker's whale icon in the menu bar, and LM Studio open.
+
+### 2. Set up LM Studio
+
+1. **Download a model.** In LM Studio's search, pick one that fits your computer's memory:
+
+   | Your computer's memory | Search for |
+   | --- | --- |
+   | 16 GB | `qwen3-8b` |
+   | 24 GB | `qwen3-14b` |
+   | 32 GB or more | `qwen3.6-35b-a3b` (what Luna is developed on) |
+
+   A smaller model answers faster. For short spoken answers, fast beats big.
+
+2. **Load it** with **GPU offload** set to the maximum and **context length** set to about 16,000.
+3. **Start LM Studio's server.** Open the **Developer** tab and turn the server on. In its settings:
+   - set it to serve on the local network (`0.0.0.0`), so Docker can reach it,
+   - turn **Require authentication** on, and copy the **API token** it shows. You'll need it in step 4.
+   - turn on **MCP** (allows web search and Luna's tools; see [Optional extras](#optional-extras)).
+
+✅ **You should see:** the server status says **Running**, on port 1234.
+
+### 3. Create Luna's Discord bot
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**. Call it Luna.
+2. Open **Bot**, click **Reset Token**, and copy the token. You'll need it in step 4. Keep it secret: anyone with it can control the bot.
+3. On the same page, turn on **Message Content Intent** and save.
+4. Open **OAuth2 → URL Generator**. Tick **bot**, then these permissions: **View Channels**, **Send Messages**, **Attach Files**, **Add Reactions**, **Read Message History**, **Connect**, **Speak** and **Use Voice Activity**. Open the link it makes and add the bot to your server.
+
+✅ **You should see:** Luna in your server's member list, offline for now.
+
+### 4. Download Luna and fill in her settings
+
+In the Terminal:
+
+```bash
+git clone https://github.com/smakus/luna-discord-ai-voice-chatbot
+cd luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker
+cp Luna/example.env Luna/.env
+open -e Luna/.env
+```
+
+(On Linux, use `nano Luna/.env` instead of the last line.)
+
+That opens her settings file. Fill in the two tokens you copied:
+
+```env
+DISCORD_TOKEN=the bot token from step 3
+LM_STUDIO_MCP_BEARER_TOKEN=the LM Studio token from step 2
+```
+
+**On a Mac,** also change the voice line to:
+
+```env
+TTS_PROVIDER=chatterbox
+```
+
+Then add these lines at the end. They're the settings we recommend: replace the channel names with your own.
+
+```env
+# Join this voice channel by herself when someone's in it
+AUTO_JOIN_CHANNELS=General
+# Let people type "Luna, …" in this text channel
+TEXT_CHAT_CHANNELS=general
+# Her personality, in a few words
+LM_PERSONALITY=fun, friendly and helpful
+# Catch "hey Luna"s the wake-word model misses (costs a little extra speech recognition)
+WAKE_WHISPER_BACKUP=true
+```
+
+Save the file.
+
+✅ **You should see:** your two tokens in `Luna/.env`, with no spaces around the `=`.
+
+### 5. Start Luna
+
+**On a Mac,** Luna runs as three parts, each in its own Terminal window or tab. Open them in this order, from the `Luna-Discord-Bot-Full-Docker` folder, and wait for each to say it's ready before starting the next. The first start of each one downloads and builds for a few minutes.
+
+1. **Speech recognition:**
+
+   ```bash
+   ./scripts/whisper-metal.sh
+   ```
+
+   ✅ Ready when it says it's listening on port 8081.
+
+2. **Her voice:**
+
+   ```bash
+   ./scripts/chatterbox-metal.sh
+   ```
+
+   ✅ Ready when it says `Starting … server`.
+
+3. **Luna:**
+
+   ```bash
+   docker compose -f docker-compose.metal.yml up --build
+   ```
+
+**On Linux,** one command starts everything:
+
+```bash
+docker compose up --build
+```
+
+✅ **You should see:** `Ready! Wake phrase: "hey Luna"` in Luna's window, and Luna online in Discord.
+
+### 6. Say hello
+
+Join the voice channel you set in step 4; she joins you by herself. (Or type `!luna` in a text channel to call her into the channel you're in.) Once she's introduced herself, say:
+
+> **"Hey Luna, what's two plus two?"**
+
+She plays a chime when she's heard you, then answers. 🎉 If she doesn't, see [If something isn't working](#if-something-isnt-working).
+
+### Stopping, restarting and updating
+
+| To | Do |
+| --- | --- |
+| Stop her | Press `Ctrl-C` in each Terminal window |
+| Start her again | Run the commands from step 5 again |
+| Apply a change to `Luna/.env` | Press `Ctrl-C` in Luna's window and run its step 5 command again |
+| Update to the latest version | `git pull`, then restart as above |
+
+Your settings, custom greetings and logs are kept when you update.
+
+## Talking to Luna
+
+Say **"hey Luna"** and your request, in one go or with a pause after "hey Luna". She waits a few seconds for the question. Saying "hey Luna" again interrupts her answer to you.
+
+| Try saying | What happens |
+| --- | --- |
+| "Hey Luna, tell me a joke" | She answers |
+| "Hey Luna, what's the weather tomorrow?" | She searches the web, then answers (needs [web search](#web-search)) |
+| "Hey Luna, and what about Saturday?" | She remembers your conversation for an hour |
+| "Hey Luna, play Bohemian Rhapsody" | Plays it (needs [smakbot](#music)) |
+| "Hey Luna, skip" / "pause" / "stop the music" | Controls the music |
+| "Hey Luna, what song is this?" | Says what's playing and who asked for it |
+| "Hey Luna, show me a picture of a capybara" | Posts one in the text channel (needs [web search](#web-search)) |
+| "Hey Luna, you can go now" | Says goodbye and leaves |
+
+In a text channel from `TEXT_CHAT_CHANNELS`, start a message with **"Luna,"** or @mention her: *"Luna, what's the capital of Peru?"* She replies in writing.
+
+**Commands you can type:**
+
+| Command | What it does |
+| --- | --- |
+| `!luna` | Joins the voice channel you're in |
+| `!luna leave` | Leaves the voice channel |
+| `!luna say <text>` | Says exactly that text out loud |
+| `!luna voicecheck` | Checks that she can hear everyone (see [If something isn't working](#if-something-isnt-working)) |
+
+More examples are in [Using Luna in depth](#using-luna-in-depth).
+
+## Optional extras
+
+Each one is independent: add any of them whenever you like.
+
+### Web search
+
+Lets her answer questions about the news, the weather, prices and scores, and post pictures. Get a free key at [tavily.com](https://tavily.com) and add it to `Luna/.env`:
+
+```env
+TAVILY_API_KEY=your key
+```
+
+### Let her use tools
+
+Lets the AI model do things itself, not just talk: play music from requests like "put on something chill", post pictures, and leave when told to. In LM Studio, open **Program → Install → Edit mcp.json** and add this inside `"mcpServers"`, next to anything already there:
+
+```json
+"luna": { "url": "http://127.0.0.1:8895/mcp" }
+```
+
+### Music
+
+Luna doesn't play music herself: she asks [smakbot](https://github.com/smakus/smakbot-discord-music-bot), our Discord music bot. Set smakbot up from its own guide, then connect the two as described in [MusicBot integration](#musicbot-integration).
+
+### A different voice
+
+The [voice options](#text-to-speech-providers) include **ElevenLabs**, a paid cloud voice and the most expressive, and **Qwen3-TTS**, a free Mac voice you design from a description. Chatterbox can also clone a voice from a 15-second clip.
+
+### Custom greetings
+
+Give particular people their own welcome line, even in their own voice. See [Custom greetings](#custom-greetings).
+
+### Better answers from Qwen models
+
+Qwen models stay on topic and avoid repeating themselves with these settings in `Luna/.env`:
+
+```env
+LLM_REASONING=off
+LM_TEMPERATURE=0.7
+LM_TOP_P=0.8
+LM_TOP_K=20
+LM_MIN_P=0
+LM_REPEAT_PENALTY=1.05
+```
+
+## If something isn't working
+
+| Problem | Try this |
+| --- | --- |
+| She doesn't join | Check that her window shows `Ready!`, then type `!luna` while you're in a voice channel |
+| She joins but never answers "hey Luna" | Type `!luna voicecheck`. If it shows 0 for you while you talk, restart Luna (`Ctrl-C`, then step 5 again) |
+| Her answers take 20+ seconds | The model is too big for your computer's memory: pick a smaller one in step 2 |
+| She answers once, then stops | She's hearing herself through your speakers. Use headphones |
+| She doesn't reply in the text channel | Check `TEXT_CHAT_CHANNELS` matches the channel's name, and that **Message Content Intent** is on (step 3) |
+| Her window says LM Studio can't be reached | Check LM Studio's server is running and serving on the local network (step 2) |
+
+More in [Troubleshooting](#troubleshooting).
+
+---
+
+# Advanced
+
+Everything below is for when you want to change how Luna behaves, understand what she's doing, or work on her code.
+
+## Using Luna in depth
 
 ### Talking to her
 
@@ -159,133 +402,6 @@ You speak ─► openWakeWord (on the raw audio) ─► detection opens the gate
 If the wake word models fail to load, Luna falls back to transcribing everything and matching "hey Luna" in the text.
 
 Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes. If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`, and LM Studio keeps that connection open instead of Luna connecting on every question.
-
-## Requirements
-
-| | **Apple Silicon Mac** (M1 or later) | **Linux PC** |
-| --- | --- | --- |
-| Recommended for | The best experience | Works well |
-| Speech-to-text and voice | On the Mac's GPU | In Docker, on the CPU |
-| Recommended free voice | **Chatterbox** (laughs, sighs, whispers) | Kokoro |
-| RAM | 16 GB minimum, 32 GB+ recommended | 16 GB+ |
-
-- **Both:** [Docker](https://www.docker.com/products/docker-desktop/), [LM Studio](https://lmstudio.ai) and a Discord account.
-- **Optional:** a [Tavily](https://tavily.com) key for web search (free tier), and an [ElevenLabs](https://elevenlabs.io) key for the best (paid) voice.
-- **Not supported:** Intel Macs (LM Studio needs Apple Silicon). Windows isn't tested.
-
-## Setup
-
-### 1. Install
-
-Install and open [Docker](https://www.docker.com/products/docker-desktop/) and [LM Studio](https://lmstudio.ai). On a Mac, also install [Homebrew](https://brew.sh), then:
-
-```bash
-xcode-select --install; brew install cmake
-```
-
-Then download Luna:
-
-```bash
-git clone https://github.com/smakus/luna-discord-ai-voice-chatbot
-cd luna-discord-ai-voice-chatbot/Luna-Discord-Bot-Full-Docker
-cp Luna/example.env Luna/.env
-```
-
-### 2. Set up LM Studio
-
-1. Download a model that fits your RAM ([Hardware sizing](#hardware-sizing)) and load it with GPU offload at maximum and a context length of 16,000.
-2. In the **Developer** tab, start the server, bound to `0.0.0.0`, with **authentication on** (and **MCP on** if you'll use web search). Copy the token.
-
-### 3. Create the Discord bot
-
-1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application, add a bot and copy its token.
-2. Turn on **Message Content Intent** (under Privileged Gateway Intents).
-3. Invite it to your server with **View Channels**, **Send Messages**, **Add Reactions**, **Read Message History**, **Connect**, **Speak** and **Use Voice Activity**.
-
-### 4. Fill in `Luna/.env`
-
-Open it (`open -e Luna/.env` on a Mac, `nano Luna/.env` on Linux) and set:
-
-```env
-DISCORD_TOKEN=your_bot_token
-LM_STUDIO_MCP_BEARER_TOKEN=your_lm_studio_token
-TAVILY_API_KEY=your_tavily_key
-```
-
-`TAVILY_API_KEY` is optional (web search).
-
-Then pick **one** voice. You need one local voice server, or none at all with ElevenLabs:
-
-**Chatterbox** (Mac, free, laughs and sighs; recommended):
-
-```env
-TTS_PROVIDER=chatterbox
-```
-
-**Kokoro** (any computer, free, plain): leave `TTS_PROVIDER=kokoro` as it is.
-
-**ElevenLabs** (paid, the most expressive; no local voice server):
-
-```env
-TTS_PROVIDER=elevenlabs
-TTS_FALLBACK=none
-ELEVENLABS_API_KEY=your_key
-ELEVENLABS_VOICE_ID=your_voice_id
-```
-
-A backup voice is only needed with ElevenLabs, and only if you might run out of credits: without one, she goes quiet until ElevenLabs works again. For a backup on a Mac, change `TTS_FALLBACK=none` to `TTS_FALLBACK=chatterbox` (or `kokoro`) and also start that server in step 5. On Linux, Kokoro already runs in Docker, so just delete the `TTS_FALLBACK=none` line.
-
-The voices are compared in [Text-to-speech providers](#text-to-speech-providers).
-
-### 5. Start Luna
-
-**Mac:** open a terminal tab for each step in `Luna-Discord-Bot-Full-Docker/`, and wait for each to finish starting before the next. The first run of each downloads and builds for a few minutes.
-
-1. Whisper (always), ready when it says it's listening on port 8081:
-
-   ```bash
-   ./scripts/whisper-metal.sh
-   ```
-
-2. Your voice server: the **one** you picked in step 4. Skip this with ElevenLabs and no backup.
-
-   ```bash
-   ./scripts/chatterbox-metal.sh
-   ```
-
-   or
-
-   ```bash
-   ./scripts/kokoro-metal.sh
-   ```
-
-   Ready at `Starting … server`.
-
-3. Luna:
-
-   ```bash
-   docker compose -f docker-compose.metal.yml up --build
-   ```
-
-**Linux:**
-
-```bash
-docker compose up --build
-```
-
-### 6. Try it
-
-Luna is ready when her log shows `Ready! Wake phrase: "hey Luna"`. Join a voice channel and type `!luna` in a text channel. When she has introduced herself, say **"Hey Luna, what's two plus two?"** If she doesn't answer, see [Troubleshooting](#troubleshooting).
-
-### Stop, restart and update
-
-| To | Run |
-| --- | --- |
-| Stop | `Ctrl-C` in each tab |
-| Apply a `.env` change | Run the `docker compose … up --build` line again |
-| Update Luna | `git pull`, then the `docker compose … up --build` line |
-
-Custom greetings (`Luna/local/`), the wake-word log (`Luna/logs/`) and cached phrases (`Luna/cache/`) are kept when you rebuild.
 
 ---
 
