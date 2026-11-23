@@ -224,9 +224,9 @@ Luna doesn't play music herself: she asks [smakbot](https://github.com/smakus/sm
 
 ### A different voice
 
-The [voice options](#text-to-speech-providers) include **ElevenLabs**, a paid cloud voice and the most expressive, and **Qwen3-TTS**, a free Mac voice you design from a description. Chatterbox can also clone a voice from a 15-second clip.
+The [voice options](#her-voice) include **ElevenLabs**, a paid cloud voice and the most expressive, and **Qwen3-TTS**, a free Mac voice you design from a description. Chatterbox can also clone a voice from a 15-second clip.
 
-### Custom greetings
+### Personal welcomes
 
 Give particular people their own welcome line, even in their own voice. See [Custom greetings](#custom-greetings).
 
@@ -251,13 +251,26 @@ More in [Troubleshooting](#troubleshooting).
 
 # Advanced
 
-Everything below is for when you want to change how Luna behaves, understand what she's doing, or work on her code.
+Everything below is for when you want to change how Luna behaves, understand what she's doing, or fix something. Each part starts with the common changes in plain words; the full list of settings is folded away underneath (click to open it).
+
+**Contents:** [Changing settings](#changing-settings) · [Using Luna in depth](#using-luna-in-depth) · [Personality and answers](#personality-and-answers) · [Her voice](#her-voice) · [Listening and the wake word](#listening-and-the-wake-word) · [Channels, greetings and announcements](#channels-greetings-and-announcements) · [Web search, pictures and tools](#web-search-pictures-and-tools) · [Music with smakbot](#music-with-smakbot) · [How it works](#how-it-works) · [Hardware sizing](#hardware-sizing) · [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Working on Luna's code](#working-on-lunas-code)
+
+## Changing settings
+
+Everything is set in `Luna/.env`. After changing it, restart Luna: press `Ctrl-C` in her window and run her start command again (`docker compose -f docker-compose.metal.yml up --build` on a Mac, `docker compose up --build` on Linux).
+
+Luna checks her settings at startup, and every setting is listed in [`config.js`](Luna-Discord-Bot-Full-Docker/Luna/config.js) with its type and default:
+- **An invalid value** is reported and the default is used: `[config] OWW_THRESHOLD="abc" is invalid (expected a number) — using the default (0.5)`.
+- **A misspelled name** is reported with the closest real one: `[config] OWW_THRESHHOLD is not one of Luna's settings and is ignored — did you mean OWW_THRESHOLD?`.
+- **On/off settings** accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`.
+
+The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER_URLS`, `KOKORO_URL`) are set by the compose file and override `.env`; change them there if yours run elsewhere.
 
 ## Using Luna in depth
 
 ### Talking to her
 
-Join a voice channel and type `!luna` in a text channel (or set up [auto-join](#audio-and-memory) so she comes by herself). She joins and introduces herself. Then say **"hey Luna"** and your request:
+Join a voice channel and type `!luna` in a text channel (or set up [auto-join](#channels-greetings-and-announcements) so she comes by herself). She joins and introduces herself. Then say **"hey Luna"** and your request:
 
 - **Run it straight into the question** ("hey Luna what's the weather"), **or pause** after "hey Luna": she waits up to 4 seconds for the question. A chime means she's got it.
 - **Mid-sentence works:** "…anyway, hey Luna, what's the weather?" Only what follows "hey Luna" is the question.
@@ -306,131 +319,42 @@ With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that sta
 | `!luna voicecheck` | Shows, for each person, whether Luna can decrypt their voice (see [Troubleshooting](#troubleshooting)) |
 | `!luna wakestats` | How well the wake word worked for each person over the last day: how many of their "hey Luna"s she answered, and how (the model, the near-threshold check or the backup), their typical score and near misses. `!luna wakestats 7d` or `12h` for another span. Read from [the wake-word log](#the-wake-word-log) |
 
-### Music with smakbot
+## Personality and answers
 
-Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/smakbot-discord-music-bot), a self-hosted Discord music bot built to work with her, by posting its commands in the text channel. You can always type smakbot's own commands too (`!queue`, `!pause`, `!volume 50`, …); see [its command list](https://github.com/smakus/smakbot-discord-music-bot#commands).
+- **Her personality:** `LM_PERSONALITY` is how she's described to the model: "You are Luna, a *fun, friendly and helpful* voice assistant". A few words change her tone a lot.
+- **Longer or shorter answers:** `LM_CONCISE=true` asks for short answers; `false` lets her talk more.
+- **An occasional running joke:** `LM_FLAVOR_PROMPT` is an aside added to some answers (`LM_FLAVOR_CHANCE`, 15% by default), e.g. a fondness for a restaurant.
+- **How long she remembers:** each person's conversation is forgotten after an hour of quiet (`LM_MEMORY_TTL_MS`) or 12 exchanges (`LM_MEMORY_MAX_TURNS`). Shorter memory keeps answers fast.
+- **The model's settings:** `LLM_REASONING=off` makes reasoning models answer straight away instead of thinking first. The `LM_TEMPERATURE` group overrides the sampling settings saved in LM Studio; `Luna/.env` comes with Qwen's.
+- **"Still thinking" fillers** while a slow answer starts: when (`THINKING_WAITS`), how many (`THINKING_MAX`) and what she says (`THINKING_PHRASES`), or none (`ANNOUNCE_THINKING=false`).
+- **Today's date:** `LUNA_TIMEZONE` (e.g. `America/Los_Angeles`) so "what day is it?" is right where you are.
 
-| You say (or type "Luna, …") | Luna sends to smakbot |
-| --------------------------- | -------------------- |
-| "play Crazy by Seal" | `!summon` if smakbot isn't in the channel, then `!play Crazy by Seal --for=@you` |
-| "play the top 10" / "play the top twenty songs" / "play our top three hits" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
-| "skip" / "skip this song" | `!skip` |
-| "pause" / "pause the music" | `!pause` |
-| "resume" / "unpause" / "keep playing" | `!resume` |
-| "stop" / "stop the music" | `!stop` (smakbot stops and leaves) |
-| "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
-| "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
-| "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
-| "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
-| "what are my top songs?" / "what's my top song?" | Nothing is played: she reads the songs **you** asked smakbot for most (its request history): *"Your top 2 requests: Heart of Gold, 4 requests. Sledgehammer, 2."* Someone else's (*"what are kenbeans' top songs?"*, online or not) goes to the LLM, which looks them up with `list_top_songs` |
-| "who requests the most songs?" / "give me the top 4 requesters and their counts" | The LLM ranks people by songs requested with `list_top_requesters` (smakbot's `/top-requesters`) |
-| "show me a picture of a baby capybara" / "what does a Del Taco crunchwrap look like?" | The LLM calls `post_image`: Luna finds a picture with Tavily's image search (`TAVILY_API_KEY`), downloads the first real JPEG, PNG, GIF or WebP under 8 MB, and uploads it, so it shows inline. In text it comes with her reply; asked by voice, it goes in the text channel (`AUTO_JOIN_TEXT_CHANNEL`) as "📷 capybara (for Sam)" |
-| "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
+<details>
+<summary><b>All personality and answer settings</b></summary>
 
-- **When music is already playing,** she says *"Adding … to the queue"* instead of *"Okay, playing …"*, since smakbot plays it after what's on now.
-- **`--for=@you`** credits the song to you instead of Luna, in smakbot's "Now playing", its status and Luna's own "what song is this?". It's sent without pinging you.
-- **"Play top of the world"** is still a song search. Only "the top N" / "most played" / "my favorites" mean the top-songs list.
-- **When smakbot joins or leaves,** Luna says so briefly: *"smakbot has joined."*
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `LM_PERSONALITY` | `helpful` | How Luna is described to the model: "You are Luna, a *…* voice assistant". E.g. `fun, bubbly, friendly and helpful` |
+| `LM_CONCISE` | `true` | Ask for concise answers. `false` lets her talk more |
+| `LM_USE_NAMES` | `true` | Tell the model who is asking (their Discord display name, made speakable) so she can use their name now and then |
+| `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
+| `LM_MEMORY_TTL_MS` | `3600000` | Forget a conversation (a speaker's, or a text channel's) after this much silence: 60 minutes. `LM_MEMORY_MAX_TURNS` still caps how long one grows |
+| `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
+| `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
+| `LM_TEMPERATURE` / `LM_TOP_P` / `LM_TOP_K` / `LM_MIN_P` / `LM_REPEAT_PENALTY` | unset | Sampling settings sent with every request, overriding what LM Studio has saved for the model (each one only if set). Use the model card's values for its non-thinking mode, e.g. Qwen 0.7 / 0.8 / 20 / 0, and a repeat penalty around 1.05 against endless repetition. Sent with the request they can't be lost to an LM Studio update, and LM Studio's request history shows them |
+| `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
+| `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
+| `ANNOUNCE_THINKING` | `true` | Say "still thinking" fillers while an answer is slow to start |
+| `THINKING_WAITS` | `15-22,22-30,30-40` | Wait windows in seconds for the 1st, 2nd, … filler; the last window repeats |
+| `THINKING_MAX` | `0` | Maximum fillers per question; `0` means no limit |
+| `THINKING_PHRASES` | built-in | Custom filler phrases, separated by a pipe character; `{name}` is the asker's name |
+| `LUNA_TIMEZONE` | `TZ`, else `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
+| `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
+| `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
 
-Setting the two bots up to talk to each other is covered in [MusicBot integration](#musicbot-integration).
+</details>
 
-### Custom greetings
-
-A few people can get their own join greeting, optionally in their own voice (ElevenLabs, or a Chatterbox clone). Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
-
-```json
-{
-  "371034505349169152": {
-    "name": "User X",
-    "voice": "OUBnvvuqEKdDWtapoJFn",
-    "phrases": ["Oh my, look who is here, {user}. [excited] Welcome in!"]
-  }
-}
-```
-
-- Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
-- `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
-- `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). The voice must be in your own ElevenLabs voices: add Voice Library voices to "My Voices" first. Leave it out to use Luna's normal voice.
-- Or `"voice": "chatterbox:<name>"` for a [Chatterbox](#chatterbox-turbo-apple-silicon) clone: put 10–20 seconds of clear speech as `<name>.wav` in Chatterbox's voices folder (no restart needed). It works with or without ElevenLabs, as long as Chatterbox is running.
-- A phrase can also have a voice of its own: `{ "text": "Make it so, {user}. Engage!", "voice": "chatterbox:stewart" }` among the other phrases. Phrases without one use the person's `voice`.
-- `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
-- Same cooldown and switches as the normal greeting. If the picked phrase's voice can't be used (ElevenLabs down or out of credits, Chatterbox not running, unknown voice), they get the normal greeting in the normal voice.
-- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voices ElevenLabs or Chatterbox doesn't know (checking costs no credits).
-
-### Announcements
-
-- **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
-- **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
-- **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
-- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
-
-Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam". Names a voice says wrong can be respelled with `NAME_PRONUNCIATIONS` (`smakus=smack-us`).
-
-To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
-
-```env
-GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
-FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
-BOT_JOIN_PHRASES={name} has joined.
-BOT_LEAVE_PHRASES={name} has left.
-INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
-```
-
----
-
-## How it works
-
-```
-You speak ─► openWakeWord (on the raw audio) ─► detection opens the gate
-          ─► Whisper transcribes ─► fixed commands (music, leave, "what song is this?")
-                                   or LM Studio streams a reply (with web search and tools)
-          ─► each finished sentence goes to the voice ─► Discord plays it
-             (sentence N+1 is synthesized while N plays)
-```
-
-If the wake word models fail to load, Luna falls back to transcribing everything and matching "hey Luna" in the text.
-
-Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes. If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`, and LM Studio keeps that connection open instead of Luna connecting on every question.
-
----
-
-## MusicBot integration
-
-How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music-bot) (or upstream [MusicBot](https://github.com/Just-Some-Bots/MusicBot)). What you can then say is in [Music with smakbot](#music-with-smakbot).
-
-1. **Let smakbot take commands from Luna.** MusicBot ignores other bots, so add Luna to its `config/options.ini`:
-
-   ```ini
-   [Permissions]
-   BotExceptionIDs = <Luna's Discord user ID>
-   ```
-
-2. **Give Luna a permission group without per-person limits**, since everyone's requests arrive as hers. In smakbot's `config/permissions.ini`:
-
-   ```ini
-   [LunaBot]
-   UserList = <Luna's Discord user ID>
-   MaxSongs = 0
-   MaxSongLength = 0
-   MaxPlaylistLength = 0
-   AllowPlaylists = yes
-   ```
-
-3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `pause_music`, `resume_music`, `stop_music`, `list_top_songs`, `list_top_requesters`, `post_image` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
-
-   ```json
-   "luna": { "url": "http://127.0.0.1:8895/mcp" }
-   ```
-
-   When the model calls a tool, Luna posts the smakbot command and the model confirms out loud; a `[music] the LLM called …` line in the log shows each call. If LM Studio can't reach the tools, Luna answers without them and logs a warning. `LLM_TOOLS=false` turns them off.
-
-4. **"What song is this?" and "what are our top songs?"** need smakbot's status API (`StatusApiPort = 8896` in smakbot, on by default there) and `MUSIC_STATUS_URL` in Luna (set in `docker-compose.metal.yml`).
-
-Fixed commands ("play …", "skip", "stop", "play the top 10") need none of steps 3–4. Songs Luna queues end in `--for=@name` so smakbot credits whoever asked; upstream MusicBot doesn't know `--for` and would include it in the search, so it's smakbot-only. If `!play` fails with `HTTP Error 403`, that's YouTube's anti-download changes, not Luna; smakbot already includes the usual fix ([bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)).
-
----
-
-## Text-to-speech providers
+## Her voice
 
 | Voice | Runs on | Expressive? | Cost | Best for |
 | --- | --- | --- | --- | --- |
@@ -440,6 +364,14 @@ Fixed commands ("play …", "skip", "stop", "play the top 10") need none of step
 | **Kokoro** | Everywhere | No | Free | Linux, or the simplest setup |
 
 `TTS_PROVIDER` picks the voice. You only need that one running; `TTS_FALLBACK` adds an optional backup for when it fails (then Kokoro, if it's running; `TTS_FALLBACK=none` for no backup at all). Lines she says again and again (greetings, the search heads-up, fillers) are kept once rendered (`TTS_CACHE_DIR`), so with ElevenLabs they only cost credits the first time.
+
+**Common changes:**
+
+- **Switch voice:** set `TTS_PROVIDER` (`kokoro`, `chatterbox`, `qwen3` or `elevenlabs`) and start that voice's server; see the voices below.
+- **A backup voice** for when the main one fails (useful with ElevenLabs, in case credits run out): `TTS_FALLBACK`.
+- **Names she says wrong:** `NAME_PRONUNCIATIONS=smakus=smack-us|appa=ah-pah` respells them for the voice only; the model still sees the real name.
+- **A different Kokoro voice:** `KOKORO_VOICE` (`af_heart`, `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella`).
+- **A cloned Chatterbox voice:** `CHATTERBOX_VOICE`; see [Chatterbox Turbo](#chatterbox-turbo-apple-silicon).
 
 ### Chatterbox Turbo (Apple Silicon)
 
@@ -502,7 +434,7 @@ ELEVENLABS_VOICE_ID=voice_id_from_your_voice_library
 - **Fallback (optional):** no local voice server is needed. A backup only matters if you might run out of credits; set `TTS_FALLBACK` to `chatterbox` or `kokoro` and run that server (on Linux, Kokoro already runs in Docker). With a backup:
   - When ElevenLabs runs out of credits, Luna switches to the backup for 12 hours (`TTS_CREDITS_RETRY_MS`). If the key, voice or plan is rejected, she switches for 30 minutes (`TTS_PROVIDER_RETRY_MS`). Either way she then tries ElevenLabs again, so topping up or fixing the account brings it back without a restart.
   - Rate limits, outages and timeouts only move the affected sentence to the backup.
-  - Lines she has said before (greetings, fillers, the search heads-up) still play in the ElevenLabs voice from the [phrase cache](#voices-tts-and-timeouts), backup or not.
+  - Lines she has said before (greetings, fillers, the search heads-up) still play in the ElevenLabs voice from the [phrase cache](#her-voice), backup or not.
 - **Expressiveness:** with `eleven_v4_turbo` (the default model), the LLM is told it may add audio tags wherever they fit: emotions (`[curious]`, `[warm]`, `[playful]`, `[worried]` …), reactions (`[laughs]`, `[sighs]`, `[gasps]` …), delivery (`[whispers]`, `[pause]`, `[hesitates]` …) and combined directions like `[warm, laughing softly]`. Kokoro and Qwen3-TTS never get that instruction, and any tag that does reach them is removed, so they never read "[laughs]" aloud. `TTS_EXPRESSIVE=false` turns this off.
 - **Cost and privacy:** ElevenLabs is billed per character, and the text Luna speaks is sent to their servers.
 
@@ -510,95 +442,11 @@ With `TTS_FALLBACK=chatterbox` (or `qwen3`), Luna tries ElevenLabs, then that vo
 
 The startup log shows the active setup, for example `[tts] ElevenLabs (eleven_v4_turbo) → fallback Kokoro, expressive`.
 
----
+<details>
+<summary><b>All voice settings</b></summary>
 
-## Configuration
-
-Everything is set in `Luna/.env`. Most changes only need a container recreate (`docker compose up -d --force-recreate luna`), not a rebuild.
-
-Luna checks her settings at startup, and every setting is listed in [`config.js`](Luna-Discord-Bot-Full-Docker/Luna/config.js) with its type and default:
-- **An invalid value** is reported and the default is used: `[config] OWW_THRESHOLD="abc" is invalid (expected a number) — using the default (0.5)`.
-- **A misspelled name** is reported with the closest real one: `[config] OWW_THRESHHOLD is not one of Luna's settings and is ignored — did you mean OWW_THRESHOLD?`.
-- **On/off settings** accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`.
-
-The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER_URLS`, `KOKORO_URL`) are set by the compose file and override `.env`; change them there if yours run elsewhere.
-
-### Announcement settings
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `ANNOUNCE_SELF` | `true` | Intro when Luna joins |
-| `GREET_ON_JOIN` | `custom` | Greet people who join: `custom` (custom greetings where set, see [Custom greetings](#custom-greetings), the regular one for everyone else), `regular` (the regular one for everyone) or `off`. `true`/`false` still work and mean `custom`/`off` |
-| `ANNOUNCE_LEAVE` | `true` | Announce people who leave |
-| `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
-| `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
-| `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
-| `BOT_JOIN_PHRASES` / `BOT_LEAVE_PHRASES` | `{name} has joined.` / `{name} has left.` | Wording for bots and `IGNORED_USER_IDS` joining and leaving (on with `GREET_ON_JOIN` / `ANNOUNCE_LEAVE`) |
-| `GREETINGS_FILE` | `local/greetings.json` | Per-person join greetings and voices (see [Custom greetings](#custom-greetings)) |
-| `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
-| `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
-| `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |
-| `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the LLM's tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
-| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Its `/top-songs`, next to it, answers "what are our top songs?" and, with `?user=`, one person's most requested songs. Unset: off |
-| `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
-| `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
-| `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
-| `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
-| `ANNOUNCE_THINKING` | `true` | Say "still thinking" fillers while an answer is slow to start |
-| `THINKING_WAITS` | `15-22,22-30,30-40` | Wait windows in seconds for the 1st, 2nd, … filler; the last window repeats |
-| `THINKING_MAX` | `0` | Maximum fillers per question; `0` means no limit |
-| `THINKING_PHRASES` | built-in | Custom filler phrases, separated by a pipe character; `{name}` is the asker's name |
-
-### Wake word
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `OWW_ENABLED` | `true` | `false` falls back to matching "hey Luna" in the transcript |
-| `OWW_MODEL_PATH` | `hey_luna.onnx` | Wake word classifier |
-| `OWW_THRESHOLD` | `0.5` | Detection confidence; tune it against real scores |
-| `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
-| `OWW_CANDIDATE_THRESHOLD` | `0.1` | Two-stage detection: an utterance that peaks at or above this but never reaches `OWW_THRESHOLD` is transcribed anyway, and kept only if Whisper hears "Luna" in it. Catches "hey Luna" run straight into the question, which the model scores low. `0` turns it off; it has no effect when it isn't below `OWW_THRESHOLD` |
-| `WAKE_LISTEN_MS` | `4000` | After a bare "hey Luna" and a pause, how long she waits for the question before answering the greeting. `0` ends the utterance after `SILENCE_MS`, as before |
-| `WAKE_FOLLOWUP_MS` | `8000` | After a bare "hey Luna" with no question even after `WAKE_LISTEN_MS`, she asks "did you mean to ask me something?" and that person's next words, if they start within this long of her finishing, are taken as the question without the wake word. `0` answers the bare "hey Luna" as a greeting instead |
-| `WAKE_SHADOW` | `false` | A measurement: also transcribe every utterance the wake-word model rejected, and log the ones where Whisper heard "hey Luna" (`[wake] Whisper heard "hey Luna" … that the model missed`). Nothing else anyone says is logged, and she doesn't act on them. See [Measuring missed wake words](#measuring-missed-wake-words) |
-| `WAKE_WHISPER_BACKUP` | `false` | A second chance for the wake word: Whisper also transcribes every utterance the wake-word model rejected, and when it hears "hey Luna" she answers, about 0.3 s behind a normal detection. Catches the model's misses (for some voices a third or more of their "hey Luna"s). Costs Whisper time: about 10% of it with 4–5 people talking. See [Measuring missed wake words](#measuring-missed-wake-words) |
-| `WAKE_SHADOW_REPORT_MS` | `1800000` | How often the shadow check logs its summary (30 minutes) |
-| `WAKE_LOG_FILE` | `logs/wake.jsonl` | The wake-word log: one line per wake-word event, kept across rebuilds. Empty turns it off. See [The wake-word log](#the-wake-word-log) |
-| `WAKE_LOG_MAX_MB` | `20` | When the wake-word log passes this size it's renamed to `wake.jsonl.1` (replacing the previous one) and a new one started |
-| `WAKE_REPROMPT_PHRASES` | built-in | What she says then, separated by a pipe character; `{name}` is the speaker |
-| `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
-| `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
-| `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
-| `OWW_DEBUG_SCORE` | `0` | Log every score at or above this value |
-| `OWW_MELSPEC_PATH` / `OWW_EMBEDDING_PATH` | bundled files | The two openWakeWord feature models, if you replace them |
-| `OWW_FEATURE_FRAMES` | `0` | How many feature frames the wake-word model reads; `0` takes it from the model |
-| `OWW_AGC_TARGET_RMS` | `4000` | Level the automatic gain boosts quiet speakers towards, for wake-word detection only |
-
-### Audio and memory
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `ENERGY_THRESHOLD` | `300` | Minimum level that counts as speech |
-| `SILENCE_MS` | `1000` | Silence that ends an utterance; the biggest fixed latency. About 700 is worth trying |
-| `MIN_SPEECH_MS` | `300` | Shorter utterances are ignored |
-| `MAX_SPEECH_MS` | `15000` | Force-end an utterance after this much unbroken speech |
-| `PREROLL_MS` | `320` | Audio kept from just before speech starts, so first syllables aren't clipped |
-| `MAX_SILENCE_FILL_MS` | `2000` | Longest silence re-inserted for the wake-word model when Discord stops sending audio mid-phrase |
-| `LM_MEMORY_TTL_MS` | `3600000` | Forget a conversation (a speaker's, or a text channel's) after this much silence: 60 minutes. `LM_MEMORY_MAX_TURNS` still caps how long one grows |
-| `LM_MEMORY_MAX_TURNS` | `12` | …or after this many turns |
-| `LM_PERSONALITY` | `helpful` | How Luna is described to the model: "You are Luna, a *…* voice assistant". E.g. `fun, bubbly, friendly and helpful` |
-| `LM_CONCISE` | `true` | Ask for concise answers. `false` lets her talk more |
-| `LM_USE_NAMES` | `true` | Tell the model who is asking (their Discord display name, made speakable) so she can use their name now and then |
-| `LM_FLAVOR_PROMPT` / `LM_FLAVOR_CHANCE` | unset / `0.15` | An occasional personality aside, and how often it's added |
-| `AUTO_JOIN_CHANNELS` | | Voice channels (names or IDs, comma-separated) Luna joins by herself when someone is in one and she isn't in a channel: at startup, or when someone joins. With people in several, the busiest. She still leaves when the last person does |
-| `TEXT_CHAT_CHANNELS` | | Text channels (names or IDs, comma-separated) where you can type to Luna: a message that @mentions her or starts with "Luna" gets a written answer. Everyone in a channel shares one conversation |
-| `AUTO_JOIN_TEXT_CHANNEL` | | Text channel (name or ID) she posts in after auto-joining: status messages and smakbot commands. Unset: the voice channel's own chat. Names that match nothing are logged at startup with the channels that do exist |
-| `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
-
-### Voices, TTS and timeouts
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
+| Setting | Default | What it does |
+| --- | --- | --- |
 | `TTS_PROVIDER` | `kokoro` | `kokoro`, `qwen3`, `chatterbox` or `elevenlabs` |
 | `TTS_FALLBACK` | `kokoro` | Tried after `TTS_PROVIDER`, before Kokoro. `none` disables falling back |
 | `TTS_CREDITS_RETRY_MS` | `43200000` | How long ElevenLabs is skipped after running out of credits (12 h) |
@@ -607,34 +455,73 @@ The addresses of LM Studio, Whisper and Kokoro (`LM_STUDIO_URL`, `WHISPER_SERVER
 | `TTS_CACHE_MAX_MB` | `200` | Past this, the cached lines played least recently are deleted (a line is roughly 20–60 KB) |
 | `TTS_EXPRESSIVE` | `true` | Let the LLM add audio tags while a voice that performs them (Chatterbox, an expressive ElevenLabs model) is speaking |
 | `TTS_EXPRESSIVE_PROMPT` | per voice | Replaces the audio-tag instruction given to the LLM (each expressive voice has its own, listing its tags) |
+| `NAME_PRONUNCIATIONS` | | Names the voice says wrong, respelled the way they sound, separated by a pipe character: `smakus=smack-us\|appa=ah-pah`. Applied to everything she says (whole words, any capitalisation); the LLM still sees the real name |
+| `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | | Required for ElevenLabs |
 | `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_flash_v2_5` is faster but ignores audio tags |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | PCM formats need a Pro plan |
 | `ELEVENLABS_TIMEOUT_MS` | `10000` | Falls back to Kokoro after this |
 | `ELEVENLABS_MAX_CONCURRENCY` | `3` | ElevenLabs requests in progress at once. Plans cap this (3 on the lower tiers); a request over the cap is rejected and that sentence would go to the fallback voice, so extra sentences wait for a free slot instead. Match it to your plan |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API address |
-| `NAME_PRONUNCIATIONS` | | Names the voice says wrong, respelled the way they sound, separated by a pipe character: `smakus=smack-us\|appa=ah-pah`. Applied to everything she says (whole words, any capitalisation); the LLM still sees the real name |
-| `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
-| `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
-| `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
-| `QWEN3_TTS_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8890/v1/audio/speech` |
-| `QWEN3_TTS_VOICE` | server default (`luna`) | Any voice in the voices folder |
-| `QWEN3_TTS_STREAM` | `false` | `true` plays each sentence while it renders: no pauses, but it stutters when rendering falls behind |
 | `CHATTERBOX_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8891/v1/audio/speech` |
 | `CHATTERBOX_VOICE` | server default (`default`) | `default` is the built-in voice; any other name is a clone in the voices folder |
 | `CHATTERBOX_STREAM` | `false` | `true` plays each sentence while it renders. Too slow for Chatterbox while the LLM writes: sentences get cut off |
 | `CHATTERBOX_MODEL` / `CHATTERBOX_TEMPERATURE` / `CHATTERBOX_VOICES_DIR` | `mlx-community/chatterbox-turbo-fp16` / `0.6` / `~/.luna/chatterbox-voices` | Set when starting `chatterbox-metal.sh` (`CHATTERBOX_PORT`, default 8891, too). A higher temperature sounds livelier but warbles and drifts, cloned voices most; 0.6 won a blind comparison with 1.1 |
+| `QWEN3_TTS_URL` | set by `docker-compose.metal.yml` | Outside Docker: `http://localhost:8890/v1/audio/speech` |
+| `QWEN3_TTS_VOICE` | server default (`luna`) | Any voice in the voices folder |
+| `QWEN3_TTS_STREAM` | `false` | `true` plays each sentence while it renders: no pauses, but it stutters when rendering falls behind |
 | `QWEN3_TTS_MODEL` / `QWEN3_TTS_TEMPERATURE` | `…0.6B-Base-8bit` / `0.3` | Set when starting `qwen3-tts-metal.sh`. Each sentence is rendered on its own; a lower temperature keeps the delivery steadier from one sentence to the next, a higher one varies it more |
-| `LM_IDLE_TIMEOUT_MS` | `90000` | Give up on the LLM only after this long with no output at all; reasoning, searching and streaming all count as output |
-| `LM_TIMEOUT_MS` | `600000` | Overall limit for one LLM request |
-| `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
-| `LUNA_TIMEZONE` | `TZ`, else `UTC` | Time zone used to tell the model today's date (an IANA name, e.g. `America/Los_Angeles`) |
-| `LLM_REASONING` | model default | Reasoning level sent to LM Studio: `off`, `low`, `medium`, … as the model allows. Unset uses the model's own default, which can be its maximum |
-| `LM_TEMPERATURE` / `LM_TOP_P` / `LM_TOP_K` / `LM_MIN_P` / `LM_REPEAT_PENALTY` | unset | Sampling settings sent with every request, overriding what LM Studio has saved for the model (each one only if set). Use the model card's values for its non-thinking mode, e.g. Qwen 0.7 / 0.8 / 20 / 0, and a repeat penalty around 1.05 against endless repetition. Sent with the request they can't be lost to an LM Studio update, and LM Studio's request history shows them |
-| `LLM_THINK_LIMIT_MS` | `60000` | If the model has spent this long *reasoning* before the answer starts, ask again with reasoning off. Time spent searching and reading results doesn't count. `0` disables |
-| `QUICK_ANSWER_PHRASES` | built-in | What Luna says when she switches to the quick answer, separated by a pipe character |
-| `TTS_LOOKAHEAD` | `2` | Sentences synthesized ahead of the one playing |
+| `KOKORO_VOICE` | `af_heart` | Also `af_sarah`, `af_bella`, `af_sky`, `bf_emma`, `bf_isabella` |
+| `KOKORO_THREADS` / `KOKORO_MAX_CONCURRENCY` | `2` (`4` on Metal) | Set in the compose file, or when running `kokoro-metal.sh` |
+| `KOKORO_DEVICE` | `auto` | `cuda`, `mps` or `cpu` |
 | `WHISPER_TIMEOUT_MS` / `KOKORO_TIMEOUT_MS` / `QWEN3_TTS_TIMEOUT_MS` / `CHATTERBOX_TIMEOUT_MS` | `60000` / `30000` / `60000` / `60000` | Request timeouts |
+
+</details>
+
+## Listening and the wake word
+
+Luna listens to each person separately. A small wake-word model scores everything said for "hey Luna"; when it's confident, she transcribes what follows with Whisper and answers.
+
+- **She misses "hey Luna":** keep `WAKE_WHISPER_BACKUP=true` (on in `Luna/.env`): Whisper double-checks what the model rejected and catches most misses. Check how she's doing per person with `!luna wakestats`.
+- **She triggers when nobody said it:** raise `OWW_THRESHOLD` a little (0.35 → 0.45).
+- **She cuts people off, or waits too long after they stop:** `SILENCE_MS` is the pause that ends a question (1 second).
+- **Quiet people aren't heard:** lower `ENERGY_THRESHOLD`, the level that counts as speech. Also ask them to turn off Discord's noise suppression.
+- **A more accurate speech recognizer** on a Mac: start Whisper with `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh`.
+
+<details>
+<summary><b>All listening and wake-word settings</b></summary>
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `OWW_ENABLED` | `true` | `false` falls back to matching "hey Luna" in the transcript |
+| `OWW_MODEL_PATH` | `hey_luna.onnx` | Wake word classifier |
+| `OWW_THRESHOLD` | `0.5` | Detection confidence; tune it against real scores |
+| `OWW_TRIGGER_FRAMES` | `1` | Consecutive frames above threshold required |
+| `OWW_CANDIDATE_THRESHOLD` | `0.1` | Two-stage detection: an utterance that peaks at or above this but never reaches `OWW_THRESHOLD` is transcribed anyway, and kept only if Whisper hears "Luna" in it. Catches "hey Luna" run straight into the question, which the model scores low. `0` turns it off; it has no effect when it isn't below `OWW_THRESHOLD` |
+| `WAKE_LISTEN_MS` | `4000` | After a bare "hey Luna" and a pause, how long she waits for the question before answering the greeting. `0` ends the utterance after `SILENCE_MS`, as before |
+| `WAKE_FOLLOWUP_MS` | `8000` | After a bare "hey Luna" with no question even after `WAKE_LISTEN_MS`, she asks "did you mean to ask me something?" and that person's next words, if they start within this long of her finishing, are taken as the question without the wake word. `0` answers the bare "hey Luna" as a greeting instead |
+| `WAKE_REPROMPT_PHRASES` | built-in | What she says then, separated by a pipe character; `{name}` is the speaker |
+| `WAKE_WHISPER_BACKUP` | `false` | A second chance for the wake word: Whisper also transcribes every utterance the wake-word model rejected, and when it hears "hey Luna" she answers, about 0.3 s behind a normal detection. Catches the model's misses (for some voices a third or more of their "hey Luna"s). Costs Whisper time: about 10% of it with 4–5 people talking. See [Measuring missed wake words](#measuring-missed-wake-words) |
+| `WAKE_SHADOW` | `false` | A measurement: also transcribe every utterance the wake-word model rejected, and log the ones where Whisper heard "hey Luna" (`[wake] Whisper heard "hey Luna" … that the model missed`). Nothing else anyone says is logged, and she doesn't act on them. See [Measuring missed wake words](#measuring-missed-wake-words) |
+| `WAKE_SHADOW_REPORT_MS` | `1800000` | How often the shadow check logs its summary (30 minutes) |
+| `WAKE_LOG_FILE` | `logs/wake.jsonl` | The wake-word log: one line per wake-word event, kept across rebuilds. Empty turns it off. See [The wake-word log](#the-wake-word-log) |
+| `WAKE_LOG_MAX_MB` | `20` | When the wake-word log passes this size it's renamed to `wake.jsonl.1` (replacing the previous one) and a new one started |
+| `OWW_REFRACTORY_MS` | `1500` | Ignore repeat detections for this long |
+| `OWW_GRACE_MS` | `2000` | How long before an utterance a detection still counts |
+| `OWW_GAIN` | `auto` | `auto`, `off`, or a fixed multiplier |
+| `OWW_AGC_TARGET_RMS` | `4000` | Level the automatic gain boosts quiet speakers towards, for wake-word detection only |
+| `OWW_DEBUG_SCORE` | `0` | Log every score at or above this value |
+| `OWW_MELSPEC_PATH` / `OWW_EMBEDDING_PATH` | bundled files | The two openWakeWord feature models, if you replace them |
+| `OWW_FEATURE_FRAMES` | `0` | How many feature frames the wake-word model reads; `0` takes it from the model |
+| `ENERGY_THRESHOLD` | `300` | Minimum level that counts as speech |
+| `SILENCE_MS` | `1000` | Silence that ends an utterance; the biggest fixed latency. About 700 is worth trying |
+| `MIN_SPEECH_MS` | `300` | Shorter utterances are ignored |
+| `MAX_SPEECH_MS` | `15000` | Force-end an utterance after this much unbroken speech |
+| `PREROLL_MS` | `320` | Audio kept from just before speech starts, so first syllables aren't clipped |
+| `MAX_SILENCE_FILL_MS` | `2000` | Longest silence re-inserted for the wake-word model when Discord stops sending audio mid-phrase |
+| `VOICE_RECOVER_MS` | `20000` | If Discord reports someone speaking but none of their audio can be decrypted for this long, Luna reconnects her voice session (at most every 5 minutes). `0` disables |
+
+</details>
 
 The Whisper model is `ggml-small.en-q5_1.bin` by default. On Apple Silicon you can afford a more accurate one: `WHISPER_MODEL=ggml-medium.en-q5_0.bin ./scripts/whisper-metal.sh` (or `ggml-large-v3-turbo-q5_0.bin`). On the Docker path it's a build arg in `docker-compose.yml`.
 
@@ -679,7 +566,181 @@ Docker's log is wiped every time Luna is rebuilt. The wake-word log (`WAKE_LOG_F
 
 To train your own model, use the openWakeWord [Colab notebook](https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing). It takes about an hour with synthetic data. Export it as ONNX and save it as `Luna/hey_luna.onnx`. Use a phrase of 3–4 syllables; a bare "luna" trains poorly. More detail is in [`openWakeWordNotes.md`](Luna-Discord-Bot-Full-Docker/Luna/openWakeWordNotes.md).
 
----
+## Channels, greetings and announcements
+
+- **Join by herself:** `AUTO_JOIN_CHANNELS` lists voice channels she joins when someone is in one; she leaves when the last person does. `AUTO_JOIN_TEXT_CHANNEL` is where she then posts (music commands, status).
+- **Text chat:** `TEXT_CHAT_CHANNELS` lists the channels where "Luna, …" or an @mention gets a written answer.
+- **Ignore someone** (another bot, say): `IGNORED_USER_IDS`.
+- **Greetings and goodbyes:** on by default; change the wording, give people their own, or turn them off (below).
+
+### Custom greetings
+
+A few people can get their own join greeting, optionally in their own voice (ElevenLabs, or a Chatterbox clone). Copy `Luna/greetings.example.json` to `Luna/local/greetings.json` and edit it:
+
+```json
+{
+  "371034505349169152": {
+    "name": "User X",
+    "voice": "OUBnvvuqEKdDWtapoJFn",
+    "phrases": ["Oh my, look who is here, {user}. [excited] Welcome in!"]
+  }
+}
+```
+
+- Keys are Discord user IDs (Developer Mode → right-click the person → Copy User ID), so renames don't matter. `name` is only a label for you.
+- `{user}` (or `{name}`) is their current display name, made speakable. With several phrases, one is picked at random. ElevenLabs audio tags work.
+- `voice` is an ElevenLabs voice ID (in ElevenLabs, open the voice → copy its ID). The voice must be in your own ElevenLabs voices: add Voice Library voices to "My Voices" first. Leave it out to use Luna's normal voice.
+- Or `"voice": "chatterbox:<name>"` for a [Chatterbox](#chatterbox-turbo-apple-silicon) clone: put 10–20 seconds of clear speech as `<name>.wav` in Chatterbox's voices folder (no restart needed). It works with or without ElevenLabs, as long as Chatterbox is running.
+- A phrase can also have a voice of its own: `{ "text": "Make it so, {user}. Engage!", "voice": "chatterbox:stewart" }` among the other phrases. Phrases without one use the person's `voice`.
+- `GREET_ON_JOIN=regular` gives everyone the regular greeting without touching the file; `off` turns join greetings off.
+- Same cooldown and switches as the normal greeting. If the picked phrase's voice can't be used (ElevenLabs down or out of credits, Chatterbox not running, unknown voice), they get the normal greeting in the normal voice.
+- `Luna/local/` is mounted into the container and ignored by git: edit the file and restart Luna, no rebuild. The startup log lists who has a custom greeting and warns about voices ElevenLabs or Chatterbox doesn't know (checking costs no credits).
+
+### Announcements
+
+- **Intro:** when Luna joins, she says something like *"Hi everyone, Luna here! Just say hey Luna whenever you need me."*
+- **Greetings:** when someone joins her channel, she says something like *"Sam just joined. Hey Sam!"*
+- **Farewells:** when someone leaves or moves to another channel, she says something like *"Sam just left. See you later, Sam!"*
+- **Bots:** bots (smakbot) and `IGNORED_USER_IDS` get a short line instead: *"smakbot has joined."* and *"smakbot has left."*
+
+Mute/deafen changes are ignored. Each person is announced at most once per cooldown, and a connection that drops and comes back within a few seconds isn't announced at all. Display names are cleaned up so they can be spoken: fancy Unicode fonts become plain letters, emoji are dropped, and `sam_1234` becomes "sam". Names a voice says wrong can be respelled with `NAME_PRONUNCIATIONS` (`smakus=smack-us`).
+
+To use your own wording, list phrases in `.env` separated by `|`. `{name}` is replaced with the person's name and `{wake}` with the wake phrase:
+
+```env
+GREET_PHRASES={name} just joined. Hey {name}!|Welcome in, {name}!
+FAREWELL_PHRASES={name} just left. Bye, {name}!|And {name} is gone.
+BOT_JOIN_PHRASES={name} has joined.
+BOT_LEAVE_PHRASES={name} has left.
+INTRO_PHRASES=Luna reporting for duty. Say {wake} if you need me.
+```
+
+<details>
+<summary><b>All channel, greeting and announcement settings</b></summary>
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `AUTO_JOIN_CHANNELS` | | Voice channels (names or IDs, comma-separated) Luna joins by herself when someone is in one and she isn't in a channel: at startup, or when someone joins. With people in several, the busiest. She still leaves when the last person does |
+| `AUTO_JOIN_TEXT_CHANNEL` | | Text channel (name or ID) she posts in after auto-joining: status messages and smakbot commands. Unset: the voice channel's own chat. Names that match nothing are logged at startup with the channels that do exist |
+| `TEXT_CHAT_CHANNELS` | | Text channels (names or IDs, comma-separated) where you can type to Luna: a message that @mentions her or starts with "Luna" gets a written answer. Everyone in a channel shares one conversation |
+| `IGNORED_USER_IDS` | | Comma-separated user IDs to ignore (e.g. music bots) |
+| `ANNOUNCE_SELF` | `true` | Intro when Luna joins |
+| `GREET_ON_JOIN` | `custom` | Greet people who join: `custom` (custom greetings where set, see [Custom greetings](#custom-greetings), the regular one for everyone else), `regular` (the regular one for everyone) or `off`. `true`/`false` still work and mean `custom`/`off` |
+| `ANNOUNCE_LEAVE` | `true` | Announce people who leave |
+| `GREET_COOLDOWN_MS` / `LEAVE_COOLDOWN_MS` | `600000` | Per-person cooldown |
+| `GREET_DELAY_MS` / `LEAVE_DELAY_MS` | `1500` / `3000` | Only announce if they're still joined or still gone after this delay |
+| `INTRO_PHRASES` / `GREET_PHRASES` / `FAREWELL_PHRASES` | built-in | Custom wording (see [Announcements](#announcements)) |
+| `BOT_JOIN_PHRASES` / `BOT_LEAVE_PHRASES` | `{name} has joined.` / `{name} has left.` | Wording for bots and `IGNORED_USER_IDS` joining and leaving (on with `GREET_ON_JOIN` / `ANNOUNCE_LEAVE`) |
+| `GREETINGS_FILE` | `local/greetings.json` | Per-person join greetings and voices (see [Custom greetings](#custom-greetings)) |
+
+</details>
+
+## Web search, pictures and tools
+
+**Web search** needs a free [Tavily](https://tavily.com) key (`TAVILY_API_KEY`). The model decides when a question needs fresh information, and she says so out loud ("let me take a look") while she searches. The same key lets her [post pictures](#using-luna-in-depth) in the text channel.
+
+Luna offers the model web search on every question, and the model decides when it needs current information; you'll hear the heads-up whenever it actually searches. Set `WEB_SEARCH=keywords` to go back to keyword-triggered search, or `off` to disable it. If the search server is unreachable, Luna answers without it and pauses search for a few minutes. If Tavily is already set up in LM Studio's MCP settings (`mcp.json`), set `SEARCH_MCP_PLUGIN=mcp/tavily`, and LM Studio keeps that connection open instead of Luna connecting on every question.
+
+**Tools** let the model act, not just talk: queue music (`play_music`, `play_top_songs`), skip, pause, resume or stop it, look up the most played and most requested songs (`list_top_songs`, `list_top_requesters`), post a picture (`post_image`), leave the channel (`leave_channel`) and, from text chat, say something in the voice channel (`say_in_voice`). Luna serves them to LM Studio on port 8895; LM Studio only uses them once `"luna": { "url": "http://127.0.0.1:8895/mcp" }` is in its `mcp.json` (see [Optional extras](#let-her-use-tools)). If she ever says she queued music without calling the tool, she quietly asks the model once more to make the calls.
+
+<details>
+<summary><b>All web search and tool settings</b></summary>
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `WEB_SEARCH` | `always` | `always`: offer search on every question and let the model decide. `keywords`: only when keyword rules match. `off`: never (also used when no search server is configured) |
+| `SEARCH_MCP_PLUGIN` | unset | Use an MCP server configured in LM Studio's own `mcp.json` instead of connecting to Tavily per request, e.g. `mcp/tavily`. About 1 s faster per question, and no `TAVILY_API_KEY` needed in Luna |
+| `SEARCH_TOOLS` | `tavily_search` | Which of the server's tools the model may use, comma-separated, or `all`. Tavily's research, crawl and extract tools are slower and use more credits |
+| `SEARCH_PAUSE_MS` | `300000` | If the search server can't be reached, answer without search and pause search for this long |
+| `ANNOUNCE_SEARCH` | `true` | Say a heads-up phrase when a web search starts |
+| `SEARCH_PHRASES` | built-in | Custom heads-up phrases, separated by a pipe character |
+| `LLM_TOOLS` | `true` | Let the LLM play, skip and stop music through smakbot (see [MusicBot integration](#musicbot-integration)) and leave the voice channel when asked; needs `"luna"` in LM Studio's `mcp.json` |
+| `LUNA_MCP_PORT` | `8895` | Port of Luna's own MCP server (the LLM's tools). Change it in `docker-compose.metal.yml` and `mcp.json` too |
+
+</details>
+
+## Music with smakbot
+
+Luna doesn't play music herself. She drives [smakbot](https://github.com/smakus/smakbot-discord-music-bot), a self-hosted Discord music bot built to work with her, by posting its commands in the text channel. You can always type smakbot's own commands too (`!queue`, `!pause`, `!volume 50`, …); see [its command list](https://github.com/smakus/smakbot-discord-music-bot#commands).
+
+| You say (or type "Luna, …") | Luna sends to smakbot |
+| --------------------------- | -------------------- |
+| "play Crazy by Seal" | `!summon` if smakbot isn't in the channel, then `!play Crazy by Seal --for=@you` |
+| "play the top 10" / "play the top twenty songs" / "play our top three hits" / "play our most played" / "play my favorites" | `!playtop 10` (or 20; at most 50), your server's most played songs |
+| "skip" / "skip this song" | `!skip` |
+| "pause" / "pause the music" | `!pause` |
+| "resume" / "unpause" / "keep playing" | `!resume` |
+| "stop" / "stop the music" | `!stop` (smakbot stops and leaves) |
+| "put on something chill" / "play the Lord of the Rings soundtrack" | Her LLM picks the search and sends `!play …` |
+| "what song is this?" / "what's playing?" | She asks smakbot directly and answers: *"This is Crazy by Seal, requested by smakus. Up next: Kiss From a Rose."* |
+| "what's this song about?" / "when did it come out?" | The LLM is told what's playing, so she answers about that song |
+| "what are our top songs?" / "what are the top 3 hits?" / "what's our top song?" | Nothing is played: she reads smakbot's most played list (5 unless you say how many): *"Your top 3: One Chain to Rule Them All, 13 plays. Shock My Dog, 9. Money for Nothing, 4."* |
+| "what are my top songs?" / "what's my top song?" | Nothing is played: she reads the songs **you** asked smakbot for most (its request history): *"Your top 2 requests: Heart of Gold, 4 requests. Sledgehammer, 2."* Someone else's (*"what are kenbeans' top songs?"*, online or not) goes to the LLM, which looks them up with `list_top_songs` |
+| "who requests the most songs?" / "give me the top 4 requesters and their counts" | The LLM ranks people by songs requested with `list_top_requesters` (smakbot's `/top-requesters`) |
+| "show me a picture of a baby capybara" / "what does a Del Taco crunchwrap look like?" | The LLM calls `post_image`: Luna finds a picture with Tavily's image search (`TAVILY_API_KEY`), downloads the first real JPEG, PNG, GIF or WebP under 8 MB, and uploads it, so it shows inline. In text it comes with her reply; asked by voice, it goes in the text channel (`AUTO_JOIN_TEXT_CHANNEL`) as "📷 capybara (for Sam)" |
+| "is Tom Sawyer in our top ten?" / "what do we listen to most?" | Her LLM looks up the most played list and answers |
+
+- **When music is already playing,** she says *"Adding … to the queue"* instead of *"Okay, playing …"*, since smakbot plays it after what's on now.
+- **`--for=@you`** credits the song to you instead of Luna, in smakbot's "Now playing", its status and Luna's own "what song is this?". It's sent without pinging you.
+- **"Play top of the world"** is still a song search. Only "the top N" / "most played" / "my favorites" mean the top-songs list.
+- **When smakbot joins or leaves,** Luna says so briefly: *"smakbot has joined."*
+
+Setting the two bots up to talk to each other is covered in [MusicBot integration](#musicbot-integration).
+
+### MusicBot integration
+
+How to connect Luna to [smakbot](https://github.com/smakus/smakbot-discord-music-bot) (or upstream [MusicBot](https://github.com/Just-Some-Bots/MusicBot)). What you can then say is in [Music with smakbot](#music-with-smakbot).
+
+1. **Let smakbot take commands from Luna.** MusicBot ignores other bots, so add Luna to its `config/options.ini`:
+
+   ```ini
+   [Permissions]
+   BotExceptionIDs = <Luna's Discord user ID>
+   ```
+
+2. **Give Luna a permission group without per-person limits**, since everyone's requests arrive as hers. In smakbot's `config/permissions.ini`:
+
+   ```ini
+   [LunaBot]
+   UserList = <Luna's Discord user ID>
+   MaxSongs = 0
+   MaxSongLength = 0
+   MaxPlaylistLength = 0
+   AllowPlaylists = yes
+   ```
+
+3. **Let the LLM use the music tools** (`play_music`, `play_top_songs`, `skip_song`, `pause_music`, `resume_music`, `stop_music`, `list_top_songs`, `list_top_requesters`, `post_image` and `leave_channel`). Luna serves them from her container over MCP on port 8895, published on `127.0.0.1` only. LM Studio only connects to local MCP servers listed in its `mcp.json`, so add this there once (Program → Install → Edit mcp.json, or `~/.lmstudio/mcp.json`), next to any other servers:
+
+   ```json
+   "luna": { "url": "http://127.0.0.1:8895/mcp" }
+   ```
+
+   When the model calls a tool, Luna posts the smakbot command and the model confirms out loud; a `[music] the LLM called …` line in the log shows each call. If LM Studio can't reach the tools, Luna answers without them and logs a warning. `LLM_TOOLS=false` turns them off.
+
+4. **"What song is this?" and "what are our top songs?"** need smakbot's status API (`StatusApiPort = 8896` in smakbot, on by default there) and `MUSIC_STATUS_URL` in Luna (set in `docker-compose.metal.yml`).
+
+Fixed commands ("play …", "skip", "stop", "play the top 10") need none of steps 3–4. Songs Luna queues end in `--for=@name` so smakbot credits whoever asked; upstream MusicBot doesn't know `--for` and would include it in the search, so it's smakbot-only. If `!play` fails with `HTTP Error 403`, that's YouTube's anti-download changes, not Luna; smakbot already includes the usual fix ([bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)).
+
+<details>
+<summary><b>Music settings</b></summary>
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `MUSIC_STATUS_URL` | unset (`docker-compose.metal.yml`: `http://host.docker.internal:8896/now-playing`) | smakbot's now-playing endpoint (its `StatusApiPort`): answers "what song is this?" and tells the LLM what is playing. Its `/top-songs`, next to it, answers "what are our top songs?" and, with `?user=`, one person's most requested songs. Unset: off |
+
+</details>
+
+## How it works
+
+```
+You speak ─► openWakeWord (on the raw audio) ─► detection opens the gate
+          ─► Whisper transcribes ─► fixed commands (music, leave, "what song is this?")
+                                   or LM Studio streams a reply (with web search and tools)
+          ─► each finished sentence goes to the voice ─► Discord plays it
+             (sentence N+1 is synthesized while N plays)
+```
+
+If the wake word models fail to load, Luna falls back to transcribing everything and matching "hey Luna" in the text.
 
 ## Hardware sizing
 
@@ -692,8 +753,6 @@ To train your own model, use the openWakeWord [Colab notebook](https://colab.res
 | 32 GB+ | 24–27B at Q4, or a mixture-of-experts model like Qwen3.6 35B-A3B | Any |
 
 Leave roughly 5–6 GB for the OS, Docker, Whisper and a voice, or about 4 GB more if that voice is Chatterbox. Mixture-of-experts models (names ending in something like `A3B`) write much faster than their size suggests, but still need the memory of their full size. Luna was developed on Qwen3.6 35B-A3B on a 32 GB Mac. It fits, but the first answer after a quiet spell can be slow while macOS swaps it back in. For spoken two-sentence replies, a smaller model that answers in 2 seconds beats a larger one that takes 25.
-
----
 
 ## Troubleshooting
 
@@ -747,87 +806,9 @@ Voice encryption: active, epoch 7 — privacy code `12345 67890 …`
 
 Both Metal scripts repair themselves in the usual failure cases. `whisper-metal.sh` rebuilds a build that can't start (for example after the folder was moved). Kokoro works around espeak-ng's path-length limit when its venv sits in a deeply nested folder.
 
----
+## Working on Luna's code
 
-## Development
-
-### Code layout
-
-`Luna/` is plain files, one job each. A file only uses files in its own row or the rows below it:
-
-| Layer | Files |
-| ----- | ----- |
-| Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
-| Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
-| Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `wake-log.js` (the wake-word log), `tts.js` and `tts-cache.js` (rendered phrases), `whisper.js`, `mcp-server.js` |
-| Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
-
-Modules that need a library, `fetch`, timers or each other get them as arguments (`createX({ ... })`), which is how the test harness swaps in fakes.
-
-### Tests
-
-Luna's tests live in `Luna/test/` and run without Discord, LM Studio, Whisper or a TTS server: every outside service is faked. They need only Node 22. Without Node on your machine, run them in Docker:
-
-From the repository's top folder:
-
-```bash
-docker run --rm -v "$PWD":/repo:ro -w /repo/Luna-Discord-Bot-Full-Docker/Luna node:22-slim npm test
-```
-
-With Node installed, `npm test` in `Luna/` does the same. A full run takes about a minute and a quarter.
-
-| File | Covers |
-| ---- | ------ |
-| `luna.test.js` | Capture, wake word (including two-stage detection), the LLM stream (thinking limit, quick answers, leaked reasoning, search), playback, interruptions, encrypted-voice diagnostics and recovery |
-| `tts.test.js` | TTS providers and the fallback chain |
-| `announce.test.js` | Intro, join greetings, leave farewells, speakable names |
-| `answer-filter.test.js` | What of the LLM's answer Luna says, holds or drops (`answer-filter.js`): each rule, plus LM Studio streams in `test/fixtures/` replayed through the real pipeline |
-| `voice-input.test.js` | The voice-input stages (`voice-input.js`) one by one: packet decoding, filling silent gaps for the wake-word model, cutting speech into utterances, the wake decision, finding the question in a transcript, and what to do about a speaker who is never heard |
-| `sentences.test.js` | Where the streamed answer is cut into sentences for TTS (`sentences.js`): abbreviations like "St." and "U.S.", decimals and initials are not sentence ends |
-| `config.test.js` | Settings (`config.js`): parsing, invalid values, misspelled names, and that the README and `example.env` match the list of settings |
-| `bench-score.test.js` | The LLM benchmark's scoring (below), its question file, and the system prompt (`prompt.js`) |
-| `harness.js` | Loads `index.js` with Discord, LM Studio, Whisper, TTS and the wake-word engine faked |
-
-The tests are excluded from the Docker image.
-
-### LLM benchmark
-
-`Luna/bench/` compares the models in LM Studio on what matters to Luna: how soon she starts speaking, whether she is right, whether the answer can be read aloud as is, and whether she sounds like herself. It asks the model that is loaded in LM Studio 21 questions (`bench/questions.json`): small talk, facts, mental math, searches, opinions, a "hey Luna" left in the question, and today's weekday. The model gets the exact system prompt Luna sends (`prompt.js`), built from the personality and time zone in `Luna/.env`, the same search plugin, and the sampling settings she sends (`LM_TEMPERATURE` …, when set). Each question is a fresh conversation, asked 3 times with reasoning off and 3 times with it on.
-
-Load a model in LM Studio, then from `Luna/`:
-
-```bash
-docker run --rm -v "$PWD":/app -w /app node:22-slim node bench/run.js
-```
-
-That takes about 15–30 minutes for a fast model. Options: `--takes N`, `--reasoning off` (or `on`), `--only weather,joke`, `--model ID`. Results are saved in `bench/results/`, which git ignores. Repeat for each model you want to compare.
-
-Rate personality blind: answers to the small-talk and opinion questions are shown shuffled, without the model's name, for a score from 1 to 5. Ratings are saved, so you can stop and continue later:
-
-```bash
-docker run --rm -it -v "$PWD":/app -w /app node:22-slim node bench/rate.js
-```
-
-Then the comparison, one row per model from its latest run (`--all` combines every run of a model):
-
-```bash
-docker run --rm -v "$PWD":/app:ro -w /app node:22-slim node bench/report.js
-```
-
-| Column | Meaning |
-| ------ | ------- |
-| Mode | Reasoning `off` (Luna's usual setting); `on` for a model that can't turn it off |
-| First word | Median seconds until the first word of the answer — the wait Luna's listeners hear |
-| Total, Tok/s | Median seconds for the whole answer, and writing speed |
-| Accuracy | Answers that match the answer key and search when they should (and not for math or the date) |
-| Voice | Answers fit to read aloud: no markdown, lists, emoji, links, leaked reasoning, follow-up question, or more than 150 words |
-| Personality | Mean blind rating, with how many answers were rated |
-| Thinking: delay | Extra seconds before the first word with reasoning on (mean over questions); `n/a` if the model can't switch |
-| Thinking: accuracy | Change in accuracy with reasoning on |
-
-Below the table, each model's problems are listed by question. The answers are scored as the model wrote them, before Luna's answer filter cleans them up. The occasional flavor line and the ElevenLabs audio-tag instruction are left out of the prompt. Search answers (weather, gold) are checked only for a number, since the right value changes.
-
----
+How the code is laid out, the test suite, and the LLM benchmark for comparing models are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## FAQ
 
@@ -838,7 +819,7 @@ Yes, she's free and open source (MIT). The language model, speech-to-text and th
 A computer that can run a local LLM: an Apple Silicon Mac with 16 GB or more, or a Linux PC with a decent GPU. The LLM sets the pace; see [Hardware sizing](#hardware-sizing).
 
 **Which LLM should I use?**
-Any instruction-tuned model LM Studio can load that fits your RAM. Smaller models answer faster, and for short spoken answers a quick 8–14B model often beats a slow big one. The [LLM benchmark](#llm-benchmark) compares models on speed, accuracy and personality.
+Any instruction-tuned model LM Studio can load that fits your RAM. Smaller models answer faster, and for short spoken answers a quick 8–14B model often beats a slow big one. The [LLM benchmark](docs/DEVELOPMENT.md#llm-benchmark) compares models on speed, accuracy and personality.
 
 **Can several people talk to her at once?**
 Yes. Each person has their own wake-word detector and conversation memory, and answers queue so nobody's question cancels someone else's.
@@ -847,7 +828,7 @@ Yes. Each person has their own wake-word detector and conversation memory, and a
 Yes, with [smakbot](https://github.com/smakus/smakbot-discord-music-bot): "hey Luna, play …", "skip", "play the top 10", "what song is this?". See [Music with smakbot](#music-with-smakbot).
 
 **Can I change her name, personality or voice?**
-Her personality is a setting (`LM_PERSONALITY`, e.g. "fun, friendly and helpful"), and so is the voice (see [Text-to-speech providers](#text-to-speech-providers)). The wake word is a trained model; you can [train your own](#tuning-the-wake-word) for a different phrase.
+Her personality is a setting (`LM_PERSONALITY`, e.g. "fun, friendly and helpful"), and so is the voice (see [Text-to-speech providers](#her-voice)). The wake word is a trained model; you can [train your own](#tuning-the-wake-word) for a different phrase.
 
 **Does she work in other languages?**
 She listens and answers in English. The LLM can write other languages, and an ElevenLabs voice can speak them ("Luna, say hello in Chinese in the voice channel").
