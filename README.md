@@ -102,20 +102,18 @@ LM_STUDIO_MCP_BEARER_TOKEN=the LM Studio token from step 2
 TTS_PROVIDER=chatterbox
 ```
 
-Then add these lines at the end. They're the settings we recommend: replace the channel names with your own.
+Then find these three lines, remove the `#` at the start of each, and put in your own channel names:
 
 ```env
-# Join this voice channel by herself when someone's in it
+# The voice channel she joins by herself when someone's in it
 AUTO_JOIN_CHANNELS=General
-# Let people type "Luna, …" in this text channel
+# The text channel she posts in (music commands, status)
+AUTO_JOIN_TEXT_CHANNEL=general
+# Text channels where people can type "Luna, …" to her
 TEXT_CHAT_CHANNELS=general
-# Her personality, in a few words
-LM_PERSONALITY=fun, friendly and helpful
-# Catch "hey Luna"s the wake-word model misses (costs a little extra speech recognition)
-WAKE_WHISPER_BACKUP=true
 ```
 
-Save the file.
+Everything else in the file is already set to what we recommend. You can change her personality on the `LM_PERSONALITY` line, e.g. `LM_PERSONALITY=sarcastic, witty and helpful`. Save the file.
 
 ✅ **You should see:** your two tokens in `Luna/.env`, with no spaces around the `=`.
 
@@ -232,18 +230,9 @@ The [voice options](#text-to-speech-providers) include **ElevenLabs**, a paid cl
 
 Give particular people their own welcome line, even in their own voice. See [Custom greetings](#custom-greetings).
 
-### Better answers from Qwen models
+### A model that isn't Qwen
 
-Qwen models stay on topic and avoid repeating themselves with these settings in `Luna/.env`:
-
-```env
-LLM_REASONING=off
-LM_TEMPERATURE=0.7
-LM_TOP_P=0.8
-LM_TOP_K=20
-LM_MIN_P=0
-LM_REPEAT_PENALTY=1.05
-```
+`Luna/.env` comes tuned for the Qwen models in step 2: reasoning off, and the sampling settings Qwen recommends (`LM_TEMPERATURE`, `LM_TOP_P`, `LM_TOP_K`, `LM_MIN_P`, `LM_REPEAT_PENALTY`). For another model, use the values from its model card, or delete those five lines to use LM Studio's own settings for it.
 
 ## If something isn't working
 
