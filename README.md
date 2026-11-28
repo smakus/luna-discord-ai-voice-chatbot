@@ -195,6 +195,7 @@ In a text channel from `TEXT_CHAT_CHANNELS`, start a message with **"Luna,"** or
 | `!luna leave` | Leaves the voice channel |
 | `!luna say <text>` | Says exactly that text out loud |
 | `!luna voicecheck` | Checks that she can hear everyone (see [If something isn't working](#if-something-isnt-working)) |
+| `!luna help` | Lists these commands, and explains which requests go straight to smakbot, which she answers instantly, and which she thinks about |
 
 More examples are in [Using Luna in depth](#using-luna-in-depth).
 
@@ -318,6 +319,7 @@ With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that sta
 | `!luna say <text>` | Says exactly that text out loud in her voice channel, with no LLM involved, and reacts 🔊 |
 | `!luna voicecheck` | Shows, for each person, whether Luna can decrypt their voice (see [Troubleshooting](#troubleshooting)) |
 | `!luna wakestats` | How well the wake word worked for each person over the last day: how many of their "hey Luna"s she answered, and how (the model, the near-threshold check or the backup), their typical score and near misses. `!luna wakestats 7d` or `12h` for another span. Read from [the wake-word log](#the-wake-word-log) |
+| `!luna help` | Posts a two-part guide: the `!luna` commands, and where each kind of request goes — straight to smakbot (anything starting with "play", plus skip, pause, resume and stop), answered instantly ("what song is this?", top songs, goodbyes), or through the AI (everything else). The routing it describes is checked by `test/help.test.js` |
 
 ## Personality and answers
 

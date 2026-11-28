@@ -5,6 +5,7 @@
 //   !luna say <text>    say exactly that out loud, no LLM
 //   !luna voicecheck    whether she can decrypt each person's voice
 //   !luna wakestats     how the wake word did per person (24 h; "7d", "12h")
+//   !luna help          what she can do, and where each kind of request goes
 //
 // Typed questions ("Luna, …") are text-chat.js's; index.js offers each message
 // to that first.
@@ -12,6 +13,49 @@
 // createTextCommands({ command, wakeLabel, isReady, session, announcer, wakeLog,
 //   sayInVoice(text, userId, who) → bool, leave(userId), onJoin(), console })
 //   → { onMessage(message) → true when it was a command }
+
+// "!luna help": two messages (Discord allows 2,000 characters each). The
+// three routes match commands.js: what starts with "play" (and skip, pause,
+// resume, stop) goes to smakbot word for word; "what song is this?", top
+// songs and goodbyes are answered without the LLM; everything else is the LLM.
+function helpMessages(command) {
+  return [
+    [
+      `**⌨️ ${command} commands** (type these in any channel)`,
+      `\`${command}\` — join (or move to) the voice channel you're in`,
+      `\`${command} leave\` — leave the voice channel (she stays out until it empties or someone types \`${command}\`)`,
+      `\`${command} say <text>\` — say exactly that out loud, word for word`,
+      `\`${command} voicecheck\` — check she can hear everyone in the call`,
+      `\`${command} wakestats\` — how well "hey Luna" worked for each person today (\`${command} wakestats 7d\` for a week)`,
+      `\`${command} help\` — this help`,
+    ].join('\n'),
+    [
+      '**🗣️ Talking or typing to Luna**',
+      'Say **"hey Luna, …"** in voice, or type **"Luna, …"** (or @mention her) in the text chat. Where your request goes depends on how it starts:',
+      '',
+      '**🎵 1. Straight to smakbot** — instant, word for word, no AI',
+      '• **play** *song* — smakbot searches for exactly those words and plays the top result (one song)',
+      '• **play the top 10** / **play our most played** — the server\'s most played songs',
+      '• **skip** · **pause** · **resume** · **stop**',
+      '"Can you play …" and "please skip" count too.',
+      '',
+      '**⚡ 2. Luna answers instantly** — from smakbot, no AI',
+      '• **what song is this?**',
+      '• **what are our top songs?** · **what are my top songs?**',
+      '• **you can go now** / **bye** (voice) — she says goodbye and leaves',
+      '',
+      '**🧠 3. Luna thinks** — the AI, a few seconds (she tells you when she\'s searching the web)',
+      'Everything else, for example:',
+      '• questions: *what\'s the weather tomorrow?* · *tell me a joke*',
+      '• smart music: *search for the top 4 tracks by Toto and queue them* · *put on something chill* · *queue up three Ray Charles songs*',
+      '• *who requests the most songs?* · *what are kenbeans\' top songs?*',
+      '• *show me a picture of a capybara* (posted in the text chat)',
+      '• typed only: *Luna, say hello in Chinese in the voice channel*',
+      '',
+      '💡 **Want several songs or a smart pick? Don\'t start with "play."** "Play the top 4 tracks by Toto" goes to smakbot as one search for those exact words.',
+    ].join('\n'),
+  ];
+}
 
 function createTextCommands({ command, wakeLabel, isReady, session, announcer, wakeLog, sayInVoice, leave, onJoin = () => {}, console }) {
   const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -25,6 +69,7 @@ function createTextCommands({ command, wakeLabel, isReady, session, announcer, w
     const content = String(message.content || '').trim();
     const lower = content.toLowerCase();
     if (lower === `${command} voicecheck`) { voiceCheck(message); return true; }
+    if (lower === `${command} help`) { help(message); return true; }
     // "!luna wakestats [7d|12h]": how well the wake word works for each person.
     const statsMatch = content.match(WAKESTATS);
     if (statsMatch) {
@@ -83,6 +128,13 @@ function createTextCommands({ command, wakeLabel, isReady, session, announcer, w
     });
   }
 
+  // "!luna help": the reply, then the second part in the same channel.
+  async function help(message) {
+    const [commands, routes] = helpMessages(command);
+    await message.reply({ content: commands, allowedMentions: { parse: [] } }).catch(() => {});
+    await message.channel?.send?.({ content: routes, allowedMentions: { parse: [] } })?.catch?.(() => {});
+  }
+
   // "!luna voicecheck": per-person answer to "can Luna decrypt them?", plus the
   // voice privacy code to compare with the one Discord shows in the call's
   // encryption details — if they differ, Luna's whole session is out of sync.
@@ -112,4 +164,4 @@ function createTextCommands({ command, wakeLabel, isReady, session, announcer, w
   return { onMessage };
 }
 
-module.exports = { createTextCommands };
+module.exports = { createTextCommands, helpMessages };

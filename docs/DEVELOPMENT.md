@@ -37,6 +37,7 @@ With Node installed, `npm test` in `Luna/` does the same. A full run takes under
 | `wake.test.js` | Hearing "hey Luna": barge-in, two-stage detection, a bare "hey Luna", follow-up windows, the Whisper backup, the wake-word log |
 | `music.test.js` | Music with smakbot: the LLM's music tools, polite commands, "adding … to the queue", the music follow-up, now playing, top songs and requests |
 | `text.test.js` | Typing to Luna: text chat, pictures, saying things in the voice channel |
+| `help.test.js` | `!luna help`, and that what it says about where requests go still matches the routing (`commands.js`) |
 | `answer-retry.test.js` | When a spoken answer is asked again (`answer-retry.js`): with search, quick (reasoning off), in a fresh conversation, or not |
 | `actions.test.js` | What voice and text do the same way (`actions.js`): music commands, smakbot's answers, tool calls, the music follow-up |
 | `tts.test.js` | TTS providers and the fallback chain |
