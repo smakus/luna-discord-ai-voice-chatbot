@@ -8,7 +8,7 @@ For the setup and settings, see the [README](../README.md).
 
 | Layer | Files |
 | ----- | ----- |
-| Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
+| Startup and Discord events | `index.js` (wiring: creates everything and connects Discord's events to it), `text-commands.js` (the `!luna` commands), `auto-join.js` (joining voice channels by herself), `tools-server.js` (serving Luna's tools to LM Studio) |
 | Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer: fixed answers, the asides while waiting, the answer's place in the playback queue, one LLM pass), `text-chat.js` (typed questions), `actions.js` (what both of those do the same way: music commands, smakbot's answers, tool calls, the music follow-up), `announce.js` (intro, greetings, farewells) |
 | Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `wake-log.js` (the wake-word log), `tts.js` and `tts-cache.js` (rendered phrases), `whisper.js`, `mcp-server.js` |
 | Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `answer-retry.js` (whether to ask the LLM again), `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
