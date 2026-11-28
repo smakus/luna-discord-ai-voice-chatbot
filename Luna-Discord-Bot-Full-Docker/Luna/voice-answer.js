@@ -23,6 +23,7 @@ const { route, LEAVE_PHRASES } = require('./commands');
 const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
 const { createActions } = require('./actions');
+const { nextPass } = require('./answer-retry');
 const { QUICK_PROMPT } = require('./prompt');
 const { parseWaits } = require('./config');
 const { isBareWake, confirmWake, isJunkTranscript, nearWakePhrase } = require('./voice-input');
@@ -220,8 +221,23 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
 
   // ─── Answering ───────────────────────────────────────────────────────────────
 
-  async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
-    const what = route(query, { voice: true });
+  // ─── Answering a question ─────────────────────────────────────────────────
+  //
+  // handleQuery() answers one question out loud:
+  //   answerFixed()        music commands, smakbot's answers and "leave",
+  //                        without the LLM
+  //   createAsides()       what she says and shows while the answer is coming:
+  //                        the status message, the search heads-up, fillers
+  //   createSpokenReply()  the answer's one place in the playback queue
+  //   runPass()            one LLM request, filtered and spoken
+  //   nextPass()           whether and how to ask again (answer-retry.js)
+  // and after the answer: the music follow-up, or "Sorry, I lost my train of
+  // thought."
+
+  // Music commands, "what song is this?", top songs, "leave": answered at once,
+  // before the LLM. Resolves to true when it answered.
+  async function answerFixed(what, { connection, channel, userId }) {
+    const guildId = session.channel?.guild?.id || '';
     if (what.type === 'music') {
       // Supersede this speaker's own pending audio BEFORE the chime. A
       // VoiceConnection has exactly one subscription, and playback.playSound() creates its
@@ -231,10 +247,9 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       if (!playback.busy) {
         playback.playSound(CHIME_PATH, connection).catch(() => {});
       }
-
-      const ack = await actions.musicCommand(what, { channel, guildId: session.channel?.guild?.id || '', userId });
+      const ack = await actions.musicCommand(what, { channel, guildId, userId });
       if (ack) playback.say(ack, { connection, userId, generation: musicGeneration, cache: !!what.command.fixedAck });
-      return;
+      return true;
     }
 
     // "What song is this?", "what are our / my top songs?": answered from
@@ -243,10 +258,10 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     if ((what.type === 'now-playing' || what.type === 'top-songs') && nowPlaying?.enabled) {
       const generation = playback.interrupt(userId);
       if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
-      const text = await actions.fixedAnswer(what, { guildId: session.channel?.guild?.id || '', userId });
+      const text = await actions.fixedAnswer(what, { guildId, userId });
       console.log(`[${nameOf(userId)}] [music] ${what.type === 'now-playing' ? 'now playing' : 'top songs'} → "${text}"`);
       playback.say(text, { connection, userId, generation, cache: false });
-      return;
+      return true;
     }
 
     // "Leave", "go away", "bye": a goodbye, then out — before the LLM, like the
@@ -254,29 +269,18 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     if (what.type === 'leave') {
       playback.say(fillPhrase(LEAVE_PHRASES, {}), { connection, userId, generation: playback.interrupt(userId),
                                                     then: () => leave(userId) });
-      return;
+      return true;
     }
+    return false;
+  }
 
-    // Supersede only this speaker's own pending response. Anyone else's queued
-    // sentences survive and play in turn.
-    const myGeneration = playback.interrupt(userId);
-
-    // Fire chime (don't await — let it play while we fetch the LLM response).
-    //
-    // Skipped while audio is already playing. playback.playSound() creates its own
-    // AudioPlayer and calls connection.subscribe(), and a VoiceConnection has
-    // exactly one subscription — so an unconditional chime silently detached
-    // whichever sentence was mid-playback. With several people in a channel that
-    // presented as Luna's answers being randomly truncated.
-    // Whether the model is offered the web search tool. It decides itself
-    // whether to use it; `let`, because a question it tried to search without
-    // the tool is asked again with it (see the pass loop).
-    let useSearch = llm.offerSearch(query);
-
-    if (!playback.busy) {
-      playback.playSound(CHIME_PATH, connection).catch(() => {});
-    }
-
+  // What she says and shows while an answer is coming. waiting() is true until
+  // the answer's first sentence.
+  //   sayAside(tag, phrase, wanted)  a one-off line tied to this question
+  //   announceSearch()               the search heads-up, once
+  //   startFillers() / stopFillers() "still thinking" fillers
+  //   clearStatus()                  removes the "Luna is thinking…" message
+  function createAsides({ connection, channel, userId, generation, askerName, waiting }) {
     // Not awaited: posting (and later deleting) this message are Discord round
     // trips of 100-300 ms each, and both used to sit directly in front of the
     // LLM request and the first sentence's TTS.
@@ -300,9 +304,9 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         if (!wanted()) return;
         const pt = await fetchTTS(phrase, { cache: true });
         if (!pt) return;
-        if (!wanted() || !playback.isCurrent(userId, myGeneration)) { pt.destroy(); return; }
+        if (!wanted() || !playback.isCurrent(userId, generation)) { pt.destroy(); return; }
         await playback.play(pt, connection);
-      }, userId, myGeneration);
+      }, userId, generation);
     };
 
     // Search heads-up, said when the model actually starts a web search (its
@@ -310,7 +314,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     // the request announced searches that never happened and missed ones that
     // did; this way it is heard if and only if Luna really is searching.
     let searchAnnounced = false;
-    const announceSearchNow = () => {
+    const announceSearch = () => {
       if (searchAnnounced) return;
       searchAnnounced = true;
       if (!statusCleared) {
@@ -318,7 +322,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       }
       // Skipped if the answer has already started: queued behind it, it would
       // only play once the answer had finished.
-      if (ANNOUNCE_SEARCH) sayAside('search', fillPhrase(SEARCH_PHRASES, {}), () => firstSentence);
+      if (ANNOUNCE_SEARCH) sayAside('search', fillPhrase(SEARCH_PHRASES, {}), waiting);
     };
 
     // "Still thinking" fillers while no answer has started. Each pass through
@@ -327,7 +331,6 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     let answerStarted = false;
     let fillerTimer   = null;
     let fillersSaid   = 0;
-    const askerName = speakableName(session.channel?.members?.get(userId)?.displayName);
     const usable = THINKING_PHRASES.filter(p => askerName || !p.includes('{name}'));
     let deck = [];
     let lastFiller = null;
@@ -342,36 +345,41 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       answerStarted = true;
       clearTimeout(fillerTimer);
     };
-    const scheduleFiller = () => {
+    const startFillers = () => {
       if (!ANNOUNCE_THINKING || !usable.length) return;
       if (THINKING_MAX > 0 && fillersSaid >= THINKING_MAX) return;
       const [lo, hi] = THINKING_WAITS[Math.min(fillersSaid, THINKING_WAITS.length - 1)];
       const wait = lo + Math.random() * (hi - lo);
       fillerTimer = setTimeout(() => {
-        if (answerStarted || !playback.isCurrent(userId, myGeneration)) return;
+        if (answerStarted || !playback.isCurrent(userId, generation)) return;
         fillersSaid++;
         // The wait is in the log tag ("[thinking +17.3s]"), so the spacing can
         // be checked from the logs.
         sayAside(`thinking +${(wait / 1000).toFixed(1)}s`,
           nextFiller().replaceAll('{name}', askerName), () => !answerStarted);
-        scheduleFiller();
+        startFillers();
       }, wait);
     };
-    scheduleFiller();
 
-    // ── Per-response playback ───────────────────────────────────────────────
-    //
-    // ONE entry goes on the global chain for the whole response, not one per
-    // sentence. With per-sentence entries two speakers' answers braid together
-    // — A1, B1, A2, B2 — which is worse than the bug this design replaced.
-    //
-    // TTS for each sentence is requested as soon as it is within TTS_LOOKAHEAD
-    // of playback (see voice-playback.js), so synthesis still overlaps playback.
-    // Only playback order is serialised.
+    return { sayAside, announceSearch, startFillers, stopFillers, clearStatus };
+  }
+
+  // The answer's place in the playback queue.
+  //   add(sentence)  queue a sentence to be said
+  //   size           sentences added so far
+  //   finish()       no more sentences. MUST run on every path (see below)
+  //
+  // ONE entry goes on the global chain for the whole response, not one per
+  // sentence. With per-sentence entries two speakers' answers braid together
+  // — A1, B1, A2, B2 — which is worse than the bug this design replaced.
+  //
+  // TTS for each sentence is requested as soon as it is within TTS_LOOKAHEAD
+  // of playback (see voice-playback.js), so synthesis still overlaps playback.
+  // Only playback order is serialised.
+  function createSpokenReply({ connection, userId, generation, t0 }) {
     const response = playback.startResponse(userId);
     let streamDone = false;
     let wake       = null;    // resolver signalling "more sentences available"
-
     const signal = () => { if (wake) { wake(); wake = null; } };
 
     // Enqueued LAZILY, on the first sentence — never at query time.
@@ -394,13 +402,13 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         try {
           while (true) {
             if (i < response.size) {
-              if (!playback.isCurrent(userId, myGeneration)) return;
+              if (!playback.isCurrent(userId, generation)) return;
 
               const passThrough = await response.take(i++);
 
               // Re-check AFTER the await: a barge-in can land while TTS is still
               // rendering, and without this the superseded sentence plays anyway.
-              if (!playback.isCurrent(userId, myGeneration)) {
+              if (!playback.isCurrent(userId, generation)) {
                 passThrough?.destroy();
                 return;
               }
@@ -421,39 +429,199 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         } finally {
           playback.finishResponse(userId, response);
         }
-      }, userId, myGeneration);
+      }, userId, generation);
     };
 
-    // One LLM request per pass, and at most one retry for each reason:
-    //   - the model wrote a tool call as text because it was not offered the
-    //     search tool -> ask again with search on (same reasoning);
-    //   - it thought past LLM_THINK_LIMIT_MS without starting an answer, or
-    //     finished with no words at all (it has answered "." after 50 s of
-    //     reasoning) -> ask again with reasoning off, which answers in seconds;
-    //   - otherwise, the answer broke down (a tool call written as text, or
-    //     nothing said after its search) -> forget this person's conversation
-    //     and ask once more in a fresh one, with the search results already
-    //     found. Seen live: twelve messages deep, after searches, Qwen wrote
-    //     '[play_music] "smooth jazz…"' instead of answering, and every later
-    //     question in that conversation built on the mess; the same question
-    //     in a fresh conversation was answered correctly.
-    // If the last pass still broke down: "Sorry, I lost my train of thought.
+    return {
+      add(sentence) {
+        ensureQueued();
+        response.add(sentence);
+        signal();
+      },
+      get size() { return response.size; },
+      // The queue entry above parks on `wake`, and if it is never released it
+      // blocks the global playback chain for every speaker, forever.
+      finish() {
+        streamDone = true;
+        signal();
+        // Never queued (no sentence, or superseded first): nothing will consume it.
+        if (!queued) playback.finishResponse(userId, response);
+      },
+    };
+  }
+
+  async function handleQuery(query, connection, channel, t0 = Date.now(), userId = 'unknown') {
+    const what = route(query, { voice: true });
+    if (await answerFixed(what, { connection, channel, userId })) return;
+
+    // Supersede only this speaker's own pending response. Anyone else's queued
+    // sentences survive and play in turn.
+    const myGeneration = playback.interrupt(userId);
     const superseded = () => !playback.isCurrent(userId, myGeneration);
-    let reasoning     = llm.reasoning;
-    let firstSentence = true;
+    const askerName = speakableName(session.channel?.members?.get(userId)?.displayName);
+
+    // Fire chime (don't await — let it play while we fetch the LLM response).
+    //
+    // Skipped while audio is already playing. playback.playSound() creates its own
+    // AudioPlayer and calls connection.subscribe(), and a VoiceConnection has
+    // exactly one subscription — so an unconditional chime silently detached
+    // whichever sentence was mid-playback. With several people in a channel that
+    // presented as Luna's answers being randomly truncated.
+    if (!playback.busy) {
+      playback.playSound(CHIME_PATH, connection).catch(() => {});
+    }
+
+    // State across the passes (see answer-retry.js).
+    let firstSentence    = true;          // nothing said yet
+    let reasoning        = llm.reasoning;
+    // Whether the model is offered the web search tool. It decides itself
+    // whether to use it; a question it tried to search without the tool is
+    // asked again with it.
+    let useSearch        = llm.offerSearch(query);
     let reasoningRetried = false;
-    let freshRetried  = false;
-    let brokeDown     = false;      // the last pass's answer broke down
-    // This pass: whether it searched, and how much was said after the search.
-    let searchedThisPass = false;
-    let saidAfterSearch  = 0;
+    let freshRetried     = false;
+    let brokeDown        = false;         // the last pass's answer broke down
+    let context          = '';
+    let leaveAfterAnswer = false;         // the LLM called leave_channel
+    let musicCalled      = false;         // the LLM called a music tool
+    let spoken           = '';            // what was said, for the music follow-up
     // Search results seen so far (tool_call.success), so a quick-answer retry
     // can answer from them instead of searching all over again.
     const searchCalls = [];
-    let context = '';
-    let leaveAfterAnswer = false;   // the LLM called leave_channel
-    let musicCalled = false;        // the LLM called a music tool
-    let spoken = '';                // what was said, for the music follow-up
+    // This pass: whether it searched, and how much was said after the search.
+    let searchedThisPass = false;
+    let saidAfterSearch  = 0;
+
+    const asides = createAsides({ connection, channel, userId, generation: myGeneration, askerName,
+                                  waiting: () => firstSentence });
+    asides.startFillers();
+    const reply = createSpokenReply({ connection, userId, generation: myGeneration, t0 });
+
+    const speak = sentence => {
+      console.log('Luna sentence:', sentence);
+      spoken += ' ' + sentence;
+      saidAfterSearch++;
+      if (firstSentence) {
+        firstSentence = false;
+        console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
+        asides.clearStatus();
+        asides.stopFillers();
+      }
+      reply.add(sentence);
+    };
+
+    const fromSearchResults = () => 'Web search results already found for this question (answer from these; do not search again):\n' +
+      condenseSearchResults(searchCalls);
+
+    // One LLM request: its answer filtered and spoken. Resolves to what it did.
+    const runPass = async () => {
+      let fakeToolCall = false;
+      searchedThisPass = false;
+      saidAfterSearch  = 0;
+      // Search may have been paused by an earlier pass of this question.
+      if (useSearch && llm.searchPaused()) useSearch = false;
+      const cancel = new AbortController();
+      playback.trackRequest(userId, cancel);
+      // Reasoning clock: runs only between reasoning.start and reasoning.end,
+      // so time spent searching and reading results is not counted.
+      let thinkLimitHit = false;
+      let thinkTimer    = null;
+      let reasonedMs    = 0;
+      let reasoningAt   = 0;
+      const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
+      // What of the answer gets said is the answer filter's job (see
+      // answer-filter.js). Reasoning-off passes that may search hold
+      // everything until the end: without reasoning the model narrates its
+      // way through searches. (Only those: holding every answer until it is
+      // complete would delay all of them.)
+      const filter = createAnswerFilter({
+        reasoning: reasoning !== 'off',
+        holdUntilEnd: reasoningRetried && useSearch,
+        speak,
+        drop: (kind, text) => console.log(`[${nameOf(userId)}] [LLM] dropped ${{
+          narration: 'narration before a search',
+          planning:  'its plan, written as the answer',
+        }[kind] || 'reasoning that leaked into the answer'} (not spoken): ${text.slice(0, 160)}`),
+        cleaned: raw => console.log(`[${nameOf(userId)}] [LLM] cleaned up for speech; as written: ${JSON.stringify(raw.slice(0, 200))}`),
+      });
+      const onEvent = e => {
+        if (e.type === 'reasoning.start' && !reasoningAt) {
+          reasoningAt = Date.now();
+          if (limitActive()) {
+            thinkTimer = setTimeout(() => {
+              thinkLimitHit = true;
+              cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning`, 'AbortError'));
+            }, Math.max(0, LLM_THINK_LIMIT_MS - reasonedMs));
+          }
+        } else if (e.type === 'reasoning.end' && reasoningAt) {
+          reasonedMs += Date.now() - reasoningAt;
+          reasoningAt = 0;
+          clearTimeout(thinkTimer);
+        }
+        filter.event(e);
+      };
+      // What the model's tool calls mean (read in answer-llm.js, acted on in
+      // actions.js). A search is announced and handled as a search.
+      const tools = actions.toolHandler({ channel, userId,
+        // Asked by voice: the picture goes in the text channel.
+        onPicture: (picture, pictureQuery) => {
+          if (!channel?.send) return;
+          picture.then(p => p && channel.send({
+            content: `📷 ${pictureQuery} (for ${askerName || nameOf(userId)})`,
+            files: [{ attachment: p.buffer, name: p.name }], allowedMentions: { parse: [] },
+          })).catch(err => console.warn(`[image] posting failed: ${err.message}`));
+        },
+        onLeave: () => {
+          console.log(`[${nameOf(userId)}] [voice] the LLM called leave_channel — leaving after the reply`);
+          leaveAfterAnswer = true;
+        },
+        onOther: t => {
+          if (t.type === 'search') {
+            searchedThisPass = true;
+            saidAfterSearch  = 0;
+            asides.announceSearch();
+            filter.event({ type: 'tool_call.start' });
+          } else if (t.type === 'search-result') {
+            searchCalls.push({ query: t.query, output: t.output });
+          }
+        },
+      });
+      const onTool = t => {
+        tools.onTool(t);
+        if (tools.musicCalled()) musicCalled = true;
+      };
+
+      try {
+        const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
+        for await (const sentence of llm.stream(query, { userId, useSearch, reasoning, signal: cancel.signal, onEvent, onTool,
+                                                         context, extraSystem, speaker: config.LM_USE_NAMES ? askerName : '' })) {
+          // Abort only if THIS speaker asked something newer mid-stream.
+          if (superseded()) break;
+          const verdict = filter.text(sentence);
+          // A tool call written out as text — the model wanted to search but
+          // had no search tool. Never spoken; stop this pass and ask again
+          // with search on.
+          if (verdict === 'tool-call-as-text') {
+            fakeToolCall = true;
+            console.warn(`[${nameOf(userId)}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
+            break;
+          }
+          // The answer has started: the thinking limit no longer applies.
+          if (verdict === 'ok') clearTimeout(thinkTimer);
+        }
+        // Whatever is still held was answer. (Not after a tool call written
+        // as text: what came before it is narration.)
+        if (!superseded() && !fakeToolCall) filter.end();
+      } catch (err) {
+        // The thinking limit is a planned cancel; anything else (including a
+        // supersede) is handled by handleQuery.
+        if (!thinkLimitHit || superseded()) throw err;
+      } finally {
+        clearTimeout(thinkTimer);
+        playback.untrackRequest(userId, cancel);
+      }
+      return { fakeToolCall, thinkLimitHit };
+    };
 
     // The answer said music was queued but no music tool was called: one
     // quiet follow-up (actions.js), cancelled like the answer by a barge-in.
@@ -468,154 +636,35 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       }
     };
 
-    const speak = sentence => {
-      console.log('Luna sentence:', sentence);
-      spoken += ' ' + sentence;
-      saidAfterSearch++;
-      if (firstSentence) {
-        firstSentence = false;
-        console.log(`[timing] First LLM sentence: ${Date.now() - t0}ms`);
-        clearStatus();
-        stopFillers();
-      }
-      ensureQueued();
-      response.add(sentence);
-      signal();
-    };
-
     try {
       for (;;) {
-        let fakeToolCall = false;
-        searchedThisPass = false;
-        saidAfterSearch  = 0;
-        // Search may have been paused by an earlier pass of this question.
-        if (useSearch && llm.searchPaused()) useSearch = false;
-        const cancel = new AbortController();
-        playback.trackRequest(userId, cancel);
-        // Reasoning clock: runs only between reasoning.start and reasoning.end,
-        // so time spent searching and reading results is not counted.
-        let thinkLimitHit = false;
-        let thinkTimer    = null;
-        let reasonedMs    = 0;
-        let reasoningAt   = 0;
-        const limitActive = () => LLM_THINK_LIMIT_MS > 0 && reasoning !== 'off' && firstSentence;
-        // What of the answer gets said is the answer filter's job (see
-        // answer-filter.js). Reasoning-off passes that may search hold
-        // everything until the end: without reasoning the model narrates its
-        // way through searches. (Only those: holding every answer until it is
-        // complete would delay all of them.)
-        const filter = createAnswerFilter({
-          reasoning: reasoning !== 'off',
-          holdUntilEnd: reasoningRetried && useSearch,
-          speak,
-          drop: (kind, text) => console.log(`[${nameOf(userId)}] [LLM] dropped ${{
-            narration: 'narration before a search',
-            planning:  'its plan, written as the answer',
-          }[kind] || 'reasoning that leaked into the answer'} (not spoken): ${text.slice(0, 160)}`),
-          cleaned: raw => console.log(`[${nameOf(userId)}] [LLM] cleaned up for speech; as written: ${JSON.stringify(raw.slice(0, 200))}`),
-        });
-        const onEvent = e => {
-          if (e.type === 'reasoning.start' && !reasoningAt) {
-            reasoningAt = Date.now();
-            if (limitActive()) {
-              thinkTimer = setTimeout(() => {
-                thinkLimitHit = true;
-                cancel.abort(new DOMException(`no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning`, 'AbortError'));
-              }, Math.max(0, LLM_THINK_LIMIT_MS - reasonedMs));
-            }
-          } else if (e.type === 'reasoning.end' && reasoningAt) {
-            reasonedMs += Date.now() - reasoningAt;
-            reasoningAt = 0;
-            clearTimeout(thinkTimer);
-          }
-          filter.event(e);
-        };
-        // What the model's tool calls mean (read in answer-llm.js). A search is
-        // announced and handled as a search; music and leaving are acted on.
-        const tools = actions.toolHandler({ channel, userId,
-          // Asked by voice: the picture goes in the text channel.
-          onPicture: (picture, query) => {
-            if (!channel?.send) return;
-            picture.then(p => p && channel.send({
-              content: `📷 ${query} (for ${askerName || nameOf(userId)})`,
-              files: [{ attachment: p.buffer, name: p.name }], allowedMentions: { parse: [] },
-            })).catch(err => console.warn(`[image] posting failed: ${err.message}`));
-          },
-          onLeave: () => {
-            console.log(`[${nameOf(userId)}] [voice] the LLM called leave_channel — leaving after the reply`);
-            leaveAfterAnswer = true;
-          },
-          onOther: t => {
-            if (t.type === 'search') {
-              searchedThisPass = true;
-              saidAfterSearch  = 0;
-              announceSearchNow();
-              filter.event({ type: 'tool_call.start' });
-            } else if (t.type === 'search-result') {
-              searchCalls.push({ query: t.query, output: t.output });
-            }
-          },
-        });
-        const onTool = t => {
-          tools.onTool(t);
-          if (tools.musicCalled()) musicCalled = true;
-        };
-
-        try {
-          const extraSystem = reasoningRetried ? QUICK_PROMPT : '';
-          for await (const sentence of llm.stream(query, { userId, useSearch, reasoning, signal: cancel.signal, onEvent, onTool,
-                                                           context, extraSystem, speaker: config.LM_USE_NAMES ? askerName : '' })) {
-            // Abort only if THIS speaker asked something newer mid-stream.
-            if (superseded()) break;
-            const verdict = filter.text(sentence);
-            // A tool call written out as text — the model wanted to search but
-            // had no search tool. Never spoken; stop this pass and ask again
-            // with search on.
-            if (verdict === 'tool-call-as-text') {
-              fakeToolCall = true;
-              console.warn(`[${nameOf(userId)}] [LLM] model wrote a tool call as text (not spoken): ${sentence.replace(/\s+/g, ' ').slice(0, 120)}`);
-              break;
-            }
-            // The answer has started: the thinking limit no longer applies.
-            if (verdict === 'ok') clearTimeout(thinkTimer);
-          }
-          // Whatever is still held was answer. (Not after a tool call written
-          // as text: what came before it is narration.)
-          if (!superseded() && !fakeToolCall) filter.end();
-        } catch (err) {
-          // The thinking limit is a planned cancel; anything else (including a
-          // supersede) is handled below.
-          if (!thinkLimitHit || superseded()) throw err;
-        } finally {
-          clearTimeout(thinkTimer);
-          playback.untrackRequest(userId, cancel);
-        }
-
+        const { fakeToolCall, thinkLimitHit } = await runPass();
         if (superseded()) break;
-        // (Not after the fresh retry: it turned search off on purpose, with the results.)
-        if (fakeToolCall && !useSearch && !freshRetried && llm.canSearch()) {
+        const next = nextPass({ answered: !firstSentence, fakeToolCall, thinkLimitHit, searched: searchedThisPass,
+                                saidAfterSearch, useSearch, canSearch: llm.canSearch(), reasoningOff: reasoning === 'off',
+                                reasoningRetried, freshRetried });
+        if (next.step === 'search') {
           console.warn(`[${nameOf(userId)}] [LLM] model tried to search without the search tool — asking again with web search`);
           useSearch = true;
           continue;
         }
-        brokeDown = !thinkLimitHit && (fakeToolCall || firstSentence || (searchedThisPass && saidAfterSearch === 0));
-        if (!firstSentence || reasoning === 'off' || reasoningRetried) {
-          // The reasoning retry can't help: a fresh conversation, once.
-          if (!brokeDown || freshRetried || reasoningRetried) break;
+        brokeDown = next.brokeDown;
+        if (next.step === 'done') break;
+        if (next.step === 'fresh') {
           freshRetried = true;
           llm.forgetConversation(userId);
           if (searchCalls.length) {
-            context = 'Web search results already found for this question (answer from these; do not search again):\n' +
-              condenseSearchResults(searchCalls);
+            context = fromSearchResults();
             useSearch = false;
           }
           console.warn(`[${nameOf(userId)}] [LLM] answer broke down (${fakeToolCall ? 'a tool call written as text' : 'no words'}) — ` +
             `asking again in a fresh conversation${searchCalls.length ? `, with the ${searchCalls.length} search result set(s) already found` : ''}`);
           continue;
         }
+        // 'quick': reasoning off.
         if (thinkLimitHit) {
           console.warn(`[${nameOf(userId)}] [LLM] no answer after ${LLM_THINK_LIMIT_MS / 1000}s of reasoning — asking again with reasoning off`);
-          sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
+          asides.sayAside('quick', fillPhrase(QUICK_ANSWER_PHRASES, {}), () => firstSentence);
         } else {
           console.warn(`[${nameOf(userId)}] [LLM] answer had ${fakeToolCall ? 'only a tool call written as text' : 'no words'} — asking again with reasoning off`);
         }
@@ -624,8 +673,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         if (searchCalls.length) {
           // Answer from what was already found: searching again redid minutes
           // of work, and a reasoning-off model narrates its way through searches.
-          context = 'Web search results already found for this question (answer from these; do not search again):\n' +
-            condenseSearchResults(searchCalls);
+          context = fromSearchResults();
           useSearch = false;
           console.log(`[${nameOf(userId)}] [LLM] quick answer reuses ${searchCalls.length} search result set(s); search not offered again`);
         }
@@ -634,13 +682,11 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
       if (!superseded() && !firstSentence && !brokeDown) await musicFollowUp();
 
       if ((firstSentence || brokeDown) && !superseded()) {
-        stopFillers();
-        ensureQueued();
-        response.add('Sorry, I lost my train of thought.');
-        signal();
+        asides.stopFillers();
+        reply.add('Sorry, I lost my train of thought.');
       }
     } catch (err) {
-      stopFillers();
+      asides.stopFillers();
       if (superseded()) {
         // Barge-in or a newer question: the cancel is the point, not an error.
         console.log(`[${nameOf(userId)}] previous question cancelled`);
@@ -649,24 +695,17 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         // Only when nothing has been said yet. After part of an answer has
         // played, a tacked-on "I had trouble processing that." makes a merely
         // truncated answer sound like a failure.
-        if (response.size === 0) {
-          ensureQueued();
-          response.add(err.name === 'TimeoutError'
+        if (reply.size === 0) {
+          reply.add(err.name === 'TimeoutError'
             ? 'Sorry, that took too long to work out.'
             : 'I had trouble processing that.');
-          signal();
         }
       }
     } finally {
-      clearStatus();
-      stopFillers();
-      // MUST run on every path. The queue entry above parks on `wake`, and if
-      // it is never released it blocks the global playback chain for every
-      // speaker, forever.
-      streamDone = true;
-      signal();
-      // Never queued (no sentence, or superseded first): nothing will consume it.
-      if (!queued) playback.finishResponse(userId, response);
+      asides.clearStatus();
+      asides.stopFillers();
+      // MUST run on every path (see createSpokenReply).
+      reply.finish();
       // Queued behind the answer, so she leaves once her goodbye has played.
       if (leaveAfterAnswer && !superseded()) playback.queue(async () => leave(userId), userId, myGeneration);
     }
