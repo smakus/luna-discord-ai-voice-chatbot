@@ -194,6 +194,8 @@ In a text channel from `TEXT_CHAT_CHANNELS`, start a message with **"Luna,"** or
 | `!luna` | Joins the voice channel you're in |
 | `!luna leave` | Leaves the voice channel |
 | `!luna say <text>` | Says exactly that text out loud |
+| `!luna voice <name> <text>` | Says it in one of the cloned Chatterbox voices (`--file` gets a .wav to download instead) |
+| `!luna voices` | Lists the voices |
 | `!luna voicecheck` | Checks that she can hear everyone (see [If something isn't working](#if-something-isnt-working)) |
 | `!luna help` | Lists these commands, and explains which requests go straight to smakbot, which she answers instantly, and which she thinks about |
 
@@ -317,6 +319,8 @@ With `TEXT_CHAT_CHANNELS` set, type in one of those channels. A message that sta
 | `!luna` | Joins the voice channel you're in, or moves there if she's elsewhere |
 | `!luna leave` | Leaves the voice channel. With auto-join on, she stays away until the channel has emptied once, or someone types `!luna` |
 | `!luna say <text>` | Says exactly that text out loud in her voice channel, with no LLM involved, and reacts 🔊 |
+| `!luna voice [name] <text>` | Says the text in one of Chatterbox's voices: `!luna voice tupac Ay yo…`. With no voice named (the first word isn't one), the `default` voice says the whole text. Add `--file` anywhere to get the line as a `.wav` to download instead of hearing it, which also works when she isn't in a voice channel. Audio tags like `[laugh]` work; capped at 400 characters. Handy for trying out a new clone |
+| `!luna voices` | Lists Chatterbox's voices, live from its server: `default` (built into the model) and every clone, including `luna`. A new `<name>.wav` in its voices folder shows up without a restart |
 | `!luna voicecheck` | Shows, for each person, whether Luna can decrypt their voice (see [Troubleshooting](#troubleshooting)) |
 | `!luna wakestats` | How well the wake word worked for each person over the last day: how many of their "hey Luna"s she answered, and how (the model, the near-threshold check or the backup), their typical score and near misses. `!luna wakestats 7d` or `12h` for another span. Read from [the wake-word log](#the-wake-word-log) |
 | `!luna help` | Posts a two-part guide: the `!luna` commands, and where each kind of request goes — straight to smakbot (anything starting with "play", plus skip, pause, resume and stop), answered instantly ("what song is this?", top songs, goodbyes), or through the AI (everything else). The routing it describes is checked by `test/help.test.js` |

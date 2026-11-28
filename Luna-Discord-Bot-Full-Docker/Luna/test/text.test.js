@@ -107,6 +107,15 @@ const keepAlive = setInterval(() => {}, 1000);
     msg.content = '!luna say ' + 'x'.repeat(600); H.T.client.emit('messageCreate', msg); await H.until(() => H.S.tts.length > 1);
     assert.strictEqual(H.S.tts[1].text.length, 400, 'capped');
     ok('"!luna say …" → those exact words spoken (no LLM), 🔊 reaction; capped at 400 characters'); }
+  { const H = await textRig(); H.put('u1', 'A'); await H.luna('u1'); H.S.lastConnection.setStatus(H.Status.Ready); await H.wait(50); H.S.tts.length = 0; H.S.replies.length = 0;
+    const msg = { content: "!luna voice tupac Ay yo, what's poppin'?", author: { id: 'u2', bot: false }, member: { displayName: 'Joel' }, channel: H.chan(),
+      reply: async r => { H.S.replies.push(r); }, react: async e => { (H.S.reactions ??= []).push(e); } };
+    H.S.played.length = 0; H.T.client.emit('messageCreate', msg); await H.until(() => H.S.played.some(p => /tupac/.test(p)));
+    assert.deepStrictEqual(H.S.voiceTts.map(v => [v.voice, v.text]), [['chatterbox:tupac', "Ay yo, what's poppin'?"]]);
+    assert.deepStrictEqual(H.S.played, ["[voice chatterbox:tupac] Ay yo, what's poppin'?"]); assert.strictEqual(H.S.llmRequests.length, 0);
+    msg.content = '!luna voice --file stewart Engage!'; H.T.client.emit('messageCreate', msg); await H.until(() => H.S.replies.length > 0);
+    assert.deepStrictEqual(H.S.wavs, [{ text: 'Engage!', voice: 'stewart' }]); assert.strictEqual(H.S.replies[0].files[0].name, 'stewart-engage.wav');
+    ok('"!luna voice tupac …" → spoken in Chatterbox\'s tupac voice (no LLM); "--file stewart …" → a .wav reply'); }
   { const H = await textRig(); const at = new Date().toISOString(), old = new Date(Date.now() - 3 * 86400000).toISOString();
     H.S.wakeLog = [
       { t: at, event: 'detected', who: 'smakus', id: 'u1', score: 0.7 }, { t: at, event: 'detected', who: 'smakus', id: 'u1', score: 0.8 },

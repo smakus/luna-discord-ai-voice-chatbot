@@ -57,6 +57,10 @@ module.exports = function boot(env = {}) {
     // A specific ElevenLabs voice (custom greetings): S.voiceDown makes it unavailable.
     fetchTTSInVoice: async (text, voice) => { (S.voiceTts ??= []).push({ text, voice }); if (S.voiceDown) return null;
       const st = new PassThrough(); st.ttsText = `[voice ${voice}] ${text}`; S.tts.push({ text: st.ttsText }); return st; },
+    // Chatterbox's voices (S.cbVoices; null = not running) and a .wav render (S.wavDown makes it fail).
+    chatterboxVoices: async () => S.cbVoices === undefined ? ['default', 'luna', 'stewart', 'tupac'] : S.cbVoices,
+    chatterboxWav: async (text, voice) => { (S.wavs ??= []).push({ text, voice }); if (S.wavDown) throw new Error('Chatterbox error 500: boom');
+      return Buffer.from('RIFF....WAVEfmt ' + text); },
     checkVoice: async voice => (S.badVoices || []).includes(voice) ? { name: null, reason: 'ElevenLabs says 404' } : { name: 'Some Voice' },
     fetchTTS: (text, opts = {}) => {
       const rec = { text, signal: opts.signal, cache: opts.cache, destroyed: false };
