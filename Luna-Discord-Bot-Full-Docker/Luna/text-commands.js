@@ -6,12 +6,17 @@
 //   !luna voicecheck    whether she can decrypt each person's voice
 //   !luna wakestats     how the wake word did per person (24 h; "7d", "12h")
 //   !luna help          what she can do, and where each kind of request goes
+//   !luna voices        the Chatterbox voices she can speak in
+//   !luna voice [name] <text> [--file]   say it in one of those voices ("default"
+//                       when no name is given); --file posts a .wav instead
 //
 // Typed questions ("Luna, …") are text-chat.js's; index.js offers each message
 // to that first.
 //
 // createTextCommands({ command, wakeLabel, isReady, session, announcer, wakeLog,
-//   sayInVoice(text, userId, who) → bool, leave(userId), onJoin(), console })
+//   sayInVoice(text, userId, who) → bool, leave(userId), onJoin(), console,
+//   voices: { list() → [names] | null, say(text, voice, userId, who) → bool,
+//             wav(text, voice) → Buffer }, maxChars })
 //   → { onMessage(message) → true when it was a command }
 
 // "!luna help": two messages (Discord allows 2,000 characters each). The
@@ -25,6 +30,8 @@ function helpMessages(command) {
       `\`${command}\` — join (or move to) the voice channel you're in`,
       `\`${command} leave\` — leave the voice channel (she stays out until it empties or someone types \`${command}\`)`,
       `\`${command} say <text>\` — say exactly that out loud, word for word`,
+      `\`${command} voice <name> <text>\` — say it in one of the cloned voices (add \`--file\` for a .wav)`,
+      `\`${command} voices\` — list the voices`,
       `\`${command} voicecheck\` — check she can hear everyone in the call`,
       `\`${command} wakestats\` — how well "hey Luna" worked for each person today (\`${command} wakestats 7d\` for a week)`,
       `\`${command} help\` — this help`,
@@ -57,8 +64,10 @@ function helpMessages(command) {
   ];
 }
 
-function createTextCommands({ command, wakeLabel, isReady, session, announcer, wakeLog, sayInVoice, leave, onJoin = () => {}, console }) {
+function createTextCommands({ command, wakeLabel, isReady, session, announcer, wakeLog, sayInVoice, leave, onJoin = () => {}, console,
+                              voices = null, maxChars = 400 }) {
   const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const VOICE = new RegExp(`^${escaped}\\s+voice(?:\\s+([\\s\\S]*))?$`, 'i');
   const WAKESTATS = new RegExp(`^${escaped}\\s+wakestats(?:\\s+(\\d+)\\s*([dh]))?\\s*$`, 'i');
   const SAY = new RegExp(`^${escaped}\\s+say\\s+([\\s\\S]+)$`, 'i');
   // .catch on every reply: a rejected reply (e.g. no send permission) in an
@@ -70,6 +79,9 @@ function createTextCommands({ command, wakeLabel, isReady, session, announcer, w
     const lower = content.toLowerCase();
     if (lower === `${command} voicecheck`) { voiceCheck(message); return true; }
     if (lower === `${command} help`) { help(message); return true; }
+    if (lower === `${command} voices`) { listVoices(message); return true; }
+    const voiceMatch = content.match(VOICE);
+    if (voiceMatch && !message.author?.bot) { speakAs(message, voiceMatch[1] || ''); return true; }
     // "!luna wakestats [7d|12h]": how well the wake word works for each person.
     const statsMatch = content.match(WAKESTATS);
     if (statsMatch) {
@@ -133,6 +145,53 @@ function createTextCommands({ command, wakeLabel, isReady, session, announcer, w
     const [commands, routes] = helpMessages(command);
     await message.reply({ content: commands, allowedMentions: { parse: [] } }).catch(() => {});
     await message.channel?.send?.({ content: routes, allowedMentions: { parse: [] } })?.catch?.(() => {});
+  }
+
+  // "!luna voices": the Chatterbox voices, live from its server, so a new
+  // clone (<name>.wav in its voices folder) shows up without a restart.
+  async function listVoices(message) {
+    const names = await voices?.list();
+    if (!names) return reply(message, "Chatterbox isn't running, so there are no voices to use right now.");
+    const shown = names.map(n => n === 'default' ? '`default` (built into the model; used when you don\'t name one)' : `\`${n}\``);
+    reply(message, `**🎙️ Voices:** ${shown.join(' · ')}\n` +
+      `\`${command} voice <name> <text>\` says it in the voice channel · \`${command} voice <text>\` uses \`default\` · ` +
+      `add \`--file\` to get a .wav instead`);
+  }
+
+  // "!luna voice [name] <text> [--file]": the text in one of Chatterbox's
+  // voices. The first word picks the voice when it is one ("default"
+  // otherwise). Spoken in the voice channel like "!luna say", or with
+  // --file posted as a .wav to download.
+  async function speakAs(message, rest) {
+    const file = /(^|\s)--file(?=\s|$)/i.test(rest);
+    let words = rest.replace(/(^|\s)--file(?=\s|$)/gi, ' ').trim();
+    const names = await voices?.list();
+    if (!names) return reply(message, "Chatterbox isn't running, so I can't use its voices right now.");
+    const first = words.split(/\s+/)[0] || '';
+    const named = names.find(n => n.toLowerCase() === first.toLowerCase());
+    const voice = named || 'default';
+    if (named) words = words.slice(first.length).trim();
+    const text = words.slice(0, maxChars);
+    if (!text) return reply(message, `Say what? \`${command} voice <name> <text>\` — voices: ${names.map(n => `\`${n}\``).join(', ')}`);
+    const who = message.member?.displayName || message.author?.username || 'someone';
+
+    if (file) {
+      message.channel?.sendTyping?.().catch(() => {});
+      try {
+        const wav = await voices.wav(text, voice);
+        const stem = text.toLowerCase().replace(/\[[^\]]*\]/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'line';
+        console.log(`[voice] ${who} rendered ${voice}: ${JSON.stringify(text)} (${Math.round(wav.length / 1024)} KB .wav)`);
+        return message.reply({ content: `🎙️ \`${voice}\`: ${text}`, files: [{ attachment: wav, name: `${voice}-${stem}.wav` }],
+                               allowedMentions: { parse: [] } }).catch(() => {});
+      } catch (err) {
+        console.warn(`[voice] ${voice} .wav failed: ${err.message}`);
+        return reply(message, `Couldn't render that in \`${voice}\`: ${err.message}`);
+      }
+    }
+    if (!voices.say(text, voice, message.author?.id || 'text', who)) {
+      return reply(message, `I'm not in a voice channel. Add \`--file\` to get it as a .wav instead.`);
+    }
+    message.react('🔊').catch(() => {});
   }
 
   // "!luna voicecheck": per-person answer to "can Luna decrypt them?", plus the

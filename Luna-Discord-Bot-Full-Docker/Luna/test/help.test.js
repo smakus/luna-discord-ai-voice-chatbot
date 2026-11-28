@@ -36,7 +36,7 @@ describe('!luna help', () => {
   it('each message fits in one Discord message, and every !luna command is listed', () => {
     const [cmds, routes] = helpMessages('!luna');
     assert.ok(cmds.length < 2000 && routes.length < 2000, `${cmds.length} / ${routes.length} characters`);
-    for (const c of ['`!luna`', '`!luna leave`', '`!luna say <text>`', '`!luna voicecheck`', '`!luna wakestats`', '`!luna help`']) {
+    for (const c of ['`!luna`', '`!luna leave`', '`!luna say <text>`', '`!luna voice <name> <text>`', '`!luna voices`', '`!luna voicecheck`', '`!luna wakestats`', '`!luna help`']) {
       assert.ok(cmds.includes(c), c);
     }
   });

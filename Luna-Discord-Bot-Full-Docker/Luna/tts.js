@@ -35,7 +35,8 @@
 // while its provider is benched — out of credits, say — since it costs nothing.
 //
 // createTTS({ config, fetch, console, fs }) → { fetchTTS, fetchTTSInVoice,
-// checkVoice, describeTTS, expressivePrompt, pronounce }. fetch,
+// checkVoice, describeTTS, expressivePrompt, pronounce, chatterboxVoices,
+// chatterboxWav }. fetch,
 // console and fs are passed in so the tests can fake them; without fs there
 // is no phrase cache.
 
@@ -535,7 +536,38 @@ function createTTS({ config, fetch, console, fs = null }) {
     }
   }
 
-  return { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt, pronounce };
+  // Chatterbox's voices, from its /health ("default" is the one built into the
+  // model, the rest are clones), or null when it isn't configured or can't be
+  // reached. For "!luna voices" and "!luna voice".
+  async function chatterboxVoices() {
+    if (!chatterbox.configured()) return null;
+    try {
+      const res = await request('Chatterbox', new URL('/health', chatterbox.url).href, {}, CHATTERBOX_TIMEOUT_MS);
+      if (!res.ok) return null;
+      const { voices } = await res.json();
+      return Array.isArray(voices) ? voices : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // A line rendered whole in a Chatterbox voice, as WAV bytes: "!luna voice
+  // --file". Tags and pronunciations are handled as for anything she says.
+  // Throws TTSError on any problem.
+  async function chatterboxWav(text, as) {
+    if (!chatterbox.configured()) throw new TTSError('Chatterbox is not configured (CHATTERBOX_URL)', 'disable');
+    const spoken = pronounce(TTS_EXPRESSIVE ? chatterbox.speakable(text) : stripAudioTags(text));
+    if (!spoken) throw new TTSError('nothing left to say once tags are removed', 'disable');
+    const res = await request('Chatterbox', chatterbox.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: spoken, voice: as, stream: false, response_format: 'wav' }),
+    }, CHATTERBOX_TIMEOUT_MS);
+    if (!res.ok) throw new TTSError(`Chatterbox error ${res.status}: ${(await res.text()).slice(0, 200)}`, 'transient');
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  return { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt, pronounce, chatterboxVoices, chatterboxWav };
 }
 
 module.exports = { createTTS, stripAudioTags, createLimiter };

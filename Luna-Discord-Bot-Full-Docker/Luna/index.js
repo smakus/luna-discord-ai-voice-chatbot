@@ -38,7 +38,7 @@ const nameOf = userId => session.channel?.members?.get(userId)?.displayName || u
 const wakeLog = createWakeLog({ config, fs: require('fs').promises, path: require('path'), console, nameOf });
 
 // Text to speech: ElevenLabs, local voices and the fallback between them (tts.js).
-const { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt } =
+const { fetchTTS, fetchTTSInVoice, checkVoice, describeTTS, expressivePrompt, chatterboxVoices, chatterboxWav } =
   createTTS({ config, fetch, console, fs: require('fs') });
 
 // What smakbot is playing (now-playing.js): answers "what song is this?", and
@@ -242,6 +242,19 @@ function sayInVoice(text, userId, who) {
   return true;
 }
 
+// "!luna voice": the same, in one of Chatterbox's voices ("default", or a
+// clone). Not cached: these are test lines.
+function sayInVoiceAs(text, voice, userId, who) {
+  const connection = session.connection;
+  const line = String(text || '').trim().slice(0, SAY_MAX_CHARS);
+  if (!connection || !line) return false;
+  console.log(`[voice] ${who} had Luna say in ${voice}: ${JSON.stringify(line)}`);
+  playback.say(line, { connection, userId, generation: playback.generationOf(userId) ?? playback.nextGeneration(userId),
+                       wanted: () => session.connection === connection, cache: false,
+                       render: l => fetchTTSInVoice(l, `chatterbox:${voice}`) });
+  return true;
+}
+
 // ─── Auto-join and the !luna commands ─────────────────────────────────────────
 
 // Joining voice channels by herself (auto-join.js).
@@ -253,6 +266,7 @@ const textCommands = createTextCommands({
   sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
   leave: userId => leaveOnRequest(userId),
   onJoin: () => autoJoin.resume(),
+  voices: { list: chatterboxVoices, say: sayInVoiceAs, wav: chatterboxWav }, maxChars: SAY_MAX_CHARS,
   console,
 });
 
