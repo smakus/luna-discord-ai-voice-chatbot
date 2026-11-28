@@ -6,10 +6,8 @@ const { Events, Client } = require('discord.js');
 const { OpusEncoder } = require('@discordjs/opus');
 const http = require('http');
 const { WakeWordEngine } = require('./wakeword');
-const { createMcpServer } = require('./mcp-server');
 const { createTextChat, SAY_MAX_CHARS } = require('./text-chat');
 const { sendSmakbotCommand: postSmakbotCommand } = require('./commands');
-const { LLM_TOOLS, LLM_TOOL_NAMES } = require('./llm-tools');
 const { createTTS } = require('./tts');
 const { speakableName } = require('./phrases');
 const { createAnnouncer } = require('./announce');
@@ -21,9 +19,12 @@ const { createVoiceAnswerer } = require('./voice-answer');
 const { createWhisper } = require('./whisper');
 const { createWakeBackup } = require('./wake-backup');
 const { createWakeLog } = require('./wake-log');
-const { createLlm, TOOLS_PLUGIN_ID } = require('./answer-llm');
+const { createLlm } = require('./answer-llm');
 const { createNowPlaying } = require('./now-playing');
 const { createImageSearch } = require('./image-search');
+const { createTextCommands } = require('./text-commands');
+const { createAutoJoin, named } = require('./auto-join');
+const { startToolsServer } = require('./tools-server');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -148,151 +149,30 @@ client.on(Events.ClientReady, async () => {
   console.log(`[tts] ${describeTTS()}`);
   announcer.describeCustomGreetings();
   console.log(`[search] web search: ${llm.describeSearch()}`);
-  if (LLM_TOOLS_ON) startLlmTools();
+  if (config.LLM_TOOLS) startToolsServer({ config, console, http, session, nowPlaying, imageSearch });
   ready = true;
-  checkAutoJoin();
-  scheduleAutoJoin();
+  autoJoin.check();
+  autoJoin.schedule();
   console.log(`Ready! Wake phrase: "${WAKE_LABEL}"  •  text command: ${BOT_COMMAND}`);
 });
 
 // ─── Text commands ────────────────────────────────────────────────────────────
-
+//
+// Typed questions ("Luna, …", text-chat.js) first, then the !luna commands
+// (text-commands.js).
 client.on(Events.MessageCreate, async message => {
   if (textChat.onMessage(message)) return;
-  if (message.content.toLowerCase().trim() === `${BOT_COMMAND} voicecheck`) return voiceCheck(message);
-  // "!luna wakestats [7d|12h]": how well the wake word works for each person.
-  const statsMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+wakestats(?:\\s+(\\d+)\\s*([dh]))?\\s*$`, 'i'));
-  if (statsMatch) return wakeStats(message, statsMatch[1] ? Number(statsMatch[1]) : 24, (statsMatch[2] || 'h').toLowerCase());
-  // "!luna say <text>": exactly those words, out loud, no LLM.
-  const sayMatch = message.content.trim().match(new RegExp(`^${BOT_COMMAND}\\s+say\\s+([\\s\\S]+)$`, 'i'));
-  if (sayMatch && !message.author?.bot) {
-    const who = message.member?.displayName || message.author?.username || 'someone';
-    if (!sayInVoice(sayMatch[1], message.author?.id || 'text', who)) {
-      message.reply("I'm not in a voice channel.").catch(() => {});
-    } else {
-      message.react('🔊').catch(() => {});
-    }
-    return;
-  }
-  if (message.content.toLowerCase().trim() === `${BOT_COMMAND} leave`) {
-    if (!session.connection) return message.reply("I'm not in a voice channel.").catch(() => {});
-    message.reply('Bye!').catch(() => {});
-    return leaveOnRequest(message.author?.id);
-  }
-  if (message.content.toLowerCase().trim() !== BOT_COMMAND) return;
-  // .catch: a rejected reply (e.g. no send permission) in an async listener is
-  // an unhandled rejection, which terminates Node.
-  if (!ready) return message.reply('Still starting up — try again in a few seconds.').catch(() => {});
-
-  const channel = message.member?.voice?.channel;
-  if (!channel) return message.reply('You need to join a voice channel first!').catch(() => {});
-
-  autoJoinPaused = false;   // asked to join: auto-join may follow people again
-  const guild = { id: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator };
-  // Returns the guild's existing connection if there is one, moving it to
-  // `channel` when that differs.
-  const connection = session.join(channel, guild);
-
-  if (connection === session.connection) {
-    if (session.channel?.id === channel.id) {
-      message.reply(`Already listening in **${channel.name}**.`).catch(() => {});
-      return;
-    }
-    // !luna from another channel: session.join() just moved Luna there.
-    // Listening carries over (it is per connection, not per channel); only
-    // the channel she announces and counts members in changes.
-    console.log(`[voice] moved to ${channel.name} by !luna`);
-    session.moveTo(channel);
-    message.reply(`Moved to **${channel.name}**!`).catch(() => {});
-    announcer.introduce(connection);
-    return;
-  }
-
-  session.attach(connection, channel, message.channel, guild, () => {
-    message.reply(
-      `Joined **${channel.name}**! Say "${WAKE_LABEL}" to wake me up. ` +
-      `Also, you can say "${WAKE_LABEL}, play song ___" to play music, ` +
-      `or "${WAKE_LABEL}, skip" and "${WAKE_LABEL}, stop" to control it.`
-    ).catch(() => {});
-    announcer.introduce(connection);
-  });
+  textCommands.onMessage(message);
 });
-
-// `!luna voicecheck`: per-person answer to "can Luna decrypt them?", plus the
-// voice privacy code to compare with the one Discord shows in the call's
-// encryption details — if they differ, Luna's whole session is out of sync.
-function voiceCheck(message) {
-  if (!session.connection || !session.channel) return message.reply("I'm not in a voice channel.").catch(() => {});
-  const crypto = session.cryptoState();
-  if (!crypto) return message.reply('Encryption details are unavailable (unencrypted call, or the voice library changed).').catch(() => {});
-  const lines = [`**Voice encryption:** ${crypto.status}, epoch ${crypto.epoch ?? '-'}` +
-    (crypto.privacyCode ? ` — privacy code \`${crypto.privacyCode}\` (should match the code Discord shows for this call)` : '')];
-  for (const member of session.channel.members.values()) {
-    if (member.user.bot) continue;
-    const v = session.cryptoVerdict(crypto, member.id);
-    lines.push(`${v.problem ? '⚠️' : '✅'} ${member.displayName}: ${v.text}`);
-  }
-  console.log(`[voice] voicecheck: ${lines.slice(1).join(' | ')}`);
-  return message.reply(lines.join('\n')).catch(() => {});
-}
-
-// ─── Tools for the LLM (music, leaving) ───────────────────────────────────────
-//
-// Besides the fixed commands below, the LLM can play, skip and stop music and
-// leave the channel itself (llm-tools.js): Luna serves the tools over MCP on
-// LUNA_MCP_PORT, LM Studio knows them from its mcp.json as "luna", and every
-// request offers them as mcp/luna. When a call succeeds, Luna acts on it (the
-// onTool handlers in voice-answer.js and text-chat.js). Offering them, and leaving
-// them out while LM Studio can't reach them, is answer-llm.js's job.
-const LLM_TOOLS_ON    = config.LLM_TOOLS;
-const LUNA_MCP_PORT   = config.LUNA_MCP_PORT;
-
-function startLlmTools() {
-  // say_in_voice tells the model the truth about whether anything was said.
-  // list_top_songs asks smakbot (one person's requests, with a user), and
-  // list_top_requesters asks it who requests the most.
-  const runs = {
-    say_in_voice: () => session.connection
-      ? `Said in ${session.channel?.name || 'the voice channel'}.`
-      : 'You are not in a voice channel, so nothing was said. Tell them that.',
-    list_top_songs: async ({ count, user }) => {
-      const n = Math.min(50, Math.max(1, Math.round(Number(count)) || 10));
-      if (typeof user === 'string' && user.trim()) {
-        return nowPlaying.listRequestsForModel(await nowPlaying.topRequests(user.trim(), n), user.trim());
-      }
-      return nowPlaying.listForModel(await nowPlaying.topSongs(n));
-    },
-    // Finds the picture now, so the model is told whether there is one; the
-    // answer's onTool handler posts it (the same search, cached).
-    post_image: async ({ query }) => {
-      const words = String(query || '').trim();
-      if (!imageSearch.enabled) return 'Pictures are not set up (no TAVILY_API_KEY), so nothing was posted. Say so.';
-      return (await imageSearch.find(words))
-        ? `A picture for "${words}" is being posted in the text chat. Mention it briefly; you can't see it, so don't describe it.`
-        : `No picture could be found for "${words}", so nothing was posted. Say so.`;
-    },
-    list_top_requesters: async ({ count }) => nowPlaying.listRequestersForModel(
-      await nowPlaying.topRequesters(Math.min(50, Math.max(1, Math.round(Number(count)) || 5)))),
-  };
-  const tools = LLM_TOOLS.map(t => runs[t.name] ? { ...t, run: runs[t.name] } : t);
-  const server = createMcpServer({ tools });
-  http.createServer((req, res) => server.handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch (_) {} }))
-    .on('error', err => console.error(`[tools] tools server failed on port ${LUNA_MCP_PORT}: ${err.message} — LLM tools off`))
-    .listen(LUNA_MCP_PORT, '0.0.0.0', () => console.log(
-      `[tools] ${[...LLM_TOOL_NAMES].join(', ')} offered to the LLM as ${TOOLS_PLUGIN_ID} ` +
-      `(LM Studio's mcp.json needs "luna": {"url": "http://127.0.0.1:${LUNA_MCP_PORT}/mcp"})`));
-}
 
 // ─── Leaving on request ───────────────────────────────────────────────────────
 
 // After being asked to leave, auto-join waits until the channel has emptied
 // once (or someone types !luna), so she doesn't pop straight back in.
-let autoJoinPaused = false;
-
 function leaveOnRequest(userId) {
   if (!session.connection) return;
   const who = speakableName(session.channel?.members?.get(userId)?.displayName) || userId;
-  if (AUTO_JOIN_CHANNELS.length) autoJoinPaused = true;
+  autoJoin.pause();
   session.leave(`asked to leave by ${who}`);
 }
 
@@ -324,20 +204,12 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   announcer.onJoin(oldState, newState);
   announcer.onLeave(oldState, newState);
 
-  // Asked to leave: auto-join resumes once the auto-join channels have emptied.
-  if (autoJoinPaused && !autoJoinChannelsOccupied()) {
-    autoJoinPaused = false;
-    console.log('[voice] auto-join channels empty — auto-join resumes');
-  }
-
-  // Someone joined a voice channel while Luna is in none: maybe one to
-  // auto-join (scheduleAutoJoin checks).
-  if (!session.connection && newState.channelId && newState.channelId !== oldState.channelId) scheduleAutoJoin();
+  autoJoin.onVoiceState(oldState, newState);
 
   if (!session.channel || oldState.channelId !== session.channel.id) return;
   if (session.realMemberCount(session.channel) === 0) {
     session.leave('Last real user left');
-    scheduleAutoJoin();   // people may be waiting in another auto-join channel
+    autoJoin.schedule();   // people may be waiting in another auto-join channel
   }
 });
 
@@ -355,14 +227,6 @@ const textChat = createTextChat({
   nowPlaying, imageSearch,
 });
 
-// "!luna wakestats": the wake-word log (wake-log.js) summed up per person.
-async function wakeStats(message, amount, unit) {
-  const hours = Math.min(unit === 'd' ? amount * 24 : amount, 90 * 24) || 24;
-  const span = hours % 24 === 0 ? `${hours / 24} day${hours === 24 ? '' : 's'}` : `${hours} h`;
-  const text = await wakeLog.summary(Date.now() - hours * 3600000).catch(err => `Couldn't read the wake-word log: ${err.message}`);
-  message.reply(`**Wake word, last ${span}**\n${text}`.slice(0, 1990)).catch(() => {});
-}
-
 // Speaks a line in the voice channel on someone's behalf (say_in_voice, or
 // "!luna say …"). Queued like their own answer — after whatever is playing,
 // superseded if they then ask something by voice — not interrupting anyone.
@@ -378,64 +242,18 @@ function sayInVoice(text, userId, who) {
   return true;
 }
 
-// ─── Auto-join ────────────────────────────────────────────────────────────────
-//
-// AUTO_JOIN_CHANNELS: voice channels (names or IDs) Luna joins by herself when
-// someone is in one and she is in no channel — at startup, or when someone
-// joins. With people in several, the busiest. She posts (status messages,
-// smakbot commands) in AUTO_JOIN_TEXT_CHANNEL. She still leaves when the last
-// person does, and a kick is respected: she comes back only when someone next
-// joins. A short delay lets someone who pops in and straight out not summon her.
-const AUTO_JOIN_CHANNELS     = config.AUTO_JOIN_CHANNELS;
-const AUTO_JOIN_TEXT_CHANNEL = config.AUTO_JOIN_TEXT_CHANNEL;
-const AUTO_JOIN_DELAY_MS     = 2000;
-let autoJoinTimer = null;
-let autoJoiningUntil = 0;   // a join in progress (not Ready yet): don't start another
+// ─── Auto-join and the !luna commands ─────────────────────────────────────────
 
-const named = (channel, wanted) => wanted.some(w => w === channel.id || w.toLowerCase() === String(channel.name).toLowerCase());
-const guildChannels = guild => [...(guild.channels?.cache?.values() ?? [])];
-const textChannelFor = guild => AUTO_JOIN_TEXT_CHANNEL
-  ? guildChannels(guild).find(c => !c.isVoiceBased?.() && c.isTextBased?.() && named(c, [AUTO_JOIN_TEXT_CHANNEL])) : null;
+// Joining voice channels by herself (auto-join.js).
+const autoJoin = createAutoJoin({ config, client, session, announcer, isReady: () => ready, console });
 
-// At startup: say which settings match nothing, and what does exist.
-function checkAutoJoin() {
-  if (!AUTO_JOIN_CHANNELS.length) return;
-  const guilds = [...(client.guilds?.cache?.values() ?? [])];
-  const all = guilds.flatMap(guildChannels);
-  const voices = all.filter(c => c.isVoiceBased?.()), texts = all.filter(c => !c.isVoiceBased?.() && c.isTextBased?.());
-  const missing = AUTO_JOIN_CHANNELS.filter(w => !voices.some(c => named(c, [w])));
-  if (missing.length) console.warn(`[voice] AUTO_JOIN_CHANNELS: no voice channel ${missing.map(m => `"${m}"`).join(', ')} — ` +
-    `voice channels: ${voices.map(c => c.name).join(', ') || 'none'}`);
-  if (!guilds.some(textChannelFor)) console.warn(`[voice] AUTO_JOIN_TEXT_CHANNEL ${AUTO_JOIN_TEXT_CHANNEL ? `"${AUTO_JOIN_TEXT_CHANNEL}" not found` : 'not set'} — ` +
-    `she will post in the voice channel's own chat. Text channels: ${texts.map(c => c.name).join(', ') || 'none'}`);
-  console.log(`[voice] auto-join: ${AUTO_JOIN_CHANNELS.join(', ')}`);
-}
-
-function autoJoinChannelsOccupied() {
-  return [...(client.guilds?.cache?.values() ?? [])].some(guild => guildChannels(guild)
-    .some(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS) && session.realMemberCount(c) > 0));
-}
-
-function scheduleAutoJoin() {
-  if (!AUTO_JOIN_CHANNELS.length) return;
-  clearTimeout(autoJoinTimer);
-  autoJoinTimer = setTimeout(autoJoin, AUTO_JOIN_DELAY_MS);
-}
-
-function autoJoin() {
-  if (!ready || session.connection || autoJoinPaused || Date.now() < autoJoiningUntil) return;
-  const candidates = [...(client.guilds?.cache?.values() ?? [])].flatMap(guild => guildChannels(guild)
-    .filter(c => c.isVoiceBased?.() && named(c, AUTO_JOIN_CHANNELS))
-    .map(channel => ({ guild, channel, people: session.realMemberCount(channel) })))
-    .filter(c => c.people > 0)
-    .sort((a, b) => b.people - a.people);
-  if (!candidates.length) return;
-  const { guild, channel, people } = candidates[0];
-  const g = { id: guild.id, adapterCreator: guild.voiceAdapterCreator };
-  console.log(`[voice] auto-joining ${channel.name} (${people} ${people === 1 ? 'person' : 'people'} there)`);
-  autoJoiningUntil = Date.now() + 15000;
-  const connection = session.join(channel, g);
-  session.attach(connection, channel, textChannelFor(guild) || channel, g, () => { autoJoiningUntil = 0; announcer.introduce(connection); });
-}
+// !luna, !luna leave, say, voicecheck, wakestats (text-commands.js).
+const textCommands = createTextCommands({
+  command: BOT_COMMAND, wakeLabel: WAKE_LABEL, isReady: () => ready, session, announcer, wakeLog,
+  sayInVoice: (text, userId, who) => sayInVoice(text, userId, who),
+  leave: userId => leaveOnRequest(userId),
+  onJoin: () => autoJoin.resume(),
+  console,
+});
 
 void client.login(config.DISCORD_TOKEN || undefined);
