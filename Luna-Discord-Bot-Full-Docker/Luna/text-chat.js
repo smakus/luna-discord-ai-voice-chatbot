@@ -8,8 +8,9 @@
 // a channel go one at a time so they don't tangle that memory. The voice
 // channel isn't needed.
 
-const { route, musicAck, isSayRequest } = require('./commands');
-const { TEXT_TOOL_NAMES, claimsMusic, MUSIC_FOLLOWUP } = require('./llm-tools');
+const { route, isSayRequest } = require('./commands');
+const { TEXT_TOOL_NAMES } = require('./llm-tools');
+const { createActions } = require('./actions');
 
 // "Luna, …", "hey Luna …", "Luna: …" at the start ("lunar" does not count).
 const NAME_RE = /^\s*(?:(?:hey|hi|hello|ok(?:ay)?|yo)[\s,]+)?luna\b[\s,:;.!?-]*/i;
@@ -63,6 +64,8 @@ const SAY_MAX_CHARS = 400;
 //   nowPlaying     now-playing.js: "what song is this?"
 function createTextChat({ config, llm, console, botId, isReady, inChannels, sendCommand, sayInVoice, voiceChannelName, nowPlaying, imageSearch = null, command = '!luna' }) {
   const queues = new Map();   // channel id -> the answer in progress
+  // What's the same as by voice: music commands, smakbot's answers, tool calls (actions.js).
+  const actions = createActions({ llm, nowPlaying, imageSearch, sendCommand, console });
 
   function onMessage(message) {
     if (!config.TEXT_CHAT_CHANNELS.length || message.author?.bot || !message.channel) return false;
@@ -87,28 +90,21 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     console.log(`[text] ${name}: ${question}`);
 
     const what = route(question, { voice: false });
+    const guildId = message.guild?.id || '';
     // "Luna, play …", "skip", "stop": straight to smakbot, as by voice.
     if (what.type === 'music') {
-      const np = what.command.queuedAck && nowPlaying?.enabled ? await nowPlaying.get(message.guild?.id || '') : null;
-      await sendCommand(channel, what.command, userId);
-      const ack = musicAck(what.command, np);
+      const ack = await actions.musicCommand(what, { channel, guildId, userId });
       if (ack) await reply(message, ack).catch(() => {});
       return;
     }
     // "Say … in the voice channel": the model only writes the line; Luna speaks
     // it and confirms herself, so the confirmation is always true.
     if (what.type === 'say') return sayFromText(message, question, name, userId);
-    // "What song is this?": from smakbot (else the LLM answers, as by voice).
-    if (what.type === 'now-playing' && nowPlaying?.enabled) {
-      await reply(message, nowPlaying.describe(await nowPlaying.get(message.guild?.id || ''))).catch(() => {});
-      return;
-    }
-    // "What are our top songs?": the same, from smakbot's most played list.
-    if (what.type === 'top-songs' && nowPlaying?.enabled) {
-      const text = what.mine
-        ? nowPlaying.describeRequests(await nowPlaying.topRequests(message.author.id, what.count), what.count)
-        : nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
-      await reply(message, text).catch(() => {});
+    // "What song is this?", "what are our / my top songs?": from smakbot (else
+    // the LLM answers, as by voice).
+    const fixed = await actions.fixedAnswer(what, { guildId, userId });
+    if (fixed !== null) {
+      await reply(message, fixed).catch(() => {});
       return;
     }
 
@@ -116,40 +112,25 @@ function createTextChat({ config, llm, console, botId, isReady, inChannels, send
     const typing = () => channel.sendTyping?.().catch(() => {});
     typing();
     const typingTimer = setInterval(typing, 8000);
-    let text = '', failed = false, searched = false, musicCalled = false;
+    let text = '', failed = false, searched = false;
     const pictures = [];   // post_image calls: found while answering, attached to the reply
+    const conversation = { tag: 'text', textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES };
     try {
-      const onTool = t => {
-        if (t.type === 'say') {
-          sayInVoice(t.text, userId, name);
-        } else if (t.type === 'music') {
-          musicCalled = true;
-          if (t.command) sendCommand(channel, t.command, userId);
-        } else if (t.type === 'image') {
-          if (imageSearch && t.query) pictures.push(imageSearch.find(t.query));
-        } else if (t.type === 'search' && !searched) {
-          searched = true;
-          message.react('🔍').catch(() => {});
-        }
-      };
-      for await (const piece of llm.stream(`${name}: ${question}`, { userId, tag: 'text',
-        useSearch: llm.offerSearch(question), textMode: true, memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool })) {
+      const tools = actions.toolHandler({ channel, userId,
+        onPicture: picture => pictures.push(picture),
+        onSay: line => sayInVoice(line, userId, name),
+        onOther: t => {
+          if (t.type === 'search' && !searched) {
+            searched = true;
+            message.react('🔍').catch(() => {});
+          }
+        },
+      });
+      for await (const piece of llm.stream(`${name}: ${question}`, { ...conversation, userId,
+        useSearch: llm.offerSearch(question), onTool: tools.onTool })) {
         text += piece;
       }
-      // Said music was queued but called no music tool (llm-tools.js): one
-      // quiet follow-up in the same conversation; its words aren't posted.
-      if (!musicCalled && text.trim() && llm.canUseTools?.() && claimsMusic(text)) {
-        console.warn(`[text] said music was queued but called no music tool — asking it to make the calls`);
-        let calls = 0;
-        const followTool = t => { if (t.type === 'music') { calls++; if (t.command) sendCommand(channel, t.command, userId); } };
-        try {
-          for await (const _ of llm.stream(MUSIC_FOLLOWUP, { userId, tag: 'text', useSearch: false, textMode: true,
-            memoryKey: `text:${channel.id}`, toolNames: TEXT_TOOL_NAMES, onTool: followTool })) { /* not posted */ }
-        } catch (err) {
-          console.warn(`[text] music follow-up failed: ${err.message}`);
-        }
-        console.log(`[text] music follow-up: ${calls ? `${calls} music call(s) made` : 'no calls (no music meant)'}`);
-      }
+      await actions.musicFollowUp({ answer: text, musicCalled: tools.musicCalled(), channel, userId, log: '[text]', stream: conversation });
     } catch (err) {
       failed = true;
       console.error(`[text] answer failed: ${err.message}`);

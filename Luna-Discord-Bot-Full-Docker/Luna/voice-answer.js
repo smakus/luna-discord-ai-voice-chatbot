@@ -19,10 +19,10 @@
 //   nowPlaying                        now-playing.js: "what song is this?"
 
 const path = require('path');
-const { route, musicAck, LEAVE_PHRASES } = require('./commands');
+const { route, LEAVE_PHRASES } = require('./commands');
 const { condenseSearchResults } = require('./answer-llm');
 const { createAnswerFilter } = require('./answer-filter');
-const { claimsMusic, MUSIC_FOLLOWUP } = require('./llm-tools');
+const { createActions } = require('./actions');
 const { QUICK_PROMPT } = require('./prompt');
 const { parseWaits } = require('./config');
 const { isBareWake, confirmWake, isJunkTranscript, nearWakePhrase } = require('./voice-input');
@@ -30,6 +30,8 @@ const { shuffle, fillPhrase, speakableName } = require('./phrases');
 
 function createVoiceAnswerer({ config, console, llm, playback, session, whisper, fetchTTS, sendCommand, leave, expectQuestion, nowPlaying,
                                imageSearch = null, nameOf = id => id, wakeLog = { record() {} } }) {
+  // What's the same as in text chat: music commands, smakbot's answers, tool calls (actions.js).
+  const actions = createActions({ llm, nowPlaying, imageSearch, sendCommand, console });
   // ─── Settings ───────────────────────────────────────────────────────────────
 
   // A bare "hey Luna" (nothing followed, even after WAKE_LISTEN_MS): she asks
@@ -230,36 +232,19 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         playback.playSound(CHIME_PATH, connection).catch(() => {});
       }
 
-      // Whether something is already playing, asked before the command
-      // changes it: "Adding … to the queue" rather than "playing" then.
-      const np = what.command.queuedAck && nowPlaying?.enabled
-        ? await nowPlaying.get(session.channel?.guild?.id || '') : null;
-      await sendCommand(channel, what.command, userId);
-
-      const ack = musicAck(what.command, np);
+      const ack = await actions.musicCommand(what, { channel, guildId: session.channel?.guild?.id || '', userId });
       if (ack) playback.say(ack, { connection, userId, generation: musicGeneration, cache: !!what.command.fixedAck });
       return;
     }
 
-    // "What song is this?": answered from smakbot, like a command. (Without a
-    // MUSIC_STATUS_URL it goes to the LLM like any question.)
-    if (what.type === 'now-playing' && nowPlaying?.enabled) {
+    // "What song is this?", "what are our / my top songs?": answered from
+    // smakbot, like a command, not played. (Without a MUSIC_STATUS_URL they go
+    // to the LLM like any question.)
+    if ((what.type === 'now-playing' || what.type === 'top-songs') && nowPlaying?.enabled) {
       const generation = playback.interrupt(userId);
       if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
-      const text = nowPlaying.describe(await nowPlaying.get(session.channel?.guild?.id || ''));
-      console.log(`[${nameOf(userId)}] [music] now playing → "${text}"`);
-      playback.say(text, { connection, userId, generation, cache: false });
-      return;
-    }
-
-    // "What are our top songs?": read from smakbot, not played.
-    if (what.type === 'top-songs' && nowPlaying?.enabled) {
-      const generation = playback.interrupt(userId);
-      if (!playback.busy) playback.playSound(CHIME_PATH, connection).catch(() => {});
-      const text = what.mine
-        ? nowPlaying.describeRequests(await nowPlaying.topRequests(userId, what.count), what.count)
-        : nowPlaying.describeTop(await nowPlaying.topSongs(what.count), what.count);
-      console.log(`[${nameOf(userId)}] [music] top songs → "${text}"`);
+      const text = await actions.fixedAnswer(what, { guildId: session.channel?.guild?.id || '', userId });
+      console.log(`[${nameOf(userId)}] [music] ${what.type === 'now-playing' ? 'now playing' : 'top songs'} → "${text}"`);
       playback.say(text, { connection, userId, generation, cache: false });
       return;
     }
@@ -468,31 +453,19 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
     let context = '';
     let leaveAfterAnswer = false;   // the LLM called leave_channel
     let musicCalled = false;        // the LLM called a music tool
-    let spoken = '';                // what was said, for claimsMusic()
+    let spoken = '';                // what was said, for the music follow-up
 
-    // The answer said music was queued but no music tool was called (see
-    // llm-tools.js): one quiet follow-up in the same conversation, so the
-    // model can make the calls it meant to. Nothing of it is spoken.
+    // The answer said music was queued but no music tool was called: one
+    // quiet follow-up (actions.js), cancelled like the answer by a barge-in.
     const musicFollowUp = async () => {
-      console.warn(`[${nameOf(userId)}] [LLM] said music was queued but called no music tool — asking it to make the calls`);
-      let calls = 0;
       const cancel = new AbortController();
       playback.trackRequest(userId, cancel);
       try {
-        const onTool = t => {
-          if (t.type !== 'music') return;
-          calls++;
-          if (t.command) sendCommand(channel, t.command, userId);
-        };
-        for await (const _ of llm.stream(MUSIC_FOLLOWUP, { userId, useSearch: false, reasoning: 'off', signal: cancel.signal, onTool })) {
-          if (superseded()) break;
-        }
-      } catch (err) {
-        if (!superseded()) console.warn(`[${nameOf(userId)}] [LLM] music follow-up failed: ${err.message}`);
+        await actions.musicFollowUp({ answer: spoken, musicCalled, channel, userId, log: `[${nameOf(userId)}] [LLM]`,
+                                      stream: { reasoning: 'off', signal: cancel.signal }, stop: superseded });
       } finally {
         playback.untrackRequest(userId, cancel);
       }
-      console.log(`[${nameOf(userId)}] [LLM] music follow-up: ${calls ? `${calls} music call(s) made` : 'no calls (no music meant)'}`);
     };
 
     const speak = sentence => {
@@ -559,29 +532,33 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         };
         // What the model's tool calls mean (read in answer-llm.js). A search is
         // announced and handled as a search; music and leaving are acted on.
-        const onTool = t => {
-          if (t.type === 'search') {
-            searchedThisPass = true;
-            saidAfterSearch  = 0;
-            announceSearchNow();
-            filter.event({ type: 'tool_call.start' });
-          } else if (t.type === 'search-result') {
-            searchCalls.push({ query: t.query, output: t.output });
-          } else if (t.type === 'music') {
-            musicCalled = true;
-            if (t.command) sendCommand(channel, t.command, userId);
-          } else if (t.type === 'image') {
-            // Asked by voice: the picture goes in the text channel.
-            if (imageSearch && t.query && channel?.send) {
-              imageSearch.find(t.query).then(p => p && channel.send({
-                content: `📷 ${t.query} (for ${askerName || nameOf(userId)})`,
-                files: [{ attachment: p.buffer, name: p.name }], allowedMentions: { parse: [] },
-              })).catch(err => console.warn(`[image] posting failed: ${err.message}`));
-            }
-          } else if (t.type === 'leave') {
+        const tools = actions.toolHandler({ channel, userId,
+          // Asked by voice: the picture goes in the text channel.
+          onPicture: (picture, query) => {
+            if (!channel?.send) return;
+            picture.then(p => p && channel.send({
+              content: `📷 ${query} (for ${askerName || nameOf(userId)})`,
+              files: [{ attachment: p.buffer, name: p.name }], allowedMentions: { parse: [] },
+            })).catch(err => console.warn(`[image] posting failed: ${err.message}`));
+          },
+          onLeave: () => {
             console.log(`[${nameOf(userId)}] [voice] the LLM called leave_channel — leaving after the reply`);
             leaveAfterAnswer = true;
-          }
+          },
+          onOther: t => {
+            if (t.type === 'search') {
+              searchedThisPass = true;
+              saidAfterSearch  = 0;
+              announceSearchNow();
+              filter.event({ type: 'tool_call.start' });
+            } else if (t.type === 'search-result') {
+              searchCalls.push({ query: t.query, output: t.output });
+            }
+          },
+        });
+        const onTool = t => {
+          tools.onTool(t);
+          if (tools.musicCalled()) musicCalled = true;
         };
 
         try {
@@ -654,9 +631,7 @@ function createVoiceAnswerer({ config, console, llm, playback, session, whisper,
         }
       }
 
-      if (!superseded() && !firstSentence && !brokeDown && !musicCalled && llm.canUseTools?.() && claimsMusic(spoken)) {
-        await musicFollowUp();
-      }
+      if (!superseded() && !firstSentence && !brokeDown) await musicFollowUp();
 
       if ((firstSentence || brokeDown) && !superseded()) {
         stopFillers();
