@@ -9,7 +9,7 @@ For the setup and settings, see the [README](../README.md).
 | Layer | Files |
 | ----- | ----- |
 | Startup and Discord events | `index.js` (wiring, `!luna` commands, auto-join) |
-| Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `announce.js` (intro, greetings, farewells) |
+| Where questions come from and go | `voice-session.js` (joining, reconnecting, encrypted-voice recovery), `voice-listen.js` (per-speaker capture and wake word), `voice-answer.js` (utterance → spoken answer), `text-chat.js` (typed questions), `actions.js` (what both of those do the same way: music commands, smakbot's answers, tool calls, the music follow-up), `announce.js` (intro, greetings, farewells) |
 | Doing things | `answer-llm.js` (LM Studio: prompt, memory, search and tool offers, streaming, what tool calls mean), `commands.js` (fixed commands, routing, smakbot), `voice-playback.js` (the speaking queue), `now-playing.js` (what smakbot is playing), `wake-backup.js` (answering wake words the model missed), `wake-log.js` (the wake-word log), `tts.js` and `tts-cache.js` (rendered phrases), `whisper.js`, `mcp-server.js` |
 | Pure helpers | `config.js`, `prompt.js`, `answer-filter.js`, `sentences.js`, `voice-input.js`, `phrases.js`, `llm-tools.js`, `greetings.js`, `wakeword.js` |
 
@@ -30,6 +30,7 @@ With Node installed, `npm test` in `Luna/` does the same. A full run takes about
 | File | Covers |
 | ---- | ------ |
 | `luna.test.js` | Capture, wake word (including two-stage detection), the LLM stream (thinking limit, quick answers, leaked reasoning, search), playback, interruptions, encrypted-voice diagnostics and recovery |
+| `actions.test.js` | What voice and text do the same way (`actions.js`): music commands, smakbot's answers, tool calls, the music follow-up |
 | `tts.test.js` | TTS providers and the fallback chain |
 | `announce.test.js` | Intro, join greetings, leave farewells, speakable names |
 | `answer-filter.test.js` | What of the LLM's answer Luna says, holds or drops (`answer-filter.js`): each rule, plus LM Studio streams in `test/fixtures/` replayed through the real pipeline |

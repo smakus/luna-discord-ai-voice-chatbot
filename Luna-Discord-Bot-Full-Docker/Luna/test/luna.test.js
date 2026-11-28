@@ -1150,8 +1150,8 @@ const sse = (...sentences) => sentences.map(s => [5, { type: 'message.delta', co
     ok('LLM tool list_top_requesters: offered, ranks people by songs requested with counts and top song (default 5); none yet / unreachable said plainly'); }
   { const H = await textRig({ LLM_TOOLS: 'true' });
     H.S.llmScripts = [sse('Queued up "Africa" by Toto for you!'), [...MUSIC_CALL('play_music', { query: 'Africa Toto' }), ...sse('Done.')]];
-    await H.say('Luna, queue up Africa by Toto'); await H.until(() => H.S.sends.includes('!play Africa Toto'));
-    assert.strictEqual(H.S.replies.length, 1); assert.strictEqual(H.S.replies[0].content, 'Queued up "Africa" by Toto for you!');
+    await H.say('Luna, queue up Africa by Toto'); await H.until(() => H.S.sends.includes('!play Africa Toto') && H.S.replies.length > 0);
+    await H.wait(50); assert.strictEqual(H.S.replies.length, 1, 'the follow-up posts nothing'); assert.strictEqual(H.S.replies[0].content, 'Queued up "Africa" by Toto for you!');
     ok('text: the same follow-up; its calls reach smakbot, only the first answer is posted'); }
   console.log('pictures in the text chat (post_image)');
   const IMG_CALL = query => [[5, { type: 'tool_call.start' }], [5, { type: 'tool_call.name', tool_name: 'post_image', provider_info: { type: 'plugin', plugin_id: 'mcp/luna' } }],
