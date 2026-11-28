@@ -1,5 +1,5 @@
 // The voice-input stages (voice-input.js), each on its own, with a fake clock.
-// luna.test.js covers them wired together in the real capture path.
+// wake.test.js and voice-session.test.js cover them wired together in the real capture path.
 // Run: node --test test/   (see README → Development)
 const { describe, it } = require('node:test');
 const assert = require('assert');

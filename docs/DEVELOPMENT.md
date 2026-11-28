@@ -25,11 +25,18 @@ From the repository's top folder:
 docker run --rm -v "$PWD":/repo:ro -w /repo/Luna-Discord-Bot-Full-Docker/Luna node:22-slim npm test
 ```
 
-With Node installed, `npm test` in `Luna/` does the same. A full run takes about a minute and a quarter.
+With Node installed, `npm test` in `Luna/` does the same. A full run takes under a minute: the files run in parallel.
 
 | File | Covers |
 | ---- | ------ |
-| `luna.test.js` | Capture, wake word (including two-stage detection), the LLM stream (thinking limit, quick answers, leaked reasoning, search), playback, interruptions, encrypted-voice diagnostics and recovery |
+| `voice-session.test.js` | Joining, moving and leaving voice channels, lost connections, undecodable packets, encrypted voice (DAVE) diagnostics and recovery |
+| `answers.test.js` | Spoken answers: the status message, TTS lookahead and interrupts, LLM timeouts, the model, personality, empty and broken-down answers, sampling, audio tags, memory, stats |
+| `search.test.js` | Web search: the spoken heads-up, `WEB_SEARCH` modes, the search integration and its outage fallback |
+| `fillers.test.js` | "Still thinking" fillers: timing, how many, which, personal ones |
+| `thinking.test.js` | The thinking limit and the quick answer, leaked reasoning, narration before searches |
+| `wake.test.js` | Hearing "hey Luna": barge-in, two-stage detection, a bare "hey Luna", follow-up windows, the Whisper backup, the wake-word log |
+| `music.test.js` | Music with smakbot: the LLM's music tools, polite commands, "adding … to the queue", the music follow-up, now playing, top songs and requests |
+| `text.test.js` | Typing to Luna: text chat, pictures, saying things in the voice channel |
 | `answer-retry.test.js` | When a spoken answer is asked again (`answer-retry.js`): with search, quick (reasoning off), in a fresh conversation, or not |
 | `actions.test.js` | What voice and text do the same way (`actions.js`): music commands, smakbot's answers, tool calls, the music follow-up |
 | `tts.test.js` | TTS providers and the fallback chain |
@@ -40,6 +47,7 @@ With Node installed, `npm test` in `Luna/` does the same. A full run takes about
 | `config.test.js` | Settings (`config.js`): parsing, invalid values, misspelled names, and that the README and `example.env` match the list of settings |
 | `bench-score.test.js` | The LLM benchmark's scoring (below), its question file, and the system prompt (`prompt.js`) |
 | `harness.js` | Loads `index.js` with Discord, LM Studio, Whisper, TTS and the wake-word engine faked |
+| `helpers.js` | What the integration tests above share: fake LLM streams (answers, searches, tool calls) and the rigs each feature's tests start from |
 
 The tests are excluded from the Docker image.
 
